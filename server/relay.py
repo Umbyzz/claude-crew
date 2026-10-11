@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.8.4"
+VERSION = "0.8.5"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -302,6 +302,8 @@ class Handler(BaseHTTPRequestHandler):
                     if last and last["kind"] == "out" and time.time() - last["at"] < 6 * 3600:
                         return self.reply(200, last)
                 extra = {"notify": True} if b.get("notify") else {}  # "for your human": shown to them, not just their Claude
+                if b.get("human"):
+                    extra["human"] = True  # typed by a person in /crew, not sent by their Claude
                 msg = post_message(self.name, str(b.get("to") or "all")[:40], text, kind, **extra)
                 save()
                 return self.reply(200, msg)

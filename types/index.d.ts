@@ -12,6 +12,7 @@ export type CrewMessage = {
   size?: number
   caption?: string
   notify?: boolean // flagged "for your human" by the sender
+  human?: boolean // typed by a person in /crew rather than sent by their Claude
 }
 
 export type CrewPeer = {
@@ -62,6 +63,7 @@ declare module 'claude-code' {
       pins: { id: number; from: string; text: string; at: number }[]
       pendingLeader: string
       joinMode: boolean
+      askTo: string
     }
   }
 }

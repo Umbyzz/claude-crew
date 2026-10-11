@@ -121,11 +121,14 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 1. Pick a **leader** in `/crew`. One person sets it, and everyone sees the change.
 2. Give the leader's Claude a goal, for example: *"We're building X. Plan it and split it across the crew."*
 3. The leader adds tasks to the board and assigns them. Everyone else's Claude picks up its assignments, works on them and reports back.
-4. You can chat at the bottom of `/crew`. Type `@name message` to DM someone.
-5. Done for the day? Press **Leave session**, or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**.
-6. **↻ Refresh** (top of `/crew`) reconnects to the relay right away and re-checks GitHub for updates. Use it after the host restarts the relay.
-7. **Reset chat** (next to *Chat*) clears the crew chat for everyone, after a warning you have to confirm. A copy is saved first, and tasks and shared docs stay.
-8. **Save chat** saves the chat and the task board as a Markdown file in `~/.claude/crew-chats`.
+4. **Chat** at the bottom of `/crew` is for the people: everyone sees it in `/crew`, but no Claude reads it, so it costs no tokens. Type `@name message` to DM someone.
+5. **Ask a Claude** (above the chat) talks straight to a teammate's Claude, the leader's by default. It arrives as a request, so that Claude starts on it right away when its Auto-run allows: on *only from the leader*, the leader's Claude takes anyone's Ask a Claude, and the others take only the leader's.
+6. Done for the day? Press **Leave session**, or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**.
+7. **↻ Refresh** (top of `/crew`) reconnects to the relay right away and re-checks GitHub for updates. Use it after the host restarts the relay.
+8. **Reset chat** (next to *Chat*) clears the crew chat for everyone, after a warning you have to confirm. A copy is saved first, and tasks and shared docs stay.
+9. **Save chat** saves the chat and the task board as a Markdown file in `~/.claude/crew-chats`.
+
+**Saving tokens.** Every crew message a Claude receives becomes part of its conversation, so crew keeps that small: people's chat never reaches the Claudes, the standing "how to treat crew messages" note sits once in the system prompt instead of on every message, task updates and joins only show in `/crew`, and the catch-up skips people's chat. The relay, the polling and the Clawds window use no tokens at all. The biggest lever is yours: set **Auto-run** to `off` or `leader`, since every auto-run request starts a turn.
 
 **Picking up days later.** The relay keeps the chat, tasks, shared docs and leader on the host's disk, so nothing is lost when everyone closes up. When you rejoin, your Claude gets a **catch-up briefing** in its conversation: who leads, the open tasks, and the last 30 crew messages. The leader's Claude can pick the plan straight back up.
 

@@ -423,7 +423,7 @@ test('Host a crew opens start-relay.bat, takes its key and joins the session', {
   const ran: string[][] = []
   on('process.run', async (_$: unknown, e: any) => {
     ran.push([...e.argv])
-    if (e.argv.some((a: string) => a.endsWith('start-relay.bat'))) started = true
+    if (e.argv.some((a: string) => a.includes('start-relay.bat'))) started = true
     const stdout = e.argv[0] === 'ipconfig' ? '   IPv4 Address. . . : 192.168.1.5\r\n   IPv4 Address. . . : 26.12.34.56\r\n' : ''
     return { value: { exitCode: 0, stdout, stderr: '' } }
   })
@@ -443,7 +443,8 @@ test('Host a crew opens start-relay.bat, takes its key and joins the session', {
   await ui.press({ key: 'host' })
   await settle(200)
   await ui.unmount()
-  expect(ran.some(a => a.join(' ').includes('start "Crew relay"') && a.join(' ').endsWith('start-relay.bat'))).toBe(true)
+  // opened detached through Start-Process, so Claude's process runner never waits on the relay window
+  expect(ran.some(a => a[0] === 'powershell' && a.join(' ').includes("Start-Process -FilePath '") && a.join(' ').includes("start-relay.bat'"))).toBe(true)
   expect(sets.find(s => s.key === 'crew.key')?.value).toBe('batkey123')
   expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://127.0.0.1:7777')
 })
@@ -454,7 +455,7 @@ test("a host whose relay is down sees it, and Start relay opens start-relay.bat"
   on('ui.toast', async () => ({ value: undefined }))
   let started = false
   on('process.run', async (_$: unknown, e: any) => {
-    if (e.argv.some((a: string) => a.endsWith('start-relay.bat'))) started = true
+    if (e.argv.some((a: string) => a.includes('start-relay.bat'))) started = true
     return { value: { exitCode: 0, stdout: '', stderr: '' } }
   })
   on('http.fetch', async (_$: unknown, e: any) => {
@@ -637,6 +638,52 @@ test('a request already answered with crew_send does not run a second time', { o
   await $.tool.call({ tool: 'mcp__crew__crew_send', text: 'done!', to: 'bob' } as any) // Claude answers it meanwhile
   const later: any = await $.prompt.submit({ text: 'Crew request #64 from bob (crew leader):\n\nrun crew_status' } as any)
   expect(later.drop).toContain('already answered')
+})
+
+test("people's /crew chat stays out of Claude's context; a Claude's message and Ask a Claude reach it", { options: OPTIONS }, async ($, on) => {
+  // alice leads (POLL), with Auto-run on "only from the leader"
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const submitted: string[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => {
+    submitted.push(e.text)
+    return e
+  })
+  let polls = 0
+  on('http.fetch', async () => {
+    polls += 1
+    const messages =
+      polls === 1
+        ? [
+            { id: 80, from: 'bob', to: 'all', kind: 'chat', text: 'brb pizza', at: 0, human: true },
+            { id: 81, from: 'bob', to: 'all', kind: 'chat', text: 'auth tests pass', at: 0 },
+            { id: 82, from: 'bob', to: 'alice', kind: 'request', text: 'what is left on the board?', at: 0, human: true },
+          ]
+        : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 82 }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const rows = session.appended().map(r => JSON.stringify(r.message.content))
+  expect(rows.some(r => r.includes('brb pizza'))).toBe(false)
+  expect(rows.some(r => r.includes('auth tests pass'))).toBe(true)
+  expect(rows.some(r => r.includes('what is left') && r.includes('human=\\"yes\\"'))).toBe(true)
+  // bob isn't the leader, but a person asking the leader's Claude starts work straight away
+  expect(submitted.some(t => t.includes('Crew request #82 from bob, typed by them in /crew'))).toBe(true)
+})
+
+test('Ask a Claude sends a request to the leader by default, flagged as typed by a person', { options: { ...OPTIONS, name: 'carol' } }, async ($, on) => {
+  const seen = fakeRelay(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.input({ key: 'ask', text: 'plan the next sprint' })
+  await settle()
+  await ui.unmount()
+  const send = seen.find(s => s.url.endsWith('/send'))
+  expect(JSON.parse(send?.init.body)).toEqual({ text: 'plan the next sprint', to: 'alice', kind: 'request', human: true })
 })
 
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
