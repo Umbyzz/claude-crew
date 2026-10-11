@@ -11,10 +11,11 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 ```
 
 ## What's new in 1.1
-- **Projects.** Each project has its own chat, task board, shared docs and leader, so a new game doesn't land in the old one's chat. Each Claude Code chat stays in its own project, and a new chat in the same folder starts in that folder's project. Pick or create one in `/crew` → **Crew** tab → **Project**, or ask your Claude (`crew_project`). Everything from before lives in **main**.
+- **Projects.** Each project has its own chat, task board, shared docs and leader, so a new game doesn't land in the old one's chat. Each Claude Code chat stays in its own project, and a new chat in the same folder starts in that folder's project. Pick or create one in `/crew`'s **Project** tab (it used to be Docs), or ask your Claude (`crew_project`). Everything from before lives in **main**.
+- **Project folders.** The Project tab also shows the project's folder on your PC: open it in Explorer, make subfolders, or point it somewhere else, without leaving Claude.
 
 ## What's new in 1.0
-- **`/crew` in tabs:** Chat, Tasks, Docs, Crew and ⚙ Settings, one card at a time, with notices pinned above them.
+- **`/crew` in tabs:** Chat, Tasks, Project, Crew and ⚙ Settings, one card at a time, with notices pinned above them.
 - **Messenger-style chat** with a **People / Everything** switch and a **To:** picker that talks to the people or straight to a teammate's Claude.
 - **Read receipts** ("✓ read by bob") and **`crew_ping`** to measure latency.
 - **Acting leader:** when the leader is away, someone stands in, and hands back with a summary.
@@ -140,15 +141,18 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 2. Give the leader's Claude a goal, for example: *"We're building X. Plan it and split it across the crew."*
 3. The leader adds tasks to the board and assigns them. Everyone else's Claude picks up its assignments, works on them and reports back.
 
-**The `/crew` pane.** A top bar (who you are, ↻ Refresh, Host / ▶ Start relay, Clawds, Log, Leave… / Join session), then any notices (updates, 📣 pins, confirms, a relay that's down or outdated), then the tabs: **Chat** (the default), **Tasks**, **Docs**, **Crew** and **⚙ Settings**, one card at a time.
+**The `/crew` pane.** A top bar (who you are, ↻ Refresh, Host / ▶ Start relay, Clawds, Log, Leave… / Join session), then any notices (updates, 📣 pins, confirms, a relay that's down or outdated), then the tabs: **Chat** (the default), **Tasks**, **Project**, **Crew** and **⚙ Settings**, one card at a time.
 
 - **Chat** reads like a messenger: your messages on the right, everyone else's on the left, back-to-back messages grouped into one bubble, crew events (joins, task updates) as dim centred lines that fold up when there are many, and "✓ read by …" under your newest message.
   - **People / Everything:** *People* shows only what humans typed; *Everything* also shows the Claudes' requests, updates and replies to each other.
   - **To:** picks who you're talking to. *The people* is a plain chat: everyone sees it, no Claude reads it, so it costs no tokens (type `@name message` to DM someone). Pick a **teammate's Claude** instead and your message reaches that Claude as a request, so it starts on it right away when its Auto-run allows: on *only from the leader*, the leader's Claude (or the acting leader's) takes anyone's asks, and the others take only the leader's.
   - **Save** writes the chat and task board to `~/.claude/crew-chats` as Markdown. **Reset** clears the chat for everyone, after a confirm (a copy is saved first; tasks and docs stay).
 - **Tasks** is a small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
-- **Docs** lists the plans, findings and patches the Claudes shared, newest first, with who shared them and when: press one for a peek at its first lines, or **Copy it all**.
-- **Crew** has the **Project** picker (switch, or type a name to start a new one), who's online and what their Claude is doing (and which project they're in, if it's not yours), the leader (★) and any acting leader (☆), and the leader picker.
+- **Project** is the project's home:
+  - **Switch** projects, or type a name to start a new one.
+  - **Folder on this PC:** the project's folder (until you pick one, this chat's folder), with **Open in Explorer**, **Use this chat's folder**, a path box to change it, a **New folder** box, and its subfolders listed (press one to open it). Each person's folder is remembered on their own PC, per project, and your Claude is told about it so it works there.
+  - **Shared docs:** the plans, findings and patches the Claudes shared, newest first, with who shared them and when. Press one for a peek at its first lines, or **Copy it all**.
+- **Crew** shows who's online and what their Claude is doing (and which project they're in, if it's not yours), the leader (★) and any acting leader (☆), and the leader picker.
 
 **Projects.** One crew, several projects: each has its own chat, tasks, shared docs and leader (and acting leader), while who's online stays crew-wide. The project belongs to the Claude Code chat: switch in one chat and the others stay where they are; reopen a chat and it's still in its project; start a new chat in the same folder and it picks up that folder's last project. Switching gives your Claude a catch-up on the project it moved into. The crew log window shows every project, tagged.
 - **⚙ Settings** has Connection, Preferences and Updates.
@@ -163,7 +167,7 @@ Done for the day? Press **Leave…** (it asks first, so a stray click doesn't ki
 
 | Command | What it does |
 |---|---|
-| `/crew` | the crew pane (Chat, Tasks, Docs, Crew and Settings tabs), and the Clawds window pops out |
+| `/crew` | the crew pane (Chat, Tasks, Project, Crew and Settings tabs), and the Clawds window pops out |
 | `/clawds` | brings up the Clawds window, or brings it to the front if it's already open |
 | `/crewlog` | opens the **crew log**: a separate window showing every crew message live, including what the Claudes say to each other (requests, updates, replies). Filter by **Everything / Claudes / People**, tick **On top** to keep it over other windows, put it on a second monitor. It uses no tokens and doesn't count as you being online. You see what you'd see in `/crew`: messages to everyone, to you, or from you; other people's DMs stay private. Also the **Log** button in `/crew`, the Clawds right-click menu, or double-click `window/CrewLog.bat` |
 

@@ -920,7 +920,7 @@ test('projects: switching moves this session, every request says which project, 
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   expect(seen[seen.length - 1].init.headers['X-Crew-Project']).toBe('main')
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
-  await ui.press({ key: 'tab-crew' })
+  await ui.press({ key: 'tab-docs' }) // the Project tab
   await ui.input({ key: 'new-project', text: 'floor is lava!' })
   await settle()
   expect(seen[seen.length - 1].init.headers['X-Crew-Project']).toBe('floor is lava') // cleaned up
@@ -930,6 +930,31 @@ test('projects: switching moves this session, every request says which project, 
   expect(String(listed.result)).toContain('lava: leader none, 0 open tasks')
   const back: any = await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any)
   expect(String(back.result)).toContain('now in crew project "main"')
+})
+
+test("the Project tab shows the project's folder, opens it, lists and makes subfolders", { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  const ran: string[][] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push([...e.argv])
+    const listing = e.argv[0] === 'powershell' && e.argv.join(' ').includes('Get-ChildItem')
+    return { value: { exitCode: 0, stdout: listing ? 'art\r\nscripts\r\n' : '', stderr: '' } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  await ui.input({ key: 'folder-set', text: '"C:\\Games\\Lava\\"' })
+  await settle()
+  expect(await ui.find({ text: /C:\\Games\\Lava/ } as any)).toBeDefined()
+  expect(await ui.find({ key: 'dir-scripts' })).toBeDefined()
+  await ui.press({ key: 'folder-open' })
+  await ui.input({ key: 'folder-new', text: 'levels' })
+  await settle()
+  await ui.unmount()
+  const lines = ran.map(a => a.join(' '))
+  expect(lines).toContain('explorer.exe C:\\Games\\Lava')
+  expect(lines.some(l => l.includes("New-Item -ItemType Directory -Force -Path 'C:\\Games\\Lava\\levels'"))).toBe(true)
 })
 
 test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {

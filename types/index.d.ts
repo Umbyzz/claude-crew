@@ -89,6 +89,7 @@ declare module 'claude-code' {
       tab: 'chat' | 'tasks' | 'docs' | 'crew'
       chatView: 'all' | 'people'
       project: string
+      folder: { path: string; chosen: boolean; dirs: string[]; error: string; note: string }
     }
   }
 }
