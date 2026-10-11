@@ -56,6 +56,7 @@ declare module 'claude-code' {
       membership: '' | 'joined' | 'left' | 'ask'
       host: { ip: string; key: string }
       confirmReset: boolean
+      updateNote: { state: '' | 'busy' | 'ok' | 'error'; text: string }
     }
   }
 }

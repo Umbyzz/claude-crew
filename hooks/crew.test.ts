@@ -72,7 +72,7 @@ test('the pane draws leader, crew, tasks and settings on terminal and desktop', 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'crew', surface, ...PANE })
     expect(await ui.find({ key: 'leader' })).toBeDefined()
-    expect(await ui.find({ text: /bob \(working\)/ } as any)).toBeDefined()
+    expect(await ui.find({ text: /bob.*working/ } as any)).toBeDefined()
     expect(await ui.find({ text: /for bob/ } as any)).toBeDefined()
     expect(await ui.find({ key: 'opt-relayUrl' })).toBeUndefined()
     await ui.press({ key: 'settings' })
@@ -544,4 +544,36 @@ test('a busy Claude never stalls the check-ins (the flickering-offline bug)', { 
   await settle()
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // must still check in, not hang
   expect(polls).toBeGreaterThanOrEqual(2)
+})
+
+test('Install update works with an npm-installed claude (claude.cmd), and shows failures in the pane', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  LATEST = '9.9.9'
+  const ran: string[][] = []
+  let failSecond = false
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push([...e.argv])
+    if (e.argv[0] === 'where') return { value: { exitCode: 0, stdout: 'C:\\npm\\claude\r\nC:\\npm\\claude.cmd\r\n', stderr: '' } }
+    if (failSecond && e.argv.includes('crew@claude-crew'))
+      return { value: { exitCode: 1, stdout: '', stderr: 'Plugin "crew" not found in marketplace' } }
+    return { value: { exitCode: 0, stdout: 'ok', stderr: '' } }
+  })
+  on('ui.toast', async () => ({ value: undefined }))
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'settings' })
+  await ui.press({ key: 'check-update' })
+  await settle(100)
+  await ui.press({ key: 'install' })
+  await settle(100)
+  const lines = ran.map(a => a.join(' '))
+  expect(lines).toContain('cmd /c C:\\npm\\claude.cmd plugin marketplace update claude-crew')
+  expect(lines).toContain('cmd /c C:\\npm\\claude.cmd plugin update crew@claude-crew')
+  expect(await ui.find({ text: /Restart Claude/ } as any)).toBeDefined()
+
+  failSecond = true
+  await ui.press({ key: 'install' })
+  await settle(100)
+  expect(await ui.find({ text: /not found in marketplace/ } as any)).toBeDefined()
+  await ui.unmount()
+  LATEST = '0.3.0'
 })

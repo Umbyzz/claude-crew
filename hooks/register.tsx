@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.8.0'
+const VERSION = '0.8.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -34,6 +34,9 @@ let joined = true // mirrors membership === 'joined' for the hot paths; session.
 const HOST_URL = 'http://127.0.0.1:7777'
 const hostInfo = atom({ plugin: 'crew', key: 'host' } as const, { ip: '', key: '' })
 const confirmReset = atom({ plugin: 'crew', key: 'confirmReset' } as const, false) // the "are you sure?" box
+// What the last update check or install said, shown in /crew (not just a toast that's gone in seconds).
+type UpdateNote = { state: '' | 'busy' | 'ok' | 'error'; text: string }
+const updateNote = atom({ plugin: 'crew', key: 'updateNote' } as const, { state: '', text: '' } as UpdateNote)
 let lastTalk = 0 // when a crew message last came or went: we check in faster for a while after
 const IMAGE_TYPES: Record<string, string> = {
   png: 'image/png',
@@ -466,75 +469,114 @@ function newer(a: string | null | undefined, b: string) {
   return false
 }
 
-// Asks GitHub which version is out. Returns it, or null when GitHub can't be reached.
-async function checkUpdate($: EngineInterface): Promise<string | null> {
-  try {
-    const res = await $.http.fetch(`${LATEST_URL}?t=${Date.now()}`)
-    if (!res.ok) return null
-    const latest = String(JSON.parse(res.text).version ?? '')
-    const before = await read($, snapshot)
-    await update($, snapshot, s => ({ ...s, latest }))
-    if (newer(latest, VERSION) && before.latest !== latest)
-      $.ui.toast(`crew ${latest} is out (you have ${VERSION}). Open /crew to update.`, { timeoutMs: 10000 })
-    return latest
-  } catch {
-    return null // offline or GitHub unreachable: try again on the next check
-  }
-}
+// Which version GitHub has. The API answers fresh; the raw file can lag ~5 minutes behind a push, so it's the fallback.
+const LATEST_API = 'https://api.github.com/repos/Umbyzz/claude-crew/contents/.claude-plugin/plugin.json?ref=main'
 
-function checkNow($: EngineInterface) {
-  $.ui.toast('crew: checking GitHub for updates…', { timeoutMs: 3000 })
-  void checkUpdate($).then(latest =>
-    $.ui.toast(
-      latest === null
-        ? "crew: couldn't reach GitHub, try again in a bit"
-        : newer(latest, VERSION)
-          ? `crew: ${latest} is out (you have ${VERSION}). Press Install update.`
-          : `crew: you're up to date (${VERSION})`,
-      { timeoutMs: 8000 },
-    ),
-  )
-}
-
-// The claude CLI: on PATH, or the copy the desktop app keeps under %APPDATA%\Claude\claude-code.
-async function findClaude($: EngineInterface): Promise<string | null> {
-  const tries = [['where', 'claude'], ['cmd', '/c', 'dir /s /b "%APPDATA%\\Claude\\claude-code\\claude.exe"']]
-  for (const argv of tries) {
+async function fetchLatest($: EngineInterface): Promise<string | null> {
+  const tries: [string, Record<string, string>][] = [
+    [LATEST_API, { Accept: 'application/vnd.github.raw', 'User-Agent': 'claude-crew' }],
+    [`${LATEST_URL}?t=${Date.now()}`, {}],
+  ]
+  for (const [url, headers] of tries) {
     try {
-      const r = await $.process.run(argv, { timeoutMs: 20000 })
-      const found = r.stdout.split(/\r?\n/).map(l => l.trim()).filter(l => l.toLowerCase().endsWith('.exe') || l.endsWith('claude'))
-      if (r.exitCode === 0 && found.length) return found[found.length - 1]
+      const res = await $.http.fetch(url, { headers })
+      if (res.ok) {
+        const v = String(JSON.parse(res.text).version ?? '')
+        if (/^\d+\.\d+\.\d+$/.test(v)) return v
+      }
     } catch {
-      // try the next place
+      // try the next source
     }
   }
   return null
 }
 
+// Asks GitHub which version is out. Returns it, or null when GitHub can't be reached.
+async function checkUpdate($: EngineInterface): Promise<string | null> {
+  const latest = await fetchLatest($)
+  if (latest === null) return null
+  const before = await read($, snapshot)
+  await update($, snapshot, s => ({ ...s, latest }))
+  if (newer(latest, VERSION) && before.latest !== latest)
+    $.ui.toast(`crew ${latest} is out (you have ${VERSION}). Open /crew to update.`, { timeoutMs: 10000 })
+  return latest
+}
+
+function setUpdateNote($: EngineInterface, state: UpdateNote['state'], text: string) {
+  void update($, updateNote, () => ({ state, text }))
+}
+
+function checkNow($: EngineInterface) {
+  setUpdateNote($, 'busy', 'Checking GitHub…')
+  void checkUpdate($).then(latest =>
+    setUpdateNote(
+      $,
+      latest === null ? 'error' : 'ok',
+      latest === null
+        ? "Couldn't reach GitHub. Check your internet and try again."
+        : newer(latest, VERSION)
+          ? `crew ${latest} is out. Press Install update.`
+          : `You're up to date (${VERSION}).`,
+    ),
+  )
+}
+
+// The claude CLI, as a command to run: claude.exe on PATH, else npm's claude.cmd (through cmd),
+// else the newest copy the desktop app keeps under %APPDATA%\Claude\claude-code.
+async function findClaude($: EngineInterface): Promise<string[] | null> {
+  try {
+    const r = await $.process.run(['where', 'claude'], { timeoutMs: 20000 })
+    const found = r.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+    const exe = found.find(l => l.toLowerCase().endsWith('.exe'))
+    if (exe) return [exe]
+    const cmd = found.find(l => l.toLowerCase().endsWith('.cmd'))
+    if (cmd) return ['cmd', '/c', cmd]
+  } catch {
+    // not on PATH
+  }
+  try {
+    const r = await $.process.run(['cmd', '/c', 'dir /s /b "%APPDATA%\\Claude\\claude-code\\claude.exe"'], { timeoutMs: 20000 })
+    const versionOf = (p: string) => p.match(/claude-code\\(\d+\.\d+\.\d+)/)?.[1] ?? '0.0.0'
+    const found = r.stdout
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l.toLowerCase().endsWith('claude.exe'))
+      .sort((a, b) => (newer(versionOf(a), versionOf(b)) ? -1 : newer(versionOf(b), versionOf(a)) ? 1 : 0))
+    if (found.length) return [found[0]]
+  } catch {
+    // no desktop-app copy either
+  }
+  return null
+}
+
 // Pulls the latest version straight from GitHub: refresh the marketplace, then update the plugin.
+// Every step shows up in /crew, so if it fails you can see exactly where and why.
 async function installUpdate($: EngineInterface) {
-  $.ui.toast('crew: updating from GitHub…', { timeoutMs: 6000 })
+  setUpdateNote($, 'busy', 'Looking for the claude CLI…')
   const claude = await findClaude($)
   if (!claude) {
-    $.ui.toast(`crew: couldn't find the claude CLI. Run these in a terminal:\n${UPDATE_COMMANDS}`, { timeoutMs: 15000 })
+    setUpdateNote($, 'error', `Couldn't find the claude CLI on this PC. Use Copy commands and run them in a terminal.`)
     return
   }
-  const steps = [
-    [claude, 'plugin', 'marketplace', 'update', 'claude-crew'],
-    [claude, 'plugin', 'update', 'crew@claude-crew'],
+  const steps: [string, string[]][] = [
+    ['Refreshing the crew marketplace from GitHub…', ['plugin', 'marketplace', 'update', 'claude-crew']],
+    ['Installing the new version…', ['plugin', 'update', 'crew@claude-crew']],
   ]
-  for (const argv of steps) {
+  for (const [label, args] of steps) {
+    setUpdateNote($, 'busy', label)
     try {
-      const r = await $.process.run(argv, { timeoutMs: 120000 })
+      const r = await $.process.run([...claude, ...args], { timeoutMs: 120000 })
       if (r.exitCode !== 0) {
-        $.ui.toast(`crew: update step failed: ${(r.stderr || r.stdout).trim().slice(0, 200)}`, { timeoutMs: 15000 })
+        const why = (r.stderr || r.stdout).trim().split(/\r?\n/).slice(-3).join(' ').slice(0, 300)
+        setUpdateNote($, 'error', `${label.replace('…', '')} failed: ${why || `exit code ${r.exitCode}`}. Try Copy commands.`)
         return
       }
     } catch (err) {
-      $.ui.toast(`crew: update failed: ${err instanceof Error ? err.message : err}`, { timeoutMs: 15000 })
+      setUpdateNote($, 'error', `${label.replace('…', '')} failed: ${err instanceof Error ? err.message : err}. Try Copy commands.`)
       return
     }
   }
+  setUpdateNote($, 'ok', 'Updated! Restart Claude to load the new version.')
   $.ui.toast('crew: updated! Restart Claude to load the new version.', { timeoutMs: 15000 })
 }
 
@@ -1125,82 +1167,113 @@ export const register: Register = (on, options) => {
     const member = (await read($, membership)) || (configured ? 'joined' : '')
     const host = await read($, hostInfo)
     const confirming = await read($, confirmReset)
+    const note = await read($, updateNote)
     const open = s.tasks.filter(t => t.status !== 'done')
     const names = [...new Set([...s.peers.map(p => p.name), ...(me ? [me] : [])])].sort()
-    const room = Math.max(3, (e.viewport?.rows ?? 30) - (showSettings ? 24 : 14) - Math.min(open.length, 6))
+    const online = s.peers.filter(p => p.online).length
+    const inSession = configured && member === 'joined'
+    const hasUpdate = newer(s.latest, VERSION)
+    const room = Math.max(3, (e.viewport?.rows ?? 30) - (showSettings ? 30 : 18) - Math.min(open.length, 6))
+    const activityWord = (p: CrewSnapshot['peers'][number]) =>
+      !p.online ? 'offline' : p.activity === 'out' ? 'out of tokens' : p.activity === 'idle' ? '' : p.activity
+
+    // A titled block: one bold heading, then its content, with a blank line above.
+    const Section = ({ title, right, children }: any) => (
+      <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text bold>{title}</Text>
+          {right}
+        </Box>
+        {children}
+      </Box>
+    )
+    // A notice that wants attention: framed, with its buttons underneath.
+    const Callout = ({ children }: any) => (
+      <Box flexDirection="column" borderStyle="round" paddingX={1} marginTop={1}>
+        {children}
+      </Box>
+    )
 
     return (
       <Box flexDirection="column">
+        {/* -- header: who/where on the left, the actions on the right */}
         <Box flexDirection="row" justifyContent="space-between">
-          <Text bold>
-            {!configured
-              ? '○ not connected'
-              : member === 'joined'
-                ? `${s.connected ? '●' : '○'} ${me} @ ${base}`
-                : `○ ${me}: not in the crew session`}
-          </Text>
-          <Box flexDirection="row">
-            {configured && member === 'joined' && <Button key="leave" label="Leave session" onPress={() => leavePress($)} />}
-            {configured && member === 'left' && (
-              <Button key="join" label="Join session" variant="primary" onPress={() => joinPress($)} />
+          <Box flexDirection="column">
+            <Text bold>
+              {!configured
+                ? '○ Not connected yet'
+                : inSession
+                  ? `${s.connected ? '●' : '○'} ${me}${s.leader === me ? ' ★' : ''}`
+                  : `○ ${me}: not in the crew session`}
+            </Text>
+            {configured && (
+              <Text dimColor>
+                {inSession
+                  ? `${s.connected ? `${online} online` : 'offline'} · leader ${s.leader ?? 'none'} · ${isHosting() ? 'you host' : base.replace(/^https?:\/\//, '')} · v${VERSION}`
+                  : `v${VERSION}`}
+              </Text>
             )}
+          </Box>
+          <Box flexDirection="row">
             {configured && <Button key="refresh" label="↻ Refresh" onPress={() => refreshPress($)} />}
             <Button key="clawds" label="Clawds" onPress={() => popOutPress($)} />
-            <Button key="settings" label={showSettings ? 'Hide settings' : 'Settings'} onPress={() => toggleSettings($)} />
+            {inSession && <Button key="leave" label="Leave" onPress={() => leavePress($)} />}
+            {configured && member === 'left' && <Button key="join" label="Join session" variant="primary" onPress={() => joinPress($)} />}
+            <Button key="settings" label={showSettings ? 'Close settings' : '⚙ Settings'} onPress={() => toggleSettings($)} />
           </Box>
         </Box>
+
+        {/* -- notices, only when they apply */}
+        {inSession && s.error !== '' && (
+          <Callout>
+            <Text color="error">{s.error}</Text>
+          </Callout>
+        )}
+        {configured && member === 'ask' && (
+          <Callout>
+            <Text bold>Welcome back! You were in a crew session ({base.replace(/^https?:\/\//, '')}).</Text>
+            <Text dimColor>Rejoin to pick up where you left off (your Claude gets a catch-up), or stay solo.</Text>
+            <Box flexDirection="row">
+              <Button key="rejoin" label="Rejoin session" variant="primary" autoFocus onPress={() => joinPress($)} />
+              <Button key="decline" label="Stay solo" onPress={() => leavePress($)} />
+            </Box>
+          </Callout>
+        )}
+        {hasUpdate && (
+          <Callout>
+            <Text bold>Update available: {VERSION} → {s.latest}</Text>
+            {note.text !== '' && <Text color={note.state === 'error' ? 'error' : undefined} dimColor={note.state !== 'error'}>{note.text}</Text>}
+            <Box flexDirection="row">
+              <Button key="install" label={note.state === 'busy' ? 'Updating…' : 'Install update'} variant="primary" onPress={() => installPress($)} />
+              <Button key="update" label="Copy commands" onPress={() => copyUpdate($, e.surface)} />
+            </Box>
+          </Callout>
+        )}
+        {inSession && s.relayVersion && s.relayVersion !== VERSION && (
+          <Text dimColor>
+            Relay {s.relayVersion} ≠ plugin {VERSION}: {newer(VERSION, s.relayVersion) ? 'the host should restart the relay with the new version' : 'update this plugin'}.
+          </Text>
+        )}
         {configured && isHosting() && (
-          <Box flexDirection="column" borderStyle="round" paddingX={1}>
-            <Text bold>
-              You're hosting the crew{host.ip ? ` · friends use http://${host.ip}:7777` : ''}
-            </Text>
-            {!host.ip && <Text dimColor>No Radmin/Tailscale/LAN address found yet: connect to your VPN, then press Host a crew again.</Text>}
+          <Callout>
+            <Text bold>You're hosting{host.ip ? ` · friends join at http://${host.ip}:7777` : ''}</Text>
+            {!host.ip && <Text dimColor>No Radmin/Tailscale address found yet: connect your VPN, then press Host a crew again.</Text>}
             <Box flexDirection="row">
               <Button key="invite" label="Copy invite" variant="primary" onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
               <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
             </Box>
-          </Box>
-        )}
-        {configured && member === 'ask' && (
-          <Box flexDirection="column" borderStyle="round" paddingX={1}>
-            <Text bold>Welcome back! You were in a crew session ({base}).</Text>
-            <Text dimColor>Rejoin to pick up where you left off, or leave it and stay solo.</Text>
-            <Box flexDirection="row">
-              <Button key="rejoin" label="Rejoin session" variant="primary" autoFocus onPress={() => joinPress($)} />
-              <Button key="decline" label="Leave session" onPress={() => leavePress($)} />
-            </Box>
-          </Box>
-        )}
-        {s.error !== '' && <Text dimColor>{s.error}</Text>}
-        {newer(s.latest, VERSION) && (
-          <Box flexDirection="row" justifyContent="space-between">
-            <Text bold>
-              Update available: {VERSION} → {s.latest}
-            </Text>
-            <Box flexDirection="row">
-              <Button key="install" label="Install update" variant="primary" onPress={() => installPress($)} />
-              <Button key="update" label="Copy commands" onPress={() => copyUpdate($, e.surface)} />
-            </Box>
-          </Box>
-        )}
-        {s.relayVersion && s.relayVersion !== VERSION && (
-          <Text dimColor>
-            Relay is {s.relayVersion}, plugin is {VERSION}: {newer(VERSION, s.relayVersion) ? 'the host should update the relay' : 'update this plugin'}.
-          </Text>
+          </Callout>
         )}
 
+        {/* -- settings, in three groups */}
         {showSettings && (
-          <Box flexDirection="column" borderStyle="round" paddingX={1}>
-            <Text bold>Settings</Text>
+          <Box flexDirection="column" borderStyle="round" paddingX={1} marginTop={1}>
+            <Text bold>Connection</Text>
             <Box flexDirection="row">
-              <Text>Wanna host? </Text>
+              <Text>Host it yourself: </Text>
               <Button key="host" label={isHosting() ? 'Hosting ✓' : 'Host a crew'} variant={isHosting() ? undefined : 'primary'} onPress={() => hostPress($)} />
-              <Text dimColor>  Wanna join? Paste the host's Relay URL and Crew key below.</Text>
             </Box>
-            <Text dimColor>Each field saves when you press Enter in it.</Text>
-            <Text dimColor>
-              Saved: relay URL {base ? '✓' : '✗'} · name {me ? '✓' : '✗'} · key {key ? '✓' : '✗'}
-            </Text>
+            <Text dimColor>Or join a friend: paste their Relay URL and Crew key. Press Enter in a field to save it.</Text>
             {Input && (
               <Input key="opt-relayUrl" label="Relay URL " value={base} placeholder="http://26.x.x.x:7777" submitLabel="save" onSubmit={(v: string) => setOption($, 'relayUrl', v)} />
             )}
@@ -1208,8 +1281,18 @@ export const register: Register = (on, options) => {
               <Input key="opt-name" label="Your name " value={me} placeholder="e.g. umbyz" submitLabel="save" onSubmit={(v: string) => setOption($, 'name', v)} />
             )}
             {Input && (
-              <Input key="opt-key" label="Crew key  " value="" placeholder={key ? '•••••• (set; type to replace)' : 'paste the relay key'} submitLabel="save" onSubmit={(v: string) => setOption($, 'key', v)} />
+              <Input key="opt-key" label="Crew key  " value="" placeholder={key ? '•••••• saved (type to replace)' : 'paste the relay key'} submitLabel="save" onSubmit={(v: string) => setOption($, 'key', v)} />
             )}
+            <Box flexDirection="row">
+              <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />
+              <Text dimColor>
+                {'  '}saved: URL {base ? '✓' : '✗'} · name {me ? '✓' : '✗'} · key {key ? '✓' : '✗'}
+              </Text>
+            </Box>
+
+            <Box marginTop={1}>
+              <Text bold>Preferences</Text>
+            </Box>
             {Select && (
               <Select
                 key="opt-autoRun"
@@ -1239,7 +1322,7 @@ export const register: Register = (on, options) => {
             {Select && (
               <Select
                 key="opt-poll"
-                label="Refresh every "
+                label="Check in every "
                 value={String(pollMs / 1000)}
                 options={['2', '3', '5', '10'].map(v => ({ value: v, label: `${v}s` }))}
                 onSelect={(v: string) => setOption($, 'pollSeconds', v)}
@@ -1257,75 +1340,87 @@ export const register: Register = (on, options) => {
                 onSelect={(v: string) => setOption($, 'clawdsWindow', v)}
               />
             )}
-            <Box flexDirection="row">
-              <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />
-              <Button key="check-update" label="Check for updates" onPress={() => checkNow($)} />
-              {newer(s.latest, VERSION) && (
-                <Button key="install-settings" label={`Install ${s.latest}`} variant="primary" onPress={() => installPress($)} />
-              )}
+
+            <Box marginTop={1}>
+              <Text bold>Updates</Text>
             </Box>
-            <Text dimColor>You have crew {VERSION}{s.latest ? `, GitHub has ${s.latest}` : ''}.</Text>
+            <Text dimColor>
+              You have crew {VERSION}
+              {s.latest ? ` · GitHub has ${s.latest}` : ''}
+            </Text>
+            <Box flexDirection="row">
+              <Button key="check-update" label={note.state === 'busy' ? 'Working…' : 'Check for updates'} onPress={() => checkNow($)} />
+              {hasUpdate && <Button key="install-settings" label={`Install ${s.latest}`} variant="primary" onPress={() => installPress($)} />}
+            </Box>
+            {note.text !== '' && <Text color={note.state === 'error' ? 'error' : undefined} dimColor={note.state !== 'error'}>{note.text}</Text>}
           </Box>
         )}
 
-        {configured && (
+        {/* -- the crew itself */}
+        {inSession && (
           <Box flexDirection="column">
-            {Select && names.length > 0 ? (
-              <Select
-                key="leader"
-                label="Leader "
-                value={s.leader ?? ''}
-                options={[{ value: '', label: 'no leader' }, ...names.map(n => ({ value: n, label: n === me ? `${n} (me)` : n }))]}
-                onSelect={(v: string) => setLeader($, v)}
-              />
-            ) : (
-              <Text>Leader: {s.leader ?? 'none'}</Text>
-            )}
-            <Text>
-              Crew:{' '}
-              {s.peers
-                .map(
-                  p =>
-                    `${p.online ? '●' : '○'} ${p.name}${p.leader ? ' ★' : ''}` +
-                    (!p.online ? '' : p.activity === 'out' ? ' (out of tokens)' : p.activity === 'working' ? ' (working)' : ''),
-                )
-                .join('  ') || '-'}
-            </Text>
-            <Text bold>Tasks</Text>
-            {open.length === 0 && <Text dimColor>No open tasks.</Text>}
-            {open.slice(-6).map(t => (
-              <Text>{fmtTask(t)}</Text>
-            ))}
-            <Box flexDirection="row" justifyContent="space-between">
-              <Text bold>Chat</Text>
-              {joined && !confirming && (
-                <Box flexDirection="row">
-                  <Button key="save-chat" label="Save chat" dimColor onPress={() => saveChatPress($)} />
-                  <Button key="reset-chat" label="Reset chat" dimColor onPress={() => askReset($, true)} />
-                </Box>
+            <Section title="Crew">
+              {Select && names.length > 0 && (
+                <Select
+                  key="leader"
+                  label="Leader "
+                  value={s.leader ?? ''}
+                  options={[{ value: '', label: 'no leader' }, ...names.map(n => ({ value: n, label: n === me ? `${n} (me)` : n }))]}
+                  onSelect={(v: string) => setLeader($, v)}
+                />
               )}
-            </Box>
-            {confirming && (
-              <Box flexDirection="column" borderStyle="round" paddingX={1}>
-                <Text bold>⚠ Reset the chat for everyone?</Text>
-                <Text dimColor>
-                  This wipes the chat history on the relay and in every teammate's /crew. A copy is saved to your
-                  ~/.claude/crew-chats first. Tasks and shared docs stay, and messages your Claudes already received stay in
-                  their conversations.
+              {s.peers.length === 0 && <Text dimColor>Nobody here yet.</Text>}
+              {s.peers.map(p => (
+                <Text dimColor={!p.online}>
+                  {p.online ? '●' : '○'} {p.name}
+                  {p.leader ? ' ★' : ''}
+                  {p.name === me ? ' (you)' : ''}
+                  {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                 </Text>
-                <Box flexDirection="row">
-                  <Button key="reset-yes" label="Yes, clear it" onPress={() => resetChatPress($)} />
-                  <Button key="reset-no" label="Cancel" variant="primary" autoFocus onPress={() => askReset($, false)} />
-                </Box>
-              </Box>
-            )}
-            {s.feed.length === 0 && <Text dimColor>No messages yet.</Text>}
-            {s.feed.slice(-room).map(m => (
-              <Text dimColor={m.kind === 'update'}>{line(m)}</Text>
-            ))}
-            {Input && (
-              <Input key="say" placeholder="Message the crew (start with @name to DM)" submitLabel="send" onSubmit={(v: string) => say($, v)} />
-            )}
+              ))}
+            </Section>
+
+            <Section title={`Tasks${open.length ? ` (${open.length} open)` : ''}`}>
+              {open.length === 0 && <Text dimColor>No open tasks.</Text>}
+              {open.slice(-6).map(t => (
+                <Text>• {fmtTask(t)}</Text>
+              ))}
+              {open.length > 6 && <Text dimColor>…and {open.length - 6} more (crew_status shows them all)</Text>}
+            </Section>
+
+            <Section
+              title="Chat"
+              right={
+                !confirming && (
+                  <Box flexDirection="row">
+                    <Button key="save-chat" label="Save chat" dimColor onPress={() => saveChatPress($)} />
+                    <Button key="reset-chat" label="Reset chat" dimColor onPress={() => askReset($, true)} />
+                  </Box>
+                )
+              }
+            >
+              {confirming && (
+                <Callout>
+                  <Text bold>⚠ Reset the chat for everyone?</Text>
+                  <Text dimColor>
+                    This wipes the chat history on the relay and in every teammate's /crew. A copy is saved to your
+                    ~/.claude/crew-chats first. Tasks and shared docs stay, and messages your Claudes already received stay in
+                    their conversations.
+                  </Text>
+                  <Box flexDirection="row">
+                    <Button key="reset-yes" label="Yes, clear it" onPress={() => resetChatPress($)} />
+                    <Button key="reset-no" label="Cancel" variant="primary" autoFocus onPress={() => askReset($, false)} />
+                  </Box>
+                </Callout>
+              )}
+              {s.feed.length === 0 && <Text dimColor>No messages yet.</Text>}
+              {s.feed.slice(-room).map(m => (
+                <Text dimColor={m.kind === 'update' || m.kind === 'join' || m.kind === 'leave'}>{line(m)}</Text>
+              ))}
+              {Input && (
+                <Input key="say" placeholder="Message the crew (start with @name to DM)" submitLabel="send" onSubmit={(v: string) => say($, v)} />
+              )}
+            </Section>
           </Box>
         )}
       </Box>
