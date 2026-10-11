@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.7.6'
+const VERSION = '0.7.7'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -372,7 +372,7 @@ async function pollOnce($: EngineInterface) {
     const role = leader === cfg.me ? ' (leader)' : ''
     $.ui.status(`crew: ${cfg.me}${role} · ${online} teammate${online === 1 ? '' : 's'} online`)
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
+    const msg = explain(err instanceof Error ? err.message : String(err))
     failures += 1
     // Back off while the relay is unreachable: skip 1, 2, 4 ... up to 10 ticks between tries.
     skip = Math.min(10, 2 ** Math.min(failures - 1, 4))
@@ -548,6 +548,34 @@ async function popOut($: EngineInterface) {
 
 function popOutPress($: EngineInterface) {
   void popOut($).then(text => $.ui.toast(`crew: ${text}`, { timeoutMs: 8000 }))
+}
+
+// Turns network errors into what to actually do about them.
+function explain(msg: string) {
+  if (/ECONNREFUSED|Unable to connect/i.test(msg))
+    return `Can't reach the relay at ${cfg.base}. Is it running? (the host double-clicks server/start-relay.bat)`
+  if (/ETIMEDOUT|timed out|EHOSTUNREACH|ENETUNREACH/i.test(msg))
+    return `The relay at ${cfg.base} isn't answering. Check you're on the same Radmin/Tailscale network and the IP is right.`
+  if (/relay 401/.test(msg)) return "The relay refused the crew key: it doesn't match the host's crew_key.txt."
+  return msg
+}
+
+// Refresh: try the relay right now (skipping any back-off after failures) and re-check GitHub for updates.
+async function refresh($: EngineInterface) {
+  skip = 0
+  failures = 0
+  const [, latest] = await Promise.all([poll($), checkUpdate($)])
+  const s = await read($, snapshot)
+  const newVersion = latest && newer(latest, VERSION) ? ` · update ${latest} available` : ''
+  if (!joined) $.ui.toast(`crew: refreshed (you're not in the crew session)${newVersion}`, { timeoutMs: 5000 })
+  else if (s.connected) {
+    const online = s.peers.filter(p => p.online && p.name !== cfg.me).length
+    $.ui.toast(`crew: connected · ${online} teammate${online === 1 ? '' : 's'} online${newVersion}`, { timeoutMs: 5000 })
+  } else $.ui.toast(`crew: still offline. ${s.error}`, { timeoutMs: 8000 })
+}
+
+function refreshPress($: EngineInterface) {
+  void refresh($)
 }
 
 function toggleSettings($: EngineInterface) {
@@ -874,6 +902,7 @@ export const register: Register = (on, options) => {
             {configured && member === 'left' && (
               <Button key="join" label="Join session" variant="primary" onPress={() => joinPress($)} />
             )}
+            {configured && <Button key="refresh" label="↻ Refresh" onPress={() => refreshPress($)} />}
             <Button key="clawds" label="Clawds" onPress={() => popOutPress($)} />
             <Button key="settings" label={showSettings ? 'Hide settings' : 'Settings'} onPress={() => toggleSettings($)} />
           </Box>

@@ -375,3 +375,29 @@ test('images: crew_send_image uploads the file; an incoming one is saved for the
   const rows = session.appended().map(row => JSON.stringify(row.message.content))
   expect(rows.some(row => row.includes('crew-inbox') && row.includes('Read tool'))).toBe(true)
 })
+
+test('Refresh reconnects right away, and explains a relay that is down', { options: OPTIONS }, async ($, on) => {
+  let up = false
+  const toasts: string[] = []
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async (_$: unknown, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.includes('raw.githubusercontent.com'))
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: '0.0.1' }) } }
+    if (!up) return { deny: 'ECONNREFUSED: Unable to connect' } as any
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /Is it running\?/ } as any)).toBeDefined()
+  up = true
+  await ui.press({ key: 'refresh' })
+  await settle(100)
+  expect(toasts.some(t => t.includes('connected'))).toBe(true)
+  expect(await ui.find({ text: /Is it running\?/ } as any)).toBeUndefined()
+  await ui.unmount()
+})
