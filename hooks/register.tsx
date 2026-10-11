@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.5.1'
+const VERSION = '1.5.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -347,16 +347,24 @@ function answerInvite($: EngineInterface, accept: boolean) {
 // -- delete a project: two confirms; the relay forgets it for everyone, and its folder goes to the Recycle Bin
 // (only the project's own folder inside the projects home: never a folder that holds anything else)
 
-const deleteStage = atom({ plugin: 'crew', key: 'deleteStage' } as const, 0) // 0 nothing, 1 "sure?", 2 "VERY sure??"
+// Which project is being deleted, and how far: 1 "sure?", 2 "VERY sure??"
+const deleteStage = atom({ plugin: 'crew', key: 'deleteStage' } as const, { name: '', stage: 0 })
+const projectMenu = atom({ plugin: 'crew', key: 'projectMenu' } as const, '') // whose ⋯ menu is open in the Projects list
 
-function setDeleteStage($: EngineInterface, stage: number) {
-  void update($, deleteStage, () => stage)
+function setDeleteStage($: EngineInterface, name: string, stage: number) {
+  void update($, deleteStage, () => ({ name: stage ? name : '', stage }))
 }
 
-// The project's folder, if it's one crew made for it inside the projects home (so safe to bin), else ''.
-async function deletableFolder($: EngineInterface) {
+function toggleProjectMenu($: EngineInterface, name: string) {
+  void update($, projectMenu, open => (open === name ? '' : name))
+  setDeleteStage($, '', 0)
+}
+
+// A project's folder, if it's one crew made for it inside the projects home (so safe to bin), else ''.
+async function deletableFolder($: EngineInterface, name: string) {
   const home = await projectsHome($)
-  const { path, chosen } = await projectFolder($)
+  const path = String((await $.store.get(`folder:${cfg.base}:${name}`)) ?? '')
+  const chosen = !!path
   if (!home || !chosen || !path) return ''
   const inside = path.toLowerCase().startsWith(home.toLowerCase() + '\\') && path.length > home.length + 1
   return inside ? path : ''
@@ -368,11 +376,11 @@ async function recycleFolder($: EngineInterface, path: string) {
     `[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(${psPath(path)}, 'OnlyErrorDialogs', 'SendToRecycleBin')`], 120000)
 }
 
-async function deleteProject($: EngineInterface) {
-  setDeleteStage($, 0)
-  const name = projectName
+async function deleteProject($: EngineInterface, name: string) {
+  setDeleteStage($, '', 0)
+  await update($, projectMenu, () => '')
   if (name === 'main') return
-  const folder = await deletableFolder($)
+  const folder = await deletableFolder($, name)
   await relay($, 'POST', '/project/delete', { name })
   let note = ''
   if (folder) {
@@ -380,12 +388,13 @@ async function deleteProject($: EngineInterface) {
     note = r.ok ? ` Its folder ${shortPath(folder)} is in the Recycle Bin.` : ` Couldn't bin its folder: ${r.out.slice(0, 120)}`
   }
   await $.store.set(`folder:${cfg.base}:${name}`, '')
-  await switchProject($, 'main')
+  if (name === projectName) await switchProject($, 'main')
+  else await poll($).catch(() => {})
   $.ui.toast(`crew: deleted the project "${name}".${note}`, { timeoutMs: 12000 })
 }
 
-function deleteProjectPress($: EngineInterface) {
-  void deleteProject($).catch(err => $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
+function deleteProjectPress($: EngineInterface, name: string) {
+  void deleteProject($, name).catch(err => $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
 }
 
 function copyPath($: EngineInterface, surface: any, path: string) {
@@ -2296,9 +2305,15 @@ export const register: Register = (on, options) => {
     const folderMode = await read($, folderModeAtom)
     const invite = await read($, inviteAtom)
     const deleting = await read($, deleteStage)
-    const binnable = deleting > 0 ? await deletableFolder($) : ''
+    const menuOpen = await read($, projectMenu)
+    const binnable = deleting.stage > 0 ? await deletableFolder($, deleting.name) : ''
+    const keptFolder = deleting.stage > 0 ? String((await $.store.get(`folder:${cfg.base}:${deleting.name}`)) ?? '') : ''
     const elsewhere = s.peers.filter(p => p.online && p.name !== me && (p.project ?? 'main') !== projectName).map(p => p.name)
     const projectNames = [...new Set(['main', projectName, ...(s.projects ?? []).map(p => p.name)])]
+    const projectRows = [
+      ...(s.projects ?? []),
+      ...projectNames.filter(n => !(s.projects ?? []).some(p => p.name === n)).map(n => ({ name: n, leader: null, openTasks: 0, docs: 0, here: [] as string[] })),
+    ]
     const here = s.peers.filter(p => p.online && (p.project ?? 'main') === projectName).map(p => p.name)
     const canKick = s.leader === me || isHosting() // the relay checks this too
     const docs: DocMeta[] = s.shared
@@ -2869,39 +2884,68 @@ export const register: Register = (on, options) => {
                 )}
               </Box>
 
-              {/* -- delete: its leader or the host, never main, and only after two confirms */}
-              {projectName !== 'main' && (s.leader === me || isHosting()) && deleting === 0 && (
-                <Box flexDirection="row" justifyContent="flex-end" marginTop={1}>
-                  <Button key="delete-project" label="Delete project…" dimColor onPress={() => setDeleteStage($, 1)} />
-                </Box>
-              )}
-              {deleting === 1 && (
-                <Callout>
-                  <Text bold>Delete "{projectName}"? You sure?</Text>
-                  <Text dimColor>This wipes its chat, tasks, docs and leader on the relay, for the whole crew. Everyone in it goes back to main.</Text>
-                  <Box flexDirection="row">
-                    <Button key="delete-sure" label="Yes, I'm sure…" onPress={() => setDeleteStage($, 2)} />
-                    <Button key="delete-cancel" label="Cancel" variant="primary" onPress={() => setDeleteStage($, 0)} />
+            </Card>
+
+            {/* -- every project: switch with one press; ⋯ for more (delete: its leader or the host, never main) */}
+            <Card title={`Projects (${projectRows.length})`}>
+              {projectRows.map(p => {
+                const mine = p.name === projectName
+                const lead = mine ? s.leader : p.leader // the project you're in: the leader the pane already has
+                const canDelete = p.name !== 'main' && (lead === me || isHosting())
+                const bits = [
+                  p.here.length ? `${p.here.join(', ')} here` : '',
+                  p.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : '',
+                  lead ? `led by ${lead}` : '',
+                ].filter(Boolean)
+                return (
+                  <Box flexDirection="column">
+                    <Box flexDirection="row" justifyContent="space-between">
+                      <Text bold={mine}>
+                        {mine ? '▸ ' : '  '}
+                        {p.name}
+                        {mine ? ' (you)' : ''}
+                        {bits.length ? `  · ${bits.join(' · ')}` : ''}
+                      </Text>
+                      <Box flexDirection="row">
+                        {!mine && <Button key={`proj-open-${p.name}`} label="Switch" dimColor onPress={() => switchProjectPress($, p.name)} />}
+                        {canDelete && <Button key={`proj-more-${p.name}`} label="⋯" dimColor onPress={() => toggleProjectMenu($, p.name)} />}
+                      </Box>
+                    </Box>
+                    {menuOpen === p.name && deleting.name !== p.name && (
+                      <Box flexDirection="row" justifyContent="flex-end">
+                        <Button key={`proj-delete-${p.name}`} label="Delete project…" onPress={() => setDeleteStage($, p.name, 1)} />
+                      </Box>
+                    )}
+                    {deleting.name === p.name && deleting.stage === 1 && (
+                      <Callout>
+                        <Text bold>Delete "{p.name}"? You sure?</Text>
+                        <Text dimColor>This wipes its chat, tasks, docs and leader on the relay, for the whole crew. Everyone in it goes back to main.</Text>
+                        <Box flexDirection="row">
+                          <Button key="delete-sure" label="Yes, I'm sure…" onPress={() => setDeleteStage($, p.name, 2)} />
+                          <Button key="delete-cancel" label="Cancel" variant="primary" onPress={() => setDeleteStage($, '', 0)} />
+                        </Box>
+                      </Callout>
+                    )}
+                    {deleting.name === p.name && deleting.stage === 2 && (
+                      <Callout>
+                        <Text bold color="error">VERY sure?? This can't be undone on the relay.</Text>
+                        {binnable ? (
+                          <Text>Its folder {shortPath(binnable)}, with everything in it, goes to your Recycle Bin (only on this PC; restore it from there if you change your mind).</Text>
+                        ) : (
+                          <Text dimColor>
+                            {keptFolder ? `Your folder ${shortPath(keptFolder)} is left alone: only a folder crew made for this project inside your projects home gets binned.` : 'There is no folder for it on this PC to remove.'}
+                          </Text>
+                        )}
+                        <Text dimColor>Teammates' copies on their own PCs stay where they are.</Text>
+                        <Box flexDirection="row">
+                          <Button key="delete-very-sure" label={`Delete "${p.name}" for good`} onPress={() => deleteProjectPress($, p.name)} />
+                          <Button key="delete-cancel-2" label="No, keep it" variant="primary" onPress={() => setDeleteStage($, '', 0)} />
+                        </Box>
+                      </Callout>
+                    )}
                   </Box>
-                </Callout>
-              )}
-              {deleting === 2 && (
-                <Callout>
-                  <Text bold color="error">VERY sure?? This can't be undone on the relay.</Text>
-                  {binnable ? (
-                    <Text>Its folder {shortPath(binnable)}, with everything in it, goes to your Recycle Bin (only on this PC; restore it from there if you change your mind).</Text>
-                  ) : (
-                    <Text dimColor>
-                      {folder.path ? `Your folder ${shortPath(folder.path)} is left alone: only a folder crew made for this project inside your projects home gets binned.` : 'There is no project folder on this PC to remove.'}
-                    </Text>
-                  )}
-                  <Text dimColor>Teammates' copies on their own PCs stay where they are.</Text>
-                  <Box flexDirection="row">
-                    <Button key="delete-very-sure" label={`Delete "${projectName}" for good`} onPress={() => deleteProjectPress($)} />
-                    <Button key="delete-cancel-2" label="No, keep it" variant="primary" onPress={() => setDeleteStage($, 0)} />
-                  </Box>
-                </Callout>
-              )}
+                )
+              })}
             </Card>
 
           <Card title={`Shared docs${docs.length ? ` (${docs.length})` : ''}`}>

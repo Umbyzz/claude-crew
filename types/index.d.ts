@@ -96,7 +96,8 @@ declare module 'claude-code' {
       kickPending: string
       folderMode: '' | 'new' | 'home' | 'sub' | 'change'
       invite: { from: string; project: string }
-      deleteStage: number
+      deleteStage: { name: string; stage: number }
+      projectMenu: string
     }
   }
 }

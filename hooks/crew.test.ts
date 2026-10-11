@@ -1136,14 +1136,16 @@ test('Delete project asks twice, then wipes it on the relay and bins only its ow
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'tab-docs' })
-  expect(await ui.find({ key: 'delete-project' })).toBeUndefined() // never main
+  expect(await ui.find({ key: 'proj-more-main' })).toBeUndefined() // never main
   await ui.press({ key: 'new-project-open' })
   await ui.press({ key: 'home-paste' })
   await ui.input({ key: 'projects-home', text: 'C:\\Crew' })
   await settle()
   await ui.input({ key: 'new-project', text: 'doomed' })
   await settle()
-  await ui.press({ key: 'delete-project' })
+  expect(await ui.find({ text: /▸ doomed \(you\)/ } as any)).toBeDefined() // listed in Projects
+  await ui.press({ key: 'proj-more-doomed' })
+  await ui.press({ key: 'proj-delete-doomed' })
   expect(await ui.find({ text: /You sure\?/ } as any)).toBeDefined()
   await ui.press({ key: 'delete-sure' })
   expect(await ui.find({ text: /VERY sure\?\?/ } as any)).toBeDefined()
