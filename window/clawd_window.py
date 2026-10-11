@@ -1779,6 +1779,7 @@ class App:
             sizes.add_command(label=s.capitalize(), command=lambda s=s: self.resize(s))
         self.menu.add_cascade(label="Size", menu=sizes)
         self.menu.add_command(label="Party!", command=self.party)
+        self.menu.add_command(label="Crew log (every message, live)", command=self.open_log)
         # Closes itself a minute after your Claude leaves the crew, unless you tick this
         self.seen_me, self.away_since, self.err_since = False, None, None
         self.keep_var = tk.BooleanVar(value=False)
@@ -1838,6 +1839,16 @@ class App:
     def quit(self):
         self.save()
         self.root.destroy()
+
+    def open_log(self):
+        """The crew log window, next to this one (it brings itself forward if it's already open)."""
+        import subprocess
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew_log.py")
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        try:
+            subprocess.Popen([sys.executable, script], creationflags=flags, close_fds=True)
+        except OSError:
+            pass
 
     def listen(self, server):
         """Another launch knocked: come to the front instead of a second window opening."""

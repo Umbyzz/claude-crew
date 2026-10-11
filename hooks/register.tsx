@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.9.7'
+const VERSION = '0.9.8'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1037,11 +1037,20 @@ function copyUpdate($: EngineInterface, surface: any) {
 // The desktop window: its own little Python program, detached, reading the relay. No tokens.
 // Only one ever runs: launching it again just brings the open one to the front.
 async function popOut($: EngineInterface) {
-  const script = `${$.plugin.root}/window/clawd_window.py`
+  return launchWindow($, 'clawd_window.py', py => `The Clawds window is out (${py}). Drag it anywhere; right-click it for options.`)
+}
+
+// The crew log: every crew message live in its own window, Claude↔Claude traffic included. No tokens either.
+async function crewLogOut($: EngineInterface) {
+  return launchWindow($, 'crew_log.py', () => 'The crew log is open: Everything / Claudes / People at the top, and "On top" to pin it.')
+}
+
+async function launchWindow($: EngineInterface, file: string, done: (py: string) => string) {
+  const script = `${$.plugin.root}/window/${file}`
   for (const py of ['pythonw', 'pyw', 'python']) {
     try {
       const r = await $.process.run(['cmd', '/c', 'start', '""', py, script], { timeoutMs: 10000 })
-      if (r.exitCode === 0) return `The Clawds window is out (${py}). Drag it anywhere; right-click it for options.`
+      if (r.exitCode === 0) return done(py)
     } catch {
       // try the next Python launcher
     }
@@ -1540,6 +1549,7 @@ export const register: Register = (on, options) => {
     for (const tool of TOOLS) await $.tool.register(tool)
     await $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' })
     await $.command.register({ name: 'clawds', description: 'Open the Clawds window: your crew as little pixel friends (uses no tokens)' })
+    await $.command.register({ name: 'crewlog', description: "Open the crew log window: every crew message live, the Claudes' requests and replies too (uses no tokens)" })
     void checkUpdate($)
     $.clock.every(SIX_HOURS, () => void checkUpdate($))
     if (!configured) {
@@ -1667,6 +1677,8 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'clawds' }, async $ => ({ text: await popOut($) }))
+
+  on('command.run', { command: 'crewlog' }, async $ => ({ text: await crewLogOut($) }))
 
   on('tool.call', { tool: 'mcp__crew__crew_send' }, async ($, e: any) => {
     if (!joined) return ok("You're not in the crew session right now; ask the user to join it from /crew.")

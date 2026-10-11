@@ -848,6 +848,18 @@ test('tasks read as T-numbers, and a stale claim says anyone can take it', { opt
   expect(String(r.result)).toContain('T2 [claimed · bob (offline 14 min: anyone can claim it)] Fix sprint')
 })
 
+test('/crewlog opens the crew log window', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  const ran: string[][] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push([...e.argv])
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  const r: any = await $.command.run({ command: 'crewlog', args: '' } as any)
+  expect(ran.some(a => a.join(' ').endsWith('crew_log.py'))).toBe(true)
+  expect(String(r.text)).toContain('crew log is open')
+})
+
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
   const seen: { url: string; init: any }[] = []
   mock.store(on)

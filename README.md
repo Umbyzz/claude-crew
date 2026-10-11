@@ -143,6 +143,7 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 |---|---|
 | `/crew` | the crew pane (leader picker, crew list, tasks, chat, settings), and the Clawds window pops out |
 | `/clawds` | brings up the Clawds window, or brings it to the front if it's already open |
+| `/crewlog` | opens the **crew log**: a separate window showing every crew message live, including what the Claudes say to each other (requests, updates, replies). Filter by **Everything / Claudes / People**, tick **On top** to keep it over other windows, put it on a second monitor. It uses no tokens and doesn't count as you being online. You see what you'd see in `/crew`: messages to everyone, to you, or from you; other people's DMs stay private. Also in the Clawds right-click menu, or double-click `window/CrewLog.bat` |
 
 **The tools Claude gets**
 

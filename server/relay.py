@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.9.7"
+VERSION = "0.9.8"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -227,8 +227,8 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path == "/health":
             return self.reply(200, {"ok": True, "version": VERSION})
-        # /watch is for the Clawds window: it reads the crew without counting as a member.
-        if not self.authed(presence=url.path not in ("/watch", "/file")):
+        # /watch (Clawds) and /log (the crew log window) read the crew without counting as a member.
+        if not self.authed(presence=url.path not in ("/watch", "/log", "/file")):
             return
         q = parse_qs(url.query)
         with lock:
@@ -260,6 +260,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not f:
                     return self.reply(404, {"error": "no such image (the relay keeps the latest few)"})
                 return self.reply_bytes(f["data"], f["mime"])
+            if url.path == "/log":
+                # The crew log window: full messages, read-only (no check-in, no read mark). Same privacy as /poll:
+                # what went to everyone, to the viewer, or from the viewer. Others' direct messages never show.
+                viewer = self.name
+                since = int(q.get("since", ["0"])[0])
+                msgs = [m for m in state["messages"] if m["id"] > since
+                        and (m["to"] == "all" or (viewer and viewer in (m["to"], m["from"])))]
+                return self.reply(200, {"messages": msgs[-300:], "leader": state["leader"],
+                                        "peers": peer_list(), "cursor": state["next_id"] - 1,
+                                        "chatEpoch": state.get("chat_epoch", 0), "now": time.time(),
+                                        "version": VERSION})
             if url.path == "/watch":
                 # Direct messages between other people stay private: the window learns that they talked
                 # (for the animation) but not what was said.
