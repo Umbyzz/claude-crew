@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { cast, clawdRaster, clawdSvg, RASTER_COLUMNS, RASTER_ROWS, SCENES } from './clawds'
 
 const OPTIONS = { relayUrl: 'http://relay.test:7777/', name: 'alice', key: 'k' }
 
@@ -135,4 +136,132 @@ test('the update check toasts and the pane offers the commands', { options: OPTI
   await ui.unmount()
   expect(toasts.some(t => t.includes('9.9.9'))).toBe(true)
   LATEST = '0.3.0'
+})
+
+test('hitting the usage limit tells the crew, and a good answer later says we are back', { options: OPTIONS }, async ($, on) => {
+  const seen = fakeRelay(on)
+  on('classic.StopFailure', async () => ({}) as any)
+  on('turn.complete', async () => ({ text: '' }) as any)
+
+  await $.classic.StopFailure({ error: 'rate_limit' } as any)
+  await $.classic.StopFailure({ error: 'rate_limit' } as any)
+  await $.turn.complete({ reason: 'answer', text: 'done' } as any)
+
+  const sends = seen.filter(s => s.url.endsWith('/send')).map(s => JSON.parse(s.init.body))
+  expect(sends.map(b => b.kind)).toEqual(['out', 'back'])
+  expect(sends[0].text).toContain('ran out of tokens')
+  const polls = seen.filter(s => s.url.includes('/send'))
+  expect(polls[0].init.headers['X-Crew-Activity']).toBe('out')
+})
+
+test('a teammate running out reaches the conversation with the pookie line', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$: unknown, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('http.fetch', async (_$: unknown, e: any) => ({
+    value: {
+      status: 200,
+      ok: true,
+      headers: {},
+      text: JSON.stringify({
+        ...POLL,
+        leader: 'carol',
+        messages: [{ id: 2, from: 'bob', to: 'all', kind: 'out', text: 'bob ran out of tokens. Their limit resets in about 1h 5m.', at: 0 }],
+        cursor: 2,
+      }),
+    },
+  }))
+
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+
+  const rows = session.appended().map(r => JSON.stringify(r.message.content))
+  expect(rows.some(r => r.includes('Oh no our pookie has no more tokens!'))).toBe(true)
+  expect(toasts.some(t => t.includes('bob has no more tokens'))).toBe(true)
+})
+
+test('the Clawds pane draws every scene on terminal and desktop, asleep and working ones too', { options: OPTIONS }, async ($, on) => {
+  on('http.fetch', async () => ({
+    value: {
+      status: 200,
+      ok: true,
+      headers: {},
+      text: JSON.stringify({
+        ...POLL,
+        peers: [
+          { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true },
+          { name: 'bob', online: true, lastSeen: 0, activity: 'out', leader: false },
+          { name: 'carol', online: true, lastSeen: 0, activity: 'working', leader: false },
+        ],
+      }),
+    },
+  }))
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const CLAWDS = { ...PANE, requestId: 'clawds' }
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'crew', surface, ...CLAWDS })
+    const art = surface === 'desktop' ? await ui.find({ type: 'Svg' } as any) : await ui.find({ key: 'clawds' })
+    expect(art).toBeDefined()
+    expect(await ui.find({ text: /bob is snoozing/ } as any)).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('every scene draws as SVG and as terminal cells', async () => {
+  const crew = cast(
+    [
+      { name: 'bob', online: true, activity: 'out', leader: false },
+      { name: 'alice', online: true, activity: 'idle', leader: true },
+    ],
+    'alice',
+  )
+  expect(crew.map(m => m.name)).toEqual(['alice', 'bob', ''])
+  for (const scene of SCENES) {
+    const svg = clawdSvg(scene, crew, 7)
+    expect(svg.startsWith('<svg')).toBe(true)
+    expect(svg).toContain(`s-${scene}`)
+    expect(svg).toContain('m-sleep')
+    const cells = clawdRaster(scene, crew, 7)
+    expect(cells.length).toBe(Math.ceil((RASTER_COLUMNS * RASTER_ROWS * 12) / 3) * 4)
+  }
+})
+
+const settle = (ms = 60) => new Promise(r => setTimeout(r, ms))
+
+test('a new prompt makes this Clawd cheer', { options: OPTIONS }, async ($, on) => {
+  const seen = fakeRelay(on)
+  on('prompt.submit', async (_$: unknown, e: any) => e)
+  await $.prompt.submit({ text: 'build the thing' } as any)
+  await settle()
+  expect(seen[seen.length - 1].init.headers['X-Crew-Activity']).toBe('cheer')
+})
+
+test('subagents show up as mini Clawds, and a finished turn dances', { options: OPTIONS }, async ($, on) => {
+  const seen = fakeRelay(on)
+  on('turn.start', async (_$: unknown, e: any) => ({ turnId: e.turnId ?? 't1' }) as any)
+  on('turn.complete', async () => ({ text: '' }) as any)
+  let during: any = {}
+  on('tool.call', async () => {
+    await settle(80)
+    during = { ...seen[seen.length - 1].init.headers }
+    return { result: 'ok' } as any
+  })
+  await $.turn.start({ turnId: 't1' } as any)
+  await settle(750)
+  await $.tool.call({ tool: 'Agent', prompt: 'look around', description: 'x' } as any)
+  expect(during['X-Crew-Subagents']).toBe('1')
+  await settle(750)
+  await $.tool.call({ tool: 'Write', file_path: '/tmp/a.txt', content: 'hi' } as any)
+  expect(during['X-Crew-Activity']).toBe('typing')
+  await $.turn.complete({ reason: 'answer', text: 'done' } as any)
+  await settle()
+  expect(seen[seen.length - 1].init.headers['X-Crew-Activity']).toBe('done')
+  expect(seen[seen.length - 1].init.headers['X-Crew-Subagents']).toBe('0')
 })

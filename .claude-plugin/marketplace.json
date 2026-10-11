@@ -1,6 +1,6 @@
 {
   "name": "claude-crew",
-  "owner": { "name": "Umbyzz" },
+  "owner": { "name": "Umbyz" },
   "metadata": { "description": "Plugins for linking Claude Code sessions into a crew" },
   "plugins": [
     {

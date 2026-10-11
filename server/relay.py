@@ -5,25 +5,28 @@ Stdlib only (Python 3.8+). Reach it over a VPN (Tailscale, Radmin VPN, ZeroTier)
 or your LAN -- do not expose it to the open internet.
 
     python relay.py --key <shared-secret> [--port 7777] [--data crew_state.json]
+    python relay.py --key-file crew_key.txt     (makes a random key the first time)
 """
 import argparse
 import hmac
 import json
+import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.3.0"
+VERSION = "0.7.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
 ONLINE_SECONDS = 20
-ACTIVITIES = ("idle", "working", "away")
+ACTIVITIES = ("idle", "thinking", "typing", "working", "chatting", "done", "cheer", "away", "out")
 
 lock = threading.Lock()
 state = {"next_id": 1, "messages": [], "tasks": [], "shared": {}, "leader": None}
-peers = {}  # name -> {"seen": epoch seconds, "activity": str}, memory only
+# name -> {"seen", "activity", "since", "subagents", "chatTo", "joinedAt"}, memory only
+peers = {}
 args = None
 
 
@@ -50,9 +53,28 @@ def peer_list():
     now = time.time()
     return [
         {"name": n, "online": now - p["seen"] < ONLINE_SECONDS, "lastSeen": int(p["seen"]),
-         "activity": p["activity"], "leader": n == state["leader"]}
+         "activity": p["activity"], "leader": n == state["leader"], "since": p["since"],
+         "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"]}
         for n, p in sorted(peers.items())
     ]
+
+
+def touch(name, headers):
+    """Mark a member present and take the activity their plugin reports."""
+    now = time.time()
+    p = peers.setdefault(name, {"seen": 0, "activity": "idle", "since": now,
+                                "subagents": 0, "chatTo": None, "joinedAt": now})
+    if now - p["seen"] >= ONLINE_SECONDS:
+        p["joinedAt"] = now  # back from offline (or brand new): the Clawds greet them
+    p["seen"] = now
+    activity = headers.get("X-Crew-Activity")
+    if activity in ACTIVITIES and activity != p["activity"]:
+        p["activity"], p["since"] = activity, now
+    try:
+        p["subagents"] = max(0, min(9, int(headers.get("X-Crew-Subagents") or 0)))
+    except ValueError:
+        pass
+    p["chatTo"] = (headers.get("X-Crew-Chat-To") or "").strip()[:40] or None
 
 
 def post_message(sender, to, text, kind):
@@ -78,21 +100,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def authed(self):
+    def authed(self, presence=True):
         if not hmac.compare_digest(self.headers.get("X-Crew-Key") or "", args.key):
             self.reply(401, {"error": "bad or missing crew key"})
             return False
         name = (self.headers.get("X-Crew-Name") or "").strip()[:40]
-        if not name:
+        if not name and presence:
             self.reply(400, {"error": "missing X-Crew-Name"})
             return False
-        activity = self.headers.get("X-Crew-Activity")
         self.name = name
-        with lock:
-            p = peers.setdefault(name, {"seen": 0, "activity": "idle"})
-            p["seen"] = time.time()
-            if activity in ACTIVITIES:
-                p["activity"] = activity
+        if presence:
+            with lock:
+                touch(name, self.headers)
         return True
 
     def body(self):
@@ -105,11 +124,19 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path == "/health":
             return self.reply(200, {"ok": True, "version": VERSION})
-        if not self.authed():
+        # /watch is for the Clawds window: it reads the crew without counting as a member.
+        if not self.authed(presence=url.path != "/watch"):
             return
         q = parse_qs(url.query)
         with lock:
-            if url.path == "/poll":
+            if url.path == "/watch":
+                recent = [{"id": m["id"], "from": m["from"], "to": m["to"], "kind": m["kind"],
+                           "text": m["text"][:80], "at": m["at"]}
+                          for m in state["messages"][-30:]
+                          if m["kind"] in ("chat", "request", "out", "back")]
+                self.reply(200, {"peers": peer_list(), "leader": state["leader"], "recent": recent,
+                                 "now": time.time(), "version": VERSION})
+            elif url.path == "/poll":
                 since = int(q.get("since", ["0"])[0])
                 msgs = [m for m in state["messages"] if m["id"] > since
                         and (m["to"] in ("all", self.name) or m["from"] == self.name)]
@@ -142,7 +169,7 @@ class Handler(BaseHTTPRequestHandler):
                 text = str(b.get("text", "")).strip()
                 if not text:
                     return self.reply(400, {"error": "empty text"})
-                kind = b.get("kind") if b.get("kind") in ("chat", "request", "update") else "chat"
+                kind = b.get("kind") if b.get("kind") in ("chat", "request", "update", "out", "back") else "chat"
                 msg = post_message(self.name, str(b.get("to") or "all")[:40], text, kind)
                 save()
                 return self.reply(200, msg)
@@ -225,12 +252,27 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global args
     p = argparse.ArgumentParser(description="Crew relay for linked Claude Code sessions")
-    p.add_argument("--key", required=True, help="shared secret every member puts in their settings")
+    p.add_argument("--key", help="shared secret every member puts in their settings")
+    p.add_argument("--key-file", help="read the key from this file, creating it with a random key if missing")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=7777)
     p.add_argument("--data", default="crew_state.json")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
+    if not args.key and args.key_file:
+        try:
+            with open(args.key_file, encoding="utf-8") as f:
+                args.key = f.read().strip()
+        except FileNotFoundError:
+            pass
+        if not args.key:
+            args.key = secrets.token_urlsafe(18)
+            with open(args.key_file, "w", encoding="utf-8") as f:
+                f.write(args.key + "\n")
+            print(f"Made a new crew key and saved it to {args.key_file}")
+    if not args.key:
+        p.error("give --key or --key-file")
+    print(f"Crew key: {args.key}")
     load()
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Crew relay {VERSION} listening on http://{args.host}:{args.port}  (Ctrl+C to stop)")
