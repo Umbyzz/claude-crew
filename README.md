@@ -124,7 +124,10 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 4. You can chat at the bottom of `/crew`. Type `@name message` to DM someone.
 5. Done for the day? Press **Leave session**, or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**.
 6. **↻ Refresh** (top of `/crew`) reconnects to the relay right away and re-checks GitHub for updates. Use it after the host restarts the relay.
-7. **Reset chat** (next to *Chat*) clears the crew chat for everyone, after a warning you have to confirm. Tasks and shared docs stay.
+7. **Reset chat** (next to *Chat*) clears the crew chat for everyone, after a warning you have to confirm. A copy is saved first, and tasks and shared docs stay.
+8. **Save chat** saves the chat and the task board as a Markdown file in `~/.claude/crew-chats`.
+
+**Picking up days later.** The relay keeps the chat, tasks, shared docs and leader on the host's disk, so nothing is lost when everyone closes up. When you rejoin, your Claude gets a **catch-up briefing** in its conversation: who leads, the open tasks, and the last 30 crew messages. The leader's Claude can pick the plan straight back up.
 
 **Commands**
 

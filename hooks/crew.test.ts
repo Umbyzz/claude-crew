@@ -471,3 +471,58 @@ test('Reset chat warns first; Cancel does nothing, Yes clears the chat for every
   expect(await ui.find({ text: /old stuff/ } as any)).toBeUndefined()
   await ui.unmount()
 })
+
+test('Save chat writes the chat and task board to ~/.claude/crew-chats', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  mock.env(on, { USERPROFILE: 'C:\\Users\\t' })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as any)
+  const written: { path: string; text: string }[] = []
+  on('fs.write', async (_$: unknown, e: any) => {
+    written.push({ path: e.path, text: e.text })
+    return { value: undefined } as any
+  })
+  on('http.fetch', async () => ({
+    value: {
+      status: 200,
+      ok: true,
+      headers: {},
+      text: JSON.stringify({ ...POLL, messages: [{ id: 4, from: 'bob', to: 'all', kind: 'chat', text: 'sprint works!', at: 1791700000 }] }),
+    },
+  }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'save-chat' })
+  await settle(100)
+  await ui.unmount()
+  const file = written.find(w => w.path.includes('crew-chats'))
+  expect(file?.path).toMatch(/C:\\Users\\t\\\.claude\\crew-chats\\crew-chat-.*\.md$/)
+  expect(file?.text).toContain('sprint works!')
+  expect(file?.text).toContain('Write login tests')
+})
+
+test('rejoining a crew briefs your Claude: open tasks and recent messages', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'membership:http://relay.test:7777': 'joined', 'cursor:http://relay.test:7777': 9 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async () => ({
+    value: {
+      status: 200,
+      ok: true,
+      headers: {},
+      text: JSON.stringify({ ...POLL, messages: [{ id: 8, from: 'bob', to: 'all', kind: 'chat', text: 'walk anim is in', at: 1791700000 }], cursor: 9 }),
+    },
+  }))
+  await startSession(on, $)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'rejoin' })
+  await settle(100)
+  await ui.unmount()
+  const rows = session.appended().map(r => JSON.stringify(r.message.content))
+  const brief = rows.find(r => r.includes('crew-catchup')) ?? ''
+  expect(brief).toContain('Write login tests')
+  expect(brief).toContain('walk anim is in')
+  expect(brief).toContain('You are the crew leader')
+})

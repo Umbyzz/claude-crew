@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.7.8'
+const VERSION = '0.7.9'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -128,6 +128,7 @@ async function joinSession($: EngineInterface) {
   joined = true
   lastTalk = Date.now()
   await poll($) // the first check-in tells the relay, and the crew sees us arrive
+  await catchUp($).catch(() => {}) // and our Claude learns where the crew is at
   $.ui.toast('crew: you joined the crew session', { timeoutMs: 4000 })
 }
 
@@ -696,6 +697,67 @@ function copyInvite($: EngineInterface, surface: any, ip: string, key: string) {
     .then(r => $.ui.toast(r.isCopied ? 'crew: invite copied! Paste it to your friends.' : `crew: send your friends this:\n${text}`, { timeoutMs: 10000 }))
 }
 
+// -- saving the chat, and catching a (re)joining Claude up on it
+
+function clockTime(at: number) {
+  return new Date(at * 1000).toISOString().replace('T', ' ').slice(0, 16)
+}
+
+// Writes the crew chat and task board to ~/.claude/crew-chats/<date>.md and returns the path.
+async function saveChat($: EngineInterface) {
+  const data = await relay($, 'GET', '/poll?since=0')
+  const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '.'
+  const dir = `${home}\\.claude\\crew-chats`
+  await $.process.run(['cmd', '/c', `if not exist "${dir}" mkdir "${dir}"`], { timeoutMs: 10000 })
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16)
+  const path = `${dir}\\crew-chat-${stamp}.md`
+  const tasks: CrewTask[] = data.tasks ?? []
+  const msgs: CrewMessage[] = data.messages ?? []
+  const md =
+    `# Crew chat, saved ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC\n\n` +
+    `Relay: ${cfg.base} · leader: ${data.leader ?? 'none'} · saved by ${cfg.me}\n\n` +
+    `## Tasks\n\n${tasks.map(t => `- ${fmtTask(t)}`).join('\n') || '(none)'}\n\n` +
+    `## Chat\n\n${msgs.map(m => `- \`${clockTime(m.at)}\` ${line(m)}`).join('\n') || '(empty)'}\n`
+  await $.fs.write(path, md)
+  return path
+}
+
+function saveChatPress($: EngineInterface) {
+  void saveChat($)
+    .then(path => $.ui.toast(`crew: chat saved to ${path}`, { timeoutMs: 10000 }))
+    .catch(err => $.ui.toast(`crew: couldn't save the chat: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
+}
+
+// A Claude (re)joining a crew session gets a briefing in its conversation: who leads, what's open, what was said.
+async function catchUp($: EngineInterface) {
+  const data = await relay($, 'GET', '/poll?since=0')
+  const tasks: CrewTask[] = (data.tasks ?? []).filter((t: CrewTask) => t.status !== 'done')
+  const msgs: CrewMessage[] = (data.messages ?? []).filter((m: CrewMessage) => m.kind !== 'join').slice(-30)
+  if (!tasks.length && !msgs.length) return
+  const leader = data.leader ?? null
+  const role =
+    leader === cfg.me
+      ? 'You are the crew leader: review the board, check who is online with crew_status, and pick the plan back up.'
+      : leader
+        ? `${leader} leads the crew: check in with them before picking work back up.`
+        : 'There is no leader right now.'
+  await $.session.append({
+    message: {
+      type: 'user',
+      content: [
+        {
+          type: 'text',
+          text:
+            `<crew-catchup>\nYou just (re)joined the crew session as "${cfg.me}". Here is where things stand.\n\n` +
+            `Open tasks:\n${tasks.map(fmtTask).join('\n') || '(none)'}\n\n` +
+            `Recent crew messages (oldest first):\n${msgs.map(m => `[${clockTime(m.at)}] ${line(m)}`).join('\n') || '(none)'}\n` +
+            `</crew-catchup>\n(From the crew plugin, not typed by the user.) ${role}`,
+        },
+      ],
+    },
+  })
+}
+
 // -- Reset chat: first a warning, then the relay wipes the chat for everyone
 
 function askReset($: EngineInterface, show: boolean) {
@@ -705,9 +767,10 @@ function askReset($: EngineInterface, show: boolean) {
 async function resetChat($: EngineInterface) {
   await update($, confirmReset, () => false)
   try {
+    const saved = await saveChat($).catch(() => null) // keep a copy, just in case
     await relay($, 'POST', '/reset', {})
     await poll($)
-    $.ui.toast('crew: the chat is cleared for everyone', { timeoutMs: 5000 })
+    $.ui.toast(`crew: the chat is cleared for everyone${saved ? ` (a copy is saved at ${saved})` : ''}`, { timeoutMs: 10000 })
   } catch (err) {
     $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
   }
@@ -1226,14 +1289,20 @@ export const register: Register = (on, options) => {
             ))}
             <Box flexDirection="row" justifyContent="space-between">
               <Text bold>Chat</Text>
-              {joined && !confirming && <Button key="reset-chat" label="Reset chat" dimColor onPress={() => askReset($, true)} />}
+              {joined && !confirming && (
+                <Box flexDirection="row">
+                  <Button key="save-chat" label="Save chat" dimColor onPress={() => saveChatPress($)} />
+                  <Button key="reset-chat" label="Reset chat" dimColor onPress={() => askReset($, true)} />
+                </Box>
+              )}
             </Box>
             {confirming && (
               <Box flexDirection="column" borderStyle="round" paddingX={1}>
                 <Text bold>⚠ Reset the chat for everyone?</Text>
                 <Text dimColor>
-                  This wipes the chat history on the relay and in every teammate's /crew. It can't be undone. Tasks and shared
-                  docs stay, and messages your Claudes already received stay in their conversations.
+                  This wipes the chat history on the relay and in every teammate's /crew. A copy is saved to your
+                  ~/.claude/crew-chats first. Tasks and shared docs stay, and messages your Claudes already received stay in
+                  their conversations.
                 </Text>
                 <Box flexDirection="row">
                   <Button key="reset-yes" label="Yes, clear it" onPress={() => resetChatPress($)} />
