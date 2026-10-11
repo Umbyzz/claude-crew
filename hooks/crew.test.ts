@@ -252,7 +252,14 @@ test('Check for updates, then Install update downloads crew from GitHub and copi
     // not a git checkout; robocopy's 1 means "files copied"
     return { value: { exitCode: e.argv[0] === 'robocopy' ? 1 : 0, stdout: 'no', stderr: '' } }
   })
-  on('fs.read', async () => ({ value: '{"version":"9.9.9"}' }) as any)
+  on('fs.read', async (_$: unknown, e: any) =>
+    String(e.path).includes('.git') ? ({ deny: 'ENOENT' } as any) : ({ value: '{"version":"9.9.9"}' } as any),
+  )
+  const logs: string[] = []
+  on('fs.write', async (_$: unknown, e: any) => {
+    logs.push(String(e.content ?? e.text ?? ''))
+    return { value: undefined } as any
+  })
   on('ui.toast', async () => ({ value: undefined }))
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'settings' })
@@ -269,6 +276,9 @@ test('Check for updates, then Install update downloads crew from GitHub and copi
   const copy = lines.find(l => l.startsWith('robocopy')) ?? ''
   expect(copy).toContain('crew_key.txt') // the relay's key is never overwritten
   expect(lines.some(l => l.includes('plugin marketplace update'))).toBe(false) // no CLI needed
+  // the temp folder is made without nesting double quotes inside one argument (cmd mangles those)
+  expect(lines.some(l => l.startsWith('cmd') && l.includes('"'))).toBe(false)
+  expect(logs.some(l => l.includes('> curl.exe'))).toBe(true) // every step lands in crew-update.log
   LATEST = '0.3.0'
 })
 
@@ -645,6 +655,8 @@ test('when the download fails, Install update falls back to an npm-installed cla
   await ui.press({ key: 'install' })
   await settle(100)
   expect(await ui.find({ text: /not found in marketplace/ } as any)).toBeDefined()
+  // ...and the direct download's own reason isn't lost behind the CLI's
+  expect(await ui.find({ text: /Direct download: download failed \(Could not resolve host\)/ } as any)).toBeDefined()
   await ui.unmount()
   LATEST = '0.3.0'
 })

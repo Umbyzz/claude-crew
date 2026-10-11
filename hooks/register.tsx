@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.9.3'
+const VERSION = '0.9.4'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -232,9 +232,8 @@ async function receiveImage($: EngineInterface, m: CrewMessage): Promise<string 
   const safe = String(m.name ?? 'image.png').replace(/[^\w.-]/g, '_')
   const path = `${dir}\\${m.id}-${safe}`
   try {
-    await $.process.run(['cmd', '/c', `if not exist "${dir}" mkdir "${dir}"`], { timeoutMs: 10000 })
     const r = await $.process.run(
-      ['curl.exe', '-s', '-f', '-o', path, '-H', `X-Crew-Key: ${cfg.key}`, `${cfg.base}/file?id=${m.file}`],
+      ['curl.exe', '-s', '-f', '--create-dirs', '-o', path, '-H', `X-Crew-Key: ${cfg.key}`, `${cfg.base}/file?id=${m.file}`],
       { timeoutMs: 60000 },
     )
     return r.exitCode === 0 ? path : null
@@ -859,22 +858,48 @@ async function findClaude($: EngineInterface): Promise<string[] | null> {
 
 const ZIP_URL = 'https://github.com/Umbyzz/claude-crew/archive/refs/heads/main.zip'
 
+// Every step of an update, for %TEMP%\crew-update.log: when one fails on a friend's PC, the log says which and why.
+let updateLog: string[] = []
+
 async function ran($: EngineInterface, argv: string[], timeoutMs = 60000) {
-  const r = await $.process.run(argv, { timeoutMs })
-  return { ok: r.exitCode === 0, code: r.exitCode, out: `${r.stdout}\n${r.stderr}`.trim() }
+  try {
+    const r = await $.process.run(argv, { timeoutMs })
+    const out = `${r.stdout}\n${r.stderr}`.trim()
+    updateLog.push(`> ${argv.join(' ')}\n  exit ${r.exitCode}${out ? `\n  ${out.slice(0, 600).replace(/\n/g, '\n  ')}` : ''}`)
+    return { ok: r.exitCode === 0, code: r.exitCode, out }
+  } catch (err) {
+    const out = err instanceof Error ? err.message : String(err)
+    updateLog.push(`> ${argv.join(' ')}\n  failed to run: ${out}`)
+    return { ok: false, code: -1, out }
+  }
+}
+
+// A path as a PowerShell literal. Never put double quotes inside one argument for cmd: Windows escapes them
+// on the way in (\"), and cmd then sees a mangled path ("The filename, directory name ... is incorrect").
+const psPath = (p: string) => `'${p.replace(/'/g, "''")}'`
+
+async function makeDir($: EngineInterface, dir: string) {
+  return ran($, ['powershell', '-NoProfile', '-Command', `New-Item -ItemType Directory -Force -Path ${psPath(dir)} | Out-Null`], 20000)
+}
+
+async function removeDir($: EngineInterface, dir: string) {
+  return ran($, ['powershell', '-NoProfile', '-Command', `Remove-Item -LiteralPath ${psPath(dir)} -Recurse -Force -ErrorAction SilentlyContinue`], 30000)
 }
 
 // The plugin updates its own files: download the latest from GitHub and copy it over this plugin's folder.
 // That works however crew was installed (marketplace, desktop-app upload, a copied folder) and needs no
 // claude CLI. The relay's key and data are never touched. Returns null when it worked, else what went wrong.
 async function selfUpdate($: EngineInterface): Promise<string | null> {
-  const root = $.plugin.root.replace(/\//g, '\\')
+  // no trailing backslash: robocopy would read `"C:\x\"` as an escaped quote
+  const root = $.plugin.root.replace(/\//g, '\\').replace(/\\+$/, '')
   const temp = (await $.env.get('TEMP')) || (await $.env.get('TMP')) || `${root}\\..`
   const dir = `${temp}\\crew-update-${Date.now()}`
   const src = `${dir}\\claude-crew-main`
+  updateLog.push(`plugin root: ${root}\ntemp: ${temp}`)
   try {
     setUpdateNote($, 'busy', 'Downloading the latest crew from GitHub…')
-    await ran($, ['cmd', '/c', `mkdir "${dir}"`])
+    const made = await makeDir($, dir)
+    if (!made.ok) return `couldn't make a temp folder (${made.out.slice(0, 160) || `exit ${made.code}`})`
     const dl = await ran($, ['curl.exe', '-sSfL', '-o', `${dir}\\crew.zip`, ZIP_URL], 120000)
     if (!dl.ok) return `download failed (${dl.out.slice(0, 160) || `curl exit ${dl.code}`})`
     setUpdateNote($, 'busy', 'Unpacking…')
@@ -892,16 +917,33 @@ async function selfUpdate($: EngineInterface): Promise<string | null> {
   } catch (err) {
     return err instanceof Error ? err.message : String(err)
   } finally {
-    $.process.run(['cmd', '/c', `rmdir /s /q "${dir}"`], { timeoutMs: 30000 }).catch(() => {})
+    void removeDir($, dir)
   }
 }
 
 async function isGitCheckout($: EngineInterface) {
   try {
-    const r = await $.process.run(['cmd', '/c', `if exist "${$.plugin.root}\\.git" (echo yes) else (echo no)`], { timeoutMs: 10000 })
-    return r.stdout.includes('yes')
+    await $.fs.read(`${$.plugin.root}\\.git\\HEAD`)
+    return true
   } catch {
     return false
+  }
+}
+
+// Installed through the desktop app's plugin upload: there's no claude-crew marketplace for the CLI to update.
+function isDesktopUpload($: EngineInterface) {
+  return /local-desktop-app-uploads/i.test($.plugin.root)
+}
+
+async function writeUpdateLog($: EngineInterface) {
+  try {
+    const temp = (await $.env.get('TEMP')) || (await $.env.get('TMP'))
+    if (!temp) return ''
+    const path = `${temp}\\crew-update.log`
+    await $.fs.write(path, `crew ${VERSION} update, ${new Date().toISOString()}\n\n${updateLog.join('\n\n')}\n`)
+    return path
+  } catch {
+    return ''
   }
 }
 
@@ -912,16 +954,24 @@ async function installUpdate($: EngineInterface) {
     setUpdateNote($, 'error', "This copy runs from a git checkout (you're developing crew): pull the latest in GitHub Desktop, then restart Claude.")
     return
   }
+  updateLog = []
   const failure = await selfUpdate($)
+  const log = await writeUpdateLog($)
+  const seeLog = log ? ` Every step is in ${log}.` : ''
   if (failure === null) {
     setUpdateNote($, 'ok', 'Updated! Restart Claude to load the new version.')
     $.ui.toast('crew: updated! Restart Claude to load the new version.', { timeoutMs: 15000 })
     return
   }
-  setUpdateNote($, 'busy', `Direct update didn't work (${failure}). Trying the claude CLI…`)
+  // The direct download's reason stays in every message from here on: it's the one that matters.
+  if (isDesktopUpload($)) {
+    setUpdateNote($, 'error', `Direct update failed: ${failure}. This copy was uploaded through the desktop app, so there's no CLI route: reinstall from the GitHub zip.${seeLog}`)
+    return
+  }
+  setUpdateNote($, 'busy', `Direct update failed (${failure}). Trying the claude CLI…`)
   const claude = await findClaude($)
   if (!claude) {
-    setUpdateNote($, 'error', `Update failed: ${failure}. There's no claude CLI to fall back on either: use Copy commands, or reinstall from GitHub.`)
+    setUpdateNote($, 'error', `Update failed. Direct download: ${failure}. CLI fallback: no claude CLI found. Reinstall from the GitHub zip.${seeLog}`)
     return
   }
   const steps: [string, string[]][] = [
@@ -934,11 +984,11 @@ async function installUpdate($: EngineInterface) {
       const r = await $.process.run([...claude, ...args], { timeoutMs: 120000 })
       if (r.exitCode !== 0) {
         const why = (r.stderr || r.stdout).trim().split(/\r?\n/).slice(-3).join(' ').slice(0, 300)
-        setUpdateNote($, 'error', `${label.replace('…', '')} failed: ${why || `exit code ${r.exitCode}`}. Try Copy commands.`)
+        setUpdateNote($, 'error', `Update failed. Direct download: ${failure}. CLI fallback: ${why || `exit code ${r.exitCode}`}. Try Copy commands.${seeLog}`)
         return
       }
     } catch (err) {
-      setUpdateNote($, 'error', `${label.replace('…', '')} failed: ${err instanceof Error ? err.message : err}. Try Copy commands.`)
+      setUpdateNote($, 'error', `Update failed. Direct download: ${failure}. CLI fallback: ${err instanceof Error ? err.message : err}. Try Copy commands.${seeLog}`)
       return
     }
   }
@@ -1182,7 +1232,7 @@ async function saveChat($: EngineInterface) {
   const data = await relay($, 'GET', '/poll?since=0')
   const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '.'
   const dir = `${home}\\.claude\\crew-chats`
-  await $.process.run(['cmd', '/c', `if not exist "${dir}" mkdir "${dir}"`], { timeoutMs: 10000 })
+  await makeDir($, dir)
   const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16)
   const path = `${dir}\\crew-chat-${stamp}.md`
   const tasks: CrewTask[] = data.tasks ?? []
