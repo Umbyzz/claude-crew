@@ -18,13 +18,14 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.7.9"
+VERSION = "0.8.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
 MAX_FILE = 8_000_000  # bytes per shared image
 MAX_FILES = 40  # images kept in memory, oldest dropped first
-ONLINE_SECONDS = 10  # no poll for this long: they're gone (a clean exit says so straight away)
+ONLINE_SECONDS = 12  # no check-in for this long: shown as offline
+GONE_SECONDS = 20  # no check-in for this long: the crew is told they lost connection (a clean exit says so at once)
 ACTIVITIES = ("idle", "thinking", "typing", "working", "chatting", "done", "cheer", "away", "out")
 KINDS = ("chat", "request", "update", "out", "back", "join", "leave", "image")
 
@@ -65,7 +66,8 @@ def peer_list():
     return [
         {"name": n, "online": is_online(p, now), "lastSeen": int(p["seen"]),
          "activity": p["activity"], "leader": n == state["leader"], "since": p["since"],
-         "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"]}
+         "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
+         "version": p.get("version")}
         for n, p in sorted(peers.items())
     ]
 
@@ -87,7 +89,7 @@ def sweep():
     """Announce anyone whose plugin stopped checking in (Claude closed without saying bye)."""
     now = time.time()
     for name, p in peers.items():
-        if not p.get("gone") and not p.get("left") and now - p["seen"] >= ONLINE_SECONDS:
+        if not p.get("gone") and not p.get("left") and now - p["seen"] >= GONE_SECONDS:
             announce_leave(name, "lost connection (their Claude was closed or went offline)")
             save()
 
@@ -118,6 +120,7 @@ def touch(name, headers):
     except ValueError:
         pass
     p["chatTo"] = (headers.get("X-Crew-Chat-To") or "").strip()[:40] or None
+    p["version"] = (headers.get("X-Crew-Version") or "").strip()[:20] or p.get("version")  # who needs to update
 
 
 def post_message(sender, to, text, kind, **extra):

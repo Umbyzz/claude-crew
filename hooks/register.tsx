@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.7.9'
+const VERSION = '0.8.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -55,6 +55,7 @@ type Config = {
 }
 let cfg: Config = { base: '', me: '', key: '', autoRun: 'leader', toasts: 'all', pollMs: 3000, configured: false }
 let inflight: Promise<void> | null = null
+let delivering: Promise<void> = Promise.resolve() // crew messages being handed to Claude, one batch after another
 let working = false
 let failures = 0
 let skip = 0
@@ -100,6 +101,7 @@ async function relay($: EngineInterface, method: 'GET' | 'POST', path: string, b
       'X-Crew-Activity': activityNow(),
       'X-Crew-Subagents': String(subagents),
       'X-Crew-Chat-To': chatUntil > Date.now() ? chatTo : '',
+      'X-Crew-Version': VERSION,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
@@ -327,16 +329,22 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
       },
     })
     const trusted = cfg.autoRun === 'anyone' || (cfg.autoRun === 'leader' && m.from === leader)
+    // A queued prompt only resolves once Claude is free to start it, so it is never awaited here:
+    // waiting on it would hold up the check-ins, and the relay would think we'd dropped off.
     if (direct && m.kind === 'request' && trusted) {
-      await $.prompt.submit({
-        text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
-      })
+      void $.prompt
+        .submit({
+          text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
+        })
+        .catch(() => {})
     }
     // The leader re-plans as soon as a teammate runs dry, even from idle; everyone else reacts on their next turn.
     if (m.kind === 'out' && leader === cfg.me && cfg.autoRun !== 'off') {
-      await $.prompt.submit({
-        text: `${m.from} just ran out of tokens: ${m.text}\n\nFollow the crew note above: say the line, then re-plan their tasks for the crew.`,
-      })
+      void $.prompt
+        .submit({
+          text: `${m.from} just ran out of tokens: ${m.text}\n\nFollow the crew note above: say the line, then re-plan their tasks for the crew.`,
+        })
+        .catch(() => {})
     }
   }
 }
@@ -357,7 +365,8 @@ async function pollOnce($: EngineInterface) {
     const msgs: CrewMessage[] = data.messages ?? []
     const leader: string | null = data.leader ?? null
     // A first-ever connection shows recent history in the pane but doesn't replay it into the conversation.
-    if (stored >= 0 || prev.cursor > 0) await deliver($, msgs, leader)
+    // Delivery runs on its own track (in order), so a slow image download never delays the next check-in.
+    if (stored >= 0 || prev.cursor > 0) delivering = delivering.then(() => deliver($, msgs, leader)).catch(() => {})
     const cursor = Math.max(since, Number(data.cursor) || 0)
     await $.store.set(`cursor:${cfg.base}`, cursor)
     const epoch = Number(data.chatEpoch ?? 0)

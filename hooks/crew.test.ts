@@ -526,3 +526,22 @@ test('rejoining a crew briefs your Claude: open tasks and recent messages', { op
   expect(brief).toContain('walk anim is in')
   expect(brief).toContain('You are the crew leader')
 })
+
+test('a busy Claude never stalls the check-ins (the flickering-offline bug)', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  // Claude is mid-turn: a queued prompt never gets to start during this test
+  on('prompt.submit', () => new Promise(() => {}) as any)
+  let polls = 0
+  on('http.fetch', async () => {
+    polls += 1
+    const messages = polls === 1 ? [{ id: 2, from: 'alice', to: 'alice', kind: 'request', text: 'do the thing', at: 0 }] : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, leader: 'alice', messages, cursor: 2 }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // delivers the request, which queues a prompt
+  await settle()
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // must still check in, not hang
+  expect(polls).toBeGreaterThanOrEqual(2)
+})
