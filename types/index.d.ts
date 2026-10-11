@@ -104,6 +104,7 @@ declare module 'claude-code' {
       docDeleting: string
       tipSeen: boolean
       drafts: Record<string, string>
+      madeFolder: string
     }
   }
 }

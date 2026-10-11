@@ -12,11 +12,12 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 
 ## What's new in 1.7
 - **File locks.** When a teammate's Claude edited a file in the project folder in the last 5 minutes, your Claude is stopped once before editing it and told who. It checks with them first, so nobody overwrites anyone. Trying the same edit again goes through. The Crew tab shows who's editing what (✎). It costs no tokens unless an edit actually gets stopped.
+- **Everything you add can be undone:** a house rule has ✕, and a folder you just made has **↶ Undo** (to the Recycle Bin, while it's still empty).
 - **Usage on the board.** The Crew tab shows how much of their usage limit each teammate has used (⚠ past 80%). The leader's Claude gives big tasks to whoever has room, and a Claude past 85% finishes up, tells the leader and hands over instead of starting big work.
 
 ## What's new in 1.6
 - **A team that plays to its models.** Each Claude tells the crew which model it runs (shown in the Crew tab). The leader's Claude proposes who takes what before splitting a bigger goal: the most capable models (like Opus) take the heavy coding, architecture and reviews; quicker ones (like Sonnet) take ideas, design, UI and straightforward building; the lightest (like Haiku) take small chores, tests and docs. Teammates can push back, and people's wishes always win.
-- **House rules.** Each project can have its own rules ("Pluh does the art", "ask before touching main"), which every Claude in that project follows. Add them in the Project tab's **House rules** box, or ask your Claude. They live in a shared doc named `crew-rules`.
+- **House rules.** Each project can have its own rules ("Pluh does the art", "ask before touching main"), which every Claude in that project follows. Add them in the Project tab's **House rules** box (✕ removes one), or ask your Claude. They live in a shared doc named `crew-rules`.
 - **Loop brake.** Claudes can't wake each other forever while nobody's around: after 8 Claude-sent requests in 10 minutes with nobody typing, that Claude stops auto-running, tells the sender, and pins a notice. Type anything in that chat to resume.
 
 ## What's new in 1.5

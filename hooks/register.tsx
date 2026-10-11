@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.7.1'
+const VERSION = '1.7.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -274,12 +274,28 @@ async function useChatFolder($: EngineInterface) {
   await setFolder($, sessionCwd)
 }
 
+// The folder New folder just made, so it can be undone (binned) while it's still empty.
+const madeFolder = atom({ plugin: 'crew', key: 'madeFolder' } as const, '')
+
 async function newFolder($: EngineInterface, raw: string) {
   const name = raw.trim().replace(/[<>:"/\\|?*]/g, '').slice(0, 80).trim()
   const { path } = await projectFolder($)
   if (!name || !path) return
   const made = await makeDir($, `${path}\\${name}`)
+  await update($, madeFolder, () => (made.ok ? `${path}\\${name}` : ''))
   await loadFolder($, made.ok ? `Made "${name}".` : `Couldn't make "${name}": ${made.out.slice(0, 120)}`)
+}
+
+async function undoFolder($: EngineInterface) {
+  const path = await read($, madeFolder)
+  await update($, madeFolder, () => '')
+  if (!path) return
+  const name = path.split('\\').pop()
+  const r = await ran($, ['powershell', '-NoProfile', '-Command',
+    `if (Get-ChildItem -LiteralPath ${psPath(path)} -Force | Select-Object -First 1) { Write-Output '::busy' }`], 20000)
+  if (r.out.includes('::busy')) return loadFolder($, `"${name}" has files in it now, so it stays. Remove it in Explorer if you mean to.`)
+  const binned = await recycleFolder($, path)
+  await loadFolder($, binned.ok ? `Undone: "${name}" is in the Recycle Bin.` : `Couldn't remove "${name}": ${binned.out.slice(0, 120)}`)
 }
 
 function openInExplorer($: EngineInterface, path: string) {
@@ -771,6 +787,24 @@ async function syncRules($: EngineInterface, names: string[], changed: boolean) 
   rules = { ...rules, checked: Date.now() }
   const d = await relay($, 'GET', `/shared?name=${encodeURIComponent(RULES_DOC)}`)
   if (projectName === asked) rules = { project: asked, text: String(d.content ?? '').trim().slice(0, 2000), checked: Date.now() }
+}
+
+async function removeRule($: EngineInterface, line: string) {
+  try {
+    const current = String((await relay($, 'GET', `/shared?name=${encodeURIComponent(RULES_DOC)}`)).content ?? '')
+    const lines = current.split('\n')
+    const at = lines.findIndex(l => l.trim() === line.trim())
+    if (at >= 0) lines.splice(at, 1)
+    const content = lines.filter(l => l.trim()).join('\n')
+    if (content) await relay($, 'POST', '/shared', { name: RULES_DOC, content })
+    else await relay($, 'POST', '/shared/delete', { name: RULES_DOC }).catch(() => relay($, 'POST', '/shared', { name: RULES_DOC, content: '' }))
+    rules = { project: projectName, text: content.slice(0, 2000), checked: Date.now() }
+    docsKey = null
+    await poll($)
+    $.ui.toast('crew: rule removed. Every Claude in this project drops it from its next turn.', { timeoutMs: 6000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
 }
 
 async function addRule($: EngineInterface, value: string) {
@@ -2531,6 +2565,7 @@ export const register: Register = (on, options) => {
     const invite = await read($, inviteAtom)
     const deletingDoc = await read($, docDeleting)
     const draft = await read($, drafts)
+    const justMade = await read($, madeFolder)
     const rulesLines = rules.project === projectName ? rules.text.split('\n').filter(l => l.trim()) : []
     const showTip = configured && !(await read($, tipSeen)) && !(await $.store.get('tip:doubleClick'))
     const deleting = await read($, deleteStage)
@@ -3127,6 +3162,12 @@ export const register: Register = (on, options) => {
                 <Text dimColor>
                   Each person has their own copy; share files with crew_share or git. Your Claude works in this folder.
                 </Text>
+                {justMade !== '' && justMade.startsWith(`${folder.path}\\`) && (
+                  <Box flexDirection="row">
+                    <Text dimColor>Made "{justMade.split('\\').pop()}" by mistake? </Text>
+                    <Button key="folder-undo" label="↶ Undo" dimColor onPress={() => folderPress($, () => undoFolder($))} />
+                  </Box>
+                )}
                 {folder.dirs.length > 0 && (
                   <Box flexDirection="row" flexWrap="wrap">
                     {folder.dirs.slice(0, 6).map(d => (
@@ -3206,8 +3247,11 @@ export const register: Register = (on, options) => {
             {rulesLines.length === 0 && (
               <Text dimColor>None yet. Every Claude in this project follows these, like "Pluh does the art" or "ask before touching main".</Text>
             )}
-            {rulesLines.slice(0, 8).map(l => (
-              <Text wrap="truncate-end">{l}</Text>
+            {rulesLines.slice(0, 8).map((l, i) => (
+              <Box flexDirection="row" justifyContent="space-between">
+                <Text wrap="truncate-end">{l}</Text>
+                <Button key={`rule-rm-${i}`} label="✕" dimColor onPress={() => void removeRule($, l)} />
+              </Box>
             ))}
             {rulesLines.length > 8 && <Text dimColor>…{rulesLines.length - 8} more (the {RULES_DOC} doc below has them all)</Text>}
             {Input && (

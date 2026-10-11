@@ -1493,6 +1493,14 @@ test("the leader plans around the crew's models, and every Claude gets the proje
   await settle()
   await ui.unmount()
   expect(posts).toContainEqual({ name: 'crew-rules', content: '- bob does the art\n- ask before touching main' })
+
+  // and ✕ removes one again
+  const ui2 = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui2.press({ key: 'tab-docs' })
+  await ui2.press({ key: 'rule-rm-0' })
+  await settle()
+  await ui2.unmount()
+  expect(posts.some(p => p.name === 'crew-rules' && !String(p.content ?? '').includes('bob does the art'))).toBe(true)
 })
 
 test('the loop brake stops Claudes waking each other forever, and the person typing resets it', { options: OPTIONS }, async ($, on) => {
