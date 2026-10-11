@@ -49,6 +49,7 @@ export type CrewSnapshot = {
   tasks: CrewTask[]
   shared: string[]
   chatEpoch?: number // the relay's chat-reset count: when it changes, the chat starts over
+  reads?: Record<string, number> // read receipts: the newest message id each member's plugin has (relay 0.9.5+)
 }
 
 declare module 'claude-code' {

@@ -925,3 +925,78 @@ test('shared docs show who shared them, and open a peek', { options: OPTIONS }, 
   expect(await ui.find({ text: /line two/ } as any)).toBeUndefined()
   await ui.unmount()
 })
+
+// -- read receipts and crew_ping
+
+function receiptRelay(on: any, reads: Record<string, number>) {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const messages = [
+    { id: 11, from: 'bob', to: 'all', kind: 'chat', text: 'morning', at: 1000, human: true },
+    { id: 12, from: 'alice', to: 'all', kind: 'chat', text: 'walk script is in', at: 1010 },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 12, reads }) } }))
+}
+
+test('your newest bubble and crew_status say who has read it', { options: OPTIONS }, async ($, on) => {
+  receiptRelay(on, { alice: 12, bob: 12 })
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(String(r.result)).toContain('#12 alice: walk script is in  [read by bob]')
+  expect(String(r.result)).not.toContain('morning  [') // only your own messages get receipts
+  await settle()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'crew', surface, ...PANE })
+    expect(await ui.find({ text: /✓ read by bob/ } as any)).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('a message nobody has picked up yet says "not read yet"', { options: OPTIONS }, async ($, on) => {
+  receiptRelay(on, { alice: 12, bob: 11 })
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(String(r.result)).toContain('walk script is in  [not read yet]')
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /not read yet/ } as any)).toBeDefined()
+  await ui.unmount()
+})
+
+test('a teammate\'s ping is echoed by the plugin, without reaching Claude', { options: OPTIONS }, async ($, on) => {
+  const posted: { url: string; body: any }[] = []
+  mock.store(on)
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') posted.push({ url: e.url, body: JSON.parse(e.init.body ?? '{}') })
+    const body = e.url.includes('/poll') ? { ...POLL, pings: ['p1'] } : { ok: true }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(posted.some(p => p.url.endsWith('/pong') && p.body.id === 'p1')).toBe(true)
+  expect(session.appended().some(r => JSON.stringify(r.message.content).includes('p1'))).toBe(false)
+})
+
+test('crew_ping times relay round trips and a teammate\'s echo', { options: OPTIONS }, async ($, on) => {
+  const seen: string[] = []
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push(`${e.init?.method ?? 'GET'} ${e.url}`)
+    const body = e.url.endsWith('/health')
+      ? { ok: true }
+      : e.url.endsWith('/ping')
+        ? { id: 'p9', at: 1000 }
+        : e.url.includes('/pong?id=p9')
+          ? { answered: true, sentAt: 1000, answeredAt: 1001.2, now: 1001.2 }
+          : POLL
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_ping', to: 'bob', count: 2 } as any)
+  expect(seen.filter(s => s.endsWith('/health')).length).toBe(2)
+  expect(seen.some(s => s.startsWith('POST') && s.endsWith('/ping'))).toBe(true)
+  expect(String(r.result)).toContain('Relay round trip (2×)')
+  expect(String(r.result)).toContain("bob's crew plugin echoed in")
+})

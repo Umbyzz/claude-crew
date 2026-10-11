@@ -37,6 +37,10 @@ state = {"next_id": 1, "messages": [], "tasks": [], "shared": {}, "leader": None
 peers = {}
 files = {}  # id -> {"id", "name", "mime", "data" (bytes), "by", "at"}, memory only
 args = None
+# crew_ping's echo: id -> {"from", "to", "at", "answeredAt"}. The target's plugin answers on its next check-in,
+# without its Claude (no tokens). Memory only, dropped after a minute.
+pings = {}
+PING_SECONDS = 60
 
 
 def save():
@@ -176,12 +180,15 @@ def post_message(sender, to, text, kind, **extra):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "CrewRelay/" + VERSION
+    extra = None  # fields a handler adds to its 200 reply (/poll: read receipts and pings)
 
     def log_message(self, fmt, *a):
         if args.verbose:
             super().log_message(fmt, *a)
 
     def reply(self, code, body):
+        if self.extra and code == 200 and isinstance(body, dict):
+            body = {**body, **self.extra}
         data = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -225,6 +232,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         q = parse_qs(url.query)
         with lock:
+            if url.path == "/poll":
+                # Read receipts: this member's plugin now has everything up to the cursor (shown in their /crew,
+                # handed to their Claude). Every poll reply carries everyone's mark, and any pings waiting for them.
+                peers[self.name]["read"] = state["next_id"] - 1
+                self.extra = {"reads": {n: p.get("read", 0) for n, p in peers.items()},
+                              "pings": [i for i, pg in pings.items() if pg["to"] == self.name and not pg["answeredAt"]]}
             if url.path == "/wait":
                 # crew_wait: hold the request open until a message for this member arrives (or the timeout),
                 # so a Claude can wait for a reply without polling in a loop.
@@ -271,6 +284,16 @@ class Handler(BaseHTTPRequestHandler):
                                  "shared": sorted(state["shared"].keys()),
                                  "cursor": state["next_id"] - 1, "chatEpoch": state.get("chat_epoch", 0),
                                  "version": VERSION})
+            elif url.path == "/pong":
+                # crew_ping waits here for the echo (like /wait: held open, no polling, max 25s per call)
+                pg = pings.get(q.get("id", [""])[0])
+                if not pg or pg["from"] != self.name:
+                    return self.reply(404, {"error": "no such ping (they expire after a minute)"})
+                deadline = time.time() + max(1.0, min(25.0, float(q.get("timeout", ["20"])[0])))
+                while not pg["answeredAt"] and time.time() < deadline:
+                    arrived.wait(deadline - time.time())
+                self.reply(200, {"answered": bool(pg["answeredAt"]), "sentAt": pg["at"],
+                                 "answeredAt": pg["answeredAt"], "now": time.time()})
             elif url.path == "/shared":
                 name = q.get("name", [""])[0]
                 if name:
@@ -312,6 +335,27 @@ class Handler(BaseHTTPRequestHandler):
                 post_message(self.name, "all", f"{self.name} cleared the crew chat", "update")
                 save()
                 return self.reply(200, {"ok": True, "chatEpoch": state["chat_epoch"]})
+            if path == "/ping":  # crew_ping: ask a teammate's plugin to echo (it answers on its next check-in)
+                now = time.time()
+                for old in [i for i, pg in pings.items() if now - pg["at"] > PING_SECONDS]:
+                    del pings[old]
+                to = str(b.get("to") or "").strip()[:40]
+                target = peers.get(to)
+                if not to or to == self.name:
+                    return self.reply(400, {"error": "ping a teammate, not yourself"})
+                if not target or not is_online(target, now):
+                    return self.reply(404, {"error": f"{to} isn't online in the crew session"})
+                if len(pings) >= 50:
+                    return self.reply(429, {"error": "too many pings in flight, try again in a minute"})
+                pid = secrets.token_hex(4)
+                pings[pid] = {"from": self.name, "to": to, "at": now, "answeredAt": None}
+                return self.reply(200, {"id": pid, "at": now})
+            if path == "/pong":  # the target's plugin answering a ping
+                pg = pings.get(str(b.get("id") or ""))
+                if pg and pg["to"] == self.name and not pg["answeredAt"]:
+                    pg["answeredAt"] = time.time()
+                    arrived.notify_all()  # wakes the crew_ping waiting in GET /pong
+                return self.reply(200, {"ok": True})
             if path == "/files":
                 try:
                     data = base64.b64decode(str(b.get("data", "")), validate=True)

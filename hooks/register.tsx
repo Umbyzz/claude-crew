@@ -450,6 +450,8 @@ async function pollOnce($: EngineInterface) {
     const data = await relay($, 'GET', `/poll?since=${since}`)
     const msgs: CrewMessage[] = data.messages ?? []
     const leader: string | null = data.leader ?? null
+    // A teammate's crew_ping: echo it right away. The plugin answers; this Claude never sees it (no tokens).
+    for (const id of Array.isArray(data.pings) ? data.pings : []) void relay($, 'POST', '/pong', { id }).catch(() => {})
     // A first-ever connection shows recent history in the pane but doesn't replay it into the conversation.
     // Delivery runs on its own track (in order), so a slow image download never delays the next check-in.
     if (!skipDelivery && (stored >= 0 || prev.cursor > 0))
@@ -470,6 +472,7 @@ async function pollOnce($: EngineInterface) {
       peers: data.peers ?? [],
       tasks: data.tasks ?? [],
       shared: data.shared ?? [],
+      reads: data.reads && typeof data.reads === 'object' ? data.reads : undefined, // absent from an older relay
     }))
     // a doc shared again under the same name keeps the list the same, but who/when/size change
     syncDocs($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.startsWith('shared doc ')))
@@ -597,6 +600,19 @@ function copyDoc($: EngineInterface, surface: any, name: string) {
 }
 
 // -- the chat, drawn like a messenger: your bubbles right, everyone else's left, crew events as dim centred lines
+
+// Read receipts for your own messages: who it went to, and whose plugin has picked it up (the relay's "reads").
+// '' when there's nothing to say: nobody else in the crew, or a relay too old to report reads.
+function receipt(m: CrewMessage, s: CrewSnapshot, me: string) {
+  if (!s.reads) return ''
+  const reads = s.reads
+  const to = s.peers.filter(p => p.name !== me && (m.to === 'all' || m.to === p.name)).map(p => p.name)
+  if (!to.length) return ''
+  const readers = to.filter(n => (reads[n] ?? 0) >= m.id)
+  if (!readers.length) return 'not read yet'
+  if (readers.length === to.length) return to.length > 1 ? 'read by everyone' : `read by ${readers[0]}`
+  return `read by ${readers.join(', ')} (${to.length - readers.length} not yet)`
+}
 
 const SYSTEM_KINDS = new Set<CrewMessage['kind']>(['join', 'leave', 'update', 'out', 'back'])
 const GROUP_GAP = 5 * 60 // seconds: a pause this long starts a new bubble, even from the same sender
@@ -1469,6 +1485,19 @@ const TOOLS = [
       required: ['path'],
     },
   },
+  {
+    name: 'crew_ping',
+    description:
+      "Measure crew latency: times a few round trips to the relay, and with `to`, how fast that teammate's crew plugin echoes " +
+      "(it answers on its next check-in; their Claude isn't involved and spends no tokens). Only when the user asks about latency.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'a teammate whose plugin should echo (optional)' },
+        count: { type: 'number', description: 'relay round trips to time, 1 to 5 (default 3)' },
+      },
+    },
+  },
 ]
 
 export const register: Register = (on, options) => {
@@ -1650,7 +1679,7 @@ export const register: Register = (on, options) => {
         `Crew: ${s.peers.map(peer).join(', ') || 'nobody yet'}`,
         `Tasks:\n${s.tasks.map(fmtTask).join('\n') || '(none)'}`,
         `Shared docs: ${s.shared.join(', ') || '(none)'}`,
-        `Recent messages:\n${s.feed.slice(-n).map(m => `#${m.id} ${line(m)}`).join('\n') || '(none)'}`,
+        `Recent messages:\n${s.feed.slice(-n).map(m => `#${m.id} ${line(m)}${m.from === me && receipt(m, s, me) ? `  [${receipt(m, s, me)}]` : ''}`).join('\n') || '(none)'}`,
       ].join('\n\n'),
     )
   }).catch(failed)
@@ -1715,6 +1744,38 @@ export const register: Register = (on, options) => {
     return ok(`"${doc.name}" by ${doc.by}:\n\n${doc.content}`)
   }).catch(failed)
 
+  // crew_ping: relay round trips, then (optionally) a teammate's plugin echo, all timed on this side's clock.
+  on('tool.call', { tool: 'mcp__crew__crew_ping' }, async ($, e: any) => {
+    if (!joined) return ok("You're not in the crew session right now; ask the user to join it from /crew.")
+    const count = Math.max(1, Math.min(5, Math.round(Number(e.count) || 3)))
+    const trips: number[] = []
+    for (let i = 0; i < count; i++) {
+      const t0 = Date.now()
+      await relay($, 'GET', '/health')
+      trips.push(Date.now() - t0)
+    }
+    const ms = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(2)} s` : `${n} ms`)
+    const avg = Math.round(trips.reduce((a, b) => a + b, 0) / trips.length)
+    const out = [`Relay round trip (${count}×): min ${ms(Math.min(...trips))} · avg ${ms(avg)} · max ${ms(Math.max(...trips))}`]
+    const to = typeof e.to === 'string' ? e.to.trim() : ''
+    if (to) {
+      const t0 = Date.now()
+      try {
+        const { id } = await relay($, 'POST', '/ping', { to })
+        const r = await relay($, 'GET', `/pong?id=${encodeURIComponent(id)}&timeout=20`)
+        out.push(
+          r.answered
+            ? `${to}'s crew plugin echoed in ${ms(Date.now() - t0)} (it answers on its next check-in, every ~1-3 s; ` +
+                `a message to their Claude takes that plus however long it takes to finish its current step).`
+            : `No echo from ${to}'s crew plugin within 20 s: is their Claude open and in the crew session?`,
+        )
+      } catch (err) {
+        out.push(`Couldn't ping ${to}: ${explain(err instanceof Error ? err.message : String(err))}`)
+      }
+    }
+    return ok(out.join('\n'))
+  }).catch(failed)
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Input, Select, Button } = $.ui.resolve(e) as any
     const s = await read($, snapshot)
@@ -1746,7 +1807,9 @@ export const register: Register = (on, options) => {
     const docRows = docs.length ? Math.min(docs.length, 5) + 1 : 1
     const room = Math.max(8, (e.viewport?.rows ?? 30) - (showSettings ? 30 : 18) - Math.min(open.length, 6) - docRows)
     const bubbleCols = Math.floor((e.viewport?.columns ?? 80) * 0.65)
-    const chat = fitChat(chatItems(s.feed, me), room, bubbleCols)
+    const chat = fitChat(chatItems(s.feed, me), room - 1, bubbleCols) // a row kept for the read receipt
+    const lastMine = [...chat].reverse().find(i => i.type === 'group' && i.mine)
+    const seen = lastMine?.type === 'group' ? receipt(lastMine.msgs[lastMine.msgs.length - 1], s, me) : ''
     const activityWord = (p: CrewSnapshot['peers'][number]) =>
       !p.online ? 'offline' : p.activity === 'out' ? 'out of tokens' : p.activity === 'idle' ? '' : p.activity
 
@@ -2176,6 +2239,10 @@ export const register: Register = (on, options) => {
                           <Text>{bubbleText(m)}</Text>
                         ))}
                       </Box>
+                      {/* receipts only under your newest bubble: reads only move forward, so it covers the ones above */}
+                      {item === lastMine && seen !== '' && (
+                        <Text dimColor>{seen.startsWith('read') ? `✓ ${seen}` : seen}</Text>
+                      )}
                     </Box>
                   </Box>
                 ),
