@@ -136,7 +136,9 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 
 ## Updating
 
-The `/crew` pane shows **Update available** when there's a newer version on GitHub. **Copy update commands** copies these for you. Run them, then restart Claude:
+Open `/crew` → **Settings** and press **Check for updates** (it also checks by itself every 6 hours). When a newer version is on GitHub, press **Install update**: it pulls the new version straight from GitHub. Then restart Claude.
+
+If that doesn't work, **Copy commands** copies the manual way, two terminal commands:
 
 ```bash
 claude plugin marketplace update claude-crew

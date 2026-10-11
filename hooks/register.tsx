@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.7.1'
+const VERSION = '0.7.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -323,18 +323,80 @@ function newer(a: string | null | undefined, b: string) {
   return false
 }
 
-async function checkUpdate($: EngineInterface) {
+// Asks GitHub which version is out. Returns it, or null when GitHub can't be reached.
+async function checkUpdate($: EngineInterface): Promise<string | null> {
   try {
-    const res = await $.http.fetch(LATEST_URL)
-    if (!res.ok) return
+    const res = await $.http.fetch(`${LATEST_URL}?t=${Date.now()}`)
+    if (!res.ok) return null
     const latest = String(JSON.parse(res.text).version ?? '')
     const before = await read($, snapshot)
     await update($, snapshot, s => ({ ...s, latest }))
     if (newer(latest, VERSION) && before.latest !== latest)
       $.ui.toast(`crew ${latest} is out (you have ${VERSION}). Open /crew to update.`, { timeoutMs: 10000 })
+    return latest
   } catch {
-    // Offline or GitHub unreachable: try again on the next check.
+    return null // offline or GitHub unreachable: try again on the next check
   }
+}
+
+function checkNow($: EngineInterface) {
+  $.ui.toast('crew: checking GitHub for updates…', { timeoutMs: 3000 })
+  void checkUpdate($).then(latest =>
+    $.ui.toast(
+      latest === null
+        ? "crew: couldn't reach GitHub, try again in a bit"
+        : newer(latest, VERSION)
+          ? `crew: ${latest} is out (you have ${VERSION}). Press Install update.`
+          : `crew: you're up to date (${VERSION})`,
+      { timeoutMs: 8000 },
+    ),
+  )
+}
+
+// The claude CLI: on PATH, or the copy the desktop app keeps under %APPDATA%\Claude\claude-code.
+async function findClaude($: EngineInterface): Promise<string | null> {
+  const tries = [['where', 'claude'], ['cmd', '/c', 'dir /s /b "%APPDATA%\\Claude\\claude-code\\claude.exe"']]
+  for (const argv of tries) {
+    try {
+      const r = await $.process.run(argv, { timeoutMs: 20000 })
+      const found = r.stdout.split(/\r?\n/).map(l => l.trim()).filter(l => l.toLowerCase().endsWith('.exe') || l.endsWith('claude'))
+      if (r.exitCode === 0 && found.length) return found[found.length - 1]
+    } catch {
+      // try the next place
+    }
+  }
+  return null
+}
+
+// Pulls the latest version straight from GitHub: refresh the marketplace, then update the plugin.
+async function installUpdate($: EngineInterface) {
+  $.ui.toast('crew: updating from GitHub…', { timeoutMs: 6000 })
+  const claude = await findClaude($)
+  if (!claude) {
+    $.ui.toast(`crew: couldn't find the claude CLI. Run these in a terminal:\n${UPDATE_COMMANDS}`, { timeoutMs: 15000 })
+    return
+  }
+  const steps = [
+    [claude, 'plugin', 'marketplace', 'update', 'claude-crew'],
+    [claude, 'plugin', 'update', 'crew@claude-crew'],
+  ]
+  for (const argv of steps) {
+    try {
+      const r = await $.process.run(argv, { timeoutMs: 120000 })
+      if (r.exitCode !== 0) {
+        $.ui.toast(`crew: update step failed: ${(r.stderr || r.stdout).trim().slice(0, 200)}`, { timeoutMs: 15000 })
+        return
+      }
+    } catch (err) {
+      $.ui.toast(`crew: update failed: ${err instanceof Error ? err.message : err}`, { timeoutMs: 15000 })
+      return
+    }
+  }
+  $.ui.toast('crew: updated! Restart Claude to load the new version.', { timeoutMs: 15000 })
+}
+
+function installPress($: EngineInterface) {
+  void installUpdate($)
 }
 
 function copyUpdate($: EngineInterface, surface: any) {
@@ -631,7 +693,10 @@ export const register: Register = (on, options) => {
             <Text bold>
               Update available: {VERSION} → {s.latest}
             </Text>
-            <Button key="update" label="Copy update commands" onPress={() => copyUpdate($, e.surface)} />
+            <Box flexDirection="row">
+              <Button key="install" label="Install update" variant="primary" onPress={() => installPress($)} />
+              <Button key="update" label="Copy commands" onPress={() => copyUpdate($, e.surface)} />
+            </Box>
           </Box>
         )}
         {s.relayVersion && s.relayVersion !== VERSION && (
@@ -703,7 +768,14 @@ export const register: Register = (on, options) => {
                 onSelect={(v: string) => setOption($, 'clawdsWindow', v)}
               />
             )}
-            <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />
+            <Box flexDirection="row">
+              <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />
+              <Button key="check-update" label="Check for updates" onPress={() => checkNow($)} />
+              {newer(s.latest, VERSION) && (
+                <Button key="install-settings" label={`Install ${s.latest}`} variant="primary" onPress={() => installPress($)} />
+              )}
+            </Box>
+            <Text dimColor>You have crew {VERSION}{s.latest ? `, GitHub has ${s.latest}` : ''}.</Text>
           </Box>
         )}
 

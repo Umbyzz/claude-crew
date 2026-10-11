@@ -240,3 +240,25 @@ test('with the Clawds window switched off, /crew opens only the pane', { options
   await settle()
   expect(launched.length).toBe(0)
 })
+test('Check for updates, then Install update pulls the new version through the claude CLI', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  LATEST = '9.9.9'
+  const ran: string[][] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push([...e.argv])
+    return { value: { exitCode: 0, stdout: e.argv[0] === 'where' ? 'C:\\bin\\claude.exe\r\n' : 'ok', stderr: '' } }
+  })
+  on('ui.toast', async () => ({ value: undefined }))
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'settings' })
+  await ui.press({ key: 'check-update' })
+  await settle(100)
+  expect(await ui.find({ key: 'install' })).toBeDefined()
+  await ui.press({ key: 'install' })
+  await settle(100)
+  await ui.unmount()
+  const lines = ran.map(a => a.join(' '))
+  expect(lines).toContain('C:\\bin\\claude.exe plugin marketplace update claude-crew')
+  expect(lines).toContain('C:\\bin\\claude.exe plugin update crew@claude-crew')
+  LATEST = '0.3.0'
+})
