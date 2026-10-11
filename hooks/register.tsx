@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.7.0'
+const VERSION = '1.7.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1055,16 +1055,19 @@ function fastTick($: EngineInterface) {
   if (working || Date.now() - lastTalk < 30000) poll($).catch(() => {})
 }
 
-// What's typed in the say/ask/add-task fields. An Input keeps the person's typing until the hook draws
-// a different value, so each field is drawn from its draft and the draft goes back to '' after Enter.
+// Emptying the say/ask/add-task/add-rule fields after Enter. An Input keeps the person's typing until the hook
+// draws a different value, so on Enter the field is drawn once with what was sent, then with '' (a change, so it
+// empties). Typing itself never redraws: a redraw per keystroke races the typing and jumbles the letters.
 const drafts = atom({ plugin: 'crew', key: 'drafts' } as const, {} as Record<string, string>)
 
-function setDraft($: EngineInterface, field: string, value: string) {
-  void update($, drafts, d => (d[field] === value ? d : { ...d, [field]: value }))
-}
+function setDraft(_$: EngineInterface, _field: string, _value: string) {} // typing stays in the field, untouched
 
-function submitted($: EngineInterface, field: string, run: () => unknown) {
-  setDraft($, field, '')
+function submitted($: EngineInterface, field: string, value: string, run: () => unknown) {
+  void (async () => {
+    await update($, drafts, d => ({ ...d, [field]: value }))
+    await new Promise(r => setTimeout(r, 60))
+    await update($, drafts, d => ({ ...d, [field]: '' }))
+  })()
   return run()
 }
 
@@ -2974,7 +2977,7 @@ export const register: Register = (on, options) => {
                     submitLabel="ask"
                     value={draft.ask ?? ''}
                     onInput={(v: string) => setDraft($, 'ask', v)}
-                    onSubmit={(v: string) => submitted($, 'ask', () => ask($, askTarget, v))}
+                    onSubmit={(v: string) => submitted($, 'ask', v, () => ask($, askTarget, v))}
                   />
                 ) : (
                   <Input
@@ -2983,7 +2986,7 @@ export const register: Register = (on, options) => {
                     submitLabel="send"
                     value={draft.say ?? ''}
                     onInput={(v: string) => setDraft($, 'say', v)}
-                    onSubmit={(v: string) => submitted($, 'say', () => say($, v))}
+                    onSubmit={(v: string) => submitted($, 'say', v, () => say($, v))}
                   />
                 ))}
             </Box>
@@ -3024,7 +3027,7 @@ export const register: Register = (on, options) => {
                   submitLabel="add"
                   value={draft['add-task'] ?? ''}
                   onInput={(v: string) => setDraft($, 'add-task', v)}
-                  onSubmit={(v: string) => submitted($, 'add-task', () => addTask($, v))}
+                  onSubmit={(v: string) => submitted($, 'add-task', v, () => addTask($, v))}
                 />
               </Box>
             )}
@@ -3215,7 +3218,7 @@ export const register: Register = (on, options) => {
                   submitLabel="add"
                   value={draft['add-rule'] ?? ''}
                   onInput={(v: string) => setDraft($, 'add-rule', v)}
-                  onSubmit={(v: string) => submitted($, 'add-rule', () => addRule($, v))}
+                  onSubmit={(v: string) => submitted($, 'add-rule', v, () => addRule($, v))}
                 />
               </Box>
             )}
