@@ -1540,3 +1540,54 @@ test('the loop brake stops Claudes waking each other forever, and the person typ
   expect(submitted.some(t => t.startsWith('Crew request #9600'))).toBe(true)
   await $.prompt.submit({ text: 'reset for the next test' } as any)
 })
+
+test("a file a teammate's Claude just edited is locked once: the edit is stopped with who, and the second try goes through", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('tool.register', async () => ({ value: undefined }) as any)
+  on('command.register', async () => ({ value: undefined }) as any)
+  on('ui.invalidate', async () => ({ value: undefined }) as any)
+  on('session.start', async (_$: unknown, e: any) => e)
+  const touched: string[] = []
+  const now = Date.now() / 1000
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.endsWith('/touch')) {
+      touched.push(JSON.parse(e.init.body).path)
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true}' } }
+    }
+    const editing = [{ path: 'src/Player.lua', name: 'bob', at: now - 60 }]
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, editing }) } }
+  })
+  on('tool.call', { tool: 'Edit' }, async () => ({ result: 'edited' }) as any)
+  await $.session.start({ source: 'startup', cwd: 'C:\\Games\\Lava' } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const first: any = await $.tool.call({ tool: 'Edit', file_path: 'C:\\Games\\Lava\\src\\player.lua' } as any)
+  expect(first.deny).toContain("bob's Claude edited src/player.lua")
+  const second: any = await $.tool.call({ tool: 'Edit', file_path: 'C:\\Games\\Lava\\src\\player.lua' } as any)
+  expect(second.deny).toBeUndefined()
+  await $.tool.call({ tool: 'Edit', file_path: 'C:\\Games\\Lava\\src\\other.lua' } as any)
+  await $.tool.call({ tool: 'Edit', file_path: 'D:\\elsewhere\\notes.txt' } as any) // outside the project: not reported
+  await settle()
+  expect(touched).toEqual(['src/player.lua', 'src/other.lua'])
+})
+
+test("teammates' usage shows in the Crew tab, and the leader's Claude hands big tasks to whoever has room", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const peers = [
+    { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true, model: 'claude-opus-5-5', usage: 30 },
+    { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false, model: 'claude-sonnet-5-5', usage: 91 },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers }) } }))
+  on('prompt.compose', async () => ({ sections: [] }) as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const composed: any = await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as any)
+  const role = composed.sections.find((s: any) => s.id === 'crew:role').text
+  expect(role).toContain('bob (Sonnet 5.5, 91% of usage limit used)')
+  expect(role).toContain('anyone past 80% gets only small ones')
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  expect(await ui.find({ text: /91% used ⚠/ } as any)).toBeDefined()
+  await ui.unmount()
+})

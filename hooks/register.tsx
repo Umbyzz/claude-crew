@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.6.1'
+const VERSION = '1.7.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -143,6 +143,7 @@ async function relay($: EngineInterface, method: 'GET' | 'POST', path: string, b
       'X-Crew-Chat-To': chatUntil > Date.now() ? chatTo : '',
       'X-Crew-Version': VERSION,
       'X-Crew-Model': modelName,
+      'X-Crew-Usage': usageNow(),
       'X-Crew-Project': projectName,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -694,6 +695,56 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
   return `${common}\n\nThere is no crew leader right now: coordinate as peers through the task board.`
 }
 
+// The most of any usage-limit window used so far, for the crew's board ('' off a subscription or before a reading).
+function usageNow() {
+  return limits.length ? String(Math.round(Math.max(...limits.map(l => l.percentUsed)))) : ''
+}
+
+// Soft file locks: each edit is reported to the relay by its path inside the project folder. A Claude about to edit
+// a file a teammate's Claude changed in the last few minutes is stopped once and told who, so it checks with them;
+// trying the same edit again goes through. All plugin-side: no tokens unless it actually stops an edit.
+const LOCK_MINUTES = 5
+let othersEditing: { path: string; name: string; at: number }[] = []
+const warnedEdits = new Map<string, number>()
+
+function relPath(file: string) {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
+  const f = norm(file)
+  for (const root of [folderPath, sessionCwd]) {
+    const r = root ? norm(root) : ''
+    if (r && f.toLowerCase().startsWith(`${r.toLowerCase()}/`)) return f.slice(r.length + 1)
+  }
+  return ''
+}
+
+function editingNow(name: string) {
+  const now = Date.now() / 1000
+  return othersEditing.filter(t => t.name === name && now - t.at < LOCK_MINUTES * 60).sort((a, b) => b.at - a.at)[0]
+}
+
+function fileLock($: EngineInterface, e: any) {
+  if (!joined || !TYPING_TOOLS.has(String(e.tool))) return null
+  const rel = relPath(String(e.file_path ?? e.notebook_path ?? ''))
+  if (!rel) return null // outside the project folder: not crew work
+  const key = rel.toLowerCase()
+  const now = Date.now()
+  const other = othersEditing.find(t => t.path.toLowerCase() === key && now / 1000 - t.at < LOCK_MINUTES * 60)
+  const warned = warnedEdits.get(key)
+  if (other && !(warned && now - warned < 10 * 60 * 1000)) {
+    warnedEdits.set(key, now)
+    const ago = Math.max(1, Math.round((now / 1000 - other.at) / 60))
+    $.ui.toast(`crew: ${other.name}'s Claude edited ${rel} ${ago} min ago, so yours checks with them first`, { timeoutMs: 8000 })
+    return {
+      deny:
+        `crew file lock: ${other.name}'s Claude edited ${rel} ${ago} min ago and may still be working on it. ` +
+        `Check with ${other.name} (crew_send) before changing it, so you don't overwrite each other. ` +
+        `If it's fine (you agreed, or your change doesn't overlap theirs), make the edit again: the second try goes through.`,
+    }
+  }
+  void relay($, 'POST', '/touch', { path: rel }).catch(() => {})
+  return null
+}
+
 async function refreshModel($: EngineInterface) {
   try {
     modelName = String(await $.session.model()).slice(0, 60)
@@ -745,10 +796,15 @@ async function addRule($: EngineInterface, value: string) {
 function crewExtras(s: CrewSnapshot) {
   let text = ''
   const team = s.peers.filter(p => p.online || p.name === cfg.me)
-  if (team.length > 1 && team.some(p => p.model)) {
+  const about = (p: CrewSnapshot['peers'][number]) =>
+    [p.model ? modelLabel(p.model) : 'model unknown', p.usage != null ? `${p.usage}% of usage limit used` : ''].filter(Boolean).join(', ')
+  if (team.length > 1 && team.some(p => p.model || p.usage != null)) {
     const leading = s.leader === cfg.me || s.acting === cfg.me
     text +=
-      `\n\nThe crew's models right now: ${team.map(p => `${p.name === cfg.me ? 'you' : p.name} (${p.model ? modelLabel(p.model) : 'unknown'})`).join(', ')}. ` +
+      `\n\nThe crew's models right now: ${team.map(p => `${p.name === cfg.me ? 'you' : p.name} (${about(p)})`).join(', ')}. ` +
+      (leading && team.some(p => p.usage != null)
+        ? `Give big tasks to whoever has the most usage left; anyone past 80% gets only small ones (or none), and hand their work on before they run dry. `
+        : '') +
       (leading
         ? `Play to strengths: before splitting a bigger goal, propose who takes what in one crew_send and let teammates say ` +
           `if another split suits them better (their person's wishes win). Rule of thumb: the most capable models (like Opus) ` +
@@ -756,6 +812,11 @@ function crewExtras(s: CrewSnapshot) {
           `straightforward building; the lightest (like Haiku) take small, well-defined chores, tests and docs. Take your own share by the same rule.`
         : `The leader splits work by these. If a task would clearly fit another teammate's model (or yours) better, say so in one line.`)
   }
+  const mine = s.peers.find(p => p.name === cfg.me)?.usage
+  if (mine != null && mine >= 85)
+    text +=
+      `\n\nYou've used ${mine}% of your usage limit. Finish what you hold, tell the leader in one line, and don't take ` +
+      `big new tasks; if you can't finish one, hand it over with a short note of where it stands.`
   text +=
     rules.text && rules.project === projectName
       ? `\n\nHouse rules for this crew project (the "${RULES_DOC}" shared doc, written by the crew). Follow them over the defaults above; your own user still wins:\n${rules.text}`
@@ -950,6 +1011,7 @@ async function pollOnce($: EngineInterface) {
       reads: data.reads && typeof data.reads === 'object' ? data.reads : undefined, // absent from an older relay
     }))
     // a doc shared again under the same name keeps the list the same, but who/when/size change
+    othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
     syncDocs($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.startsWith('shared doc ')))
     void syncRules($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.includes(`doc '${RULES_DOC}'`))).catch(() => {})
     failures = 0
@@ -2224,6 +2286,8 @@ export const register: Register = (on, options) => {
   // Every tool the main loop runs sets the Clawd's pose; subagents become mini Clawds.
   // Registered before the crew tools' own hooks, so it wraps them too.
   on('tool.call', async ($, e: any, next) => {
+    const locked = fileLock($, e) // subagents' edits count too
+    if (locked) return locked
     if (e.agentId) return next(e)
     const tool = String(e.tool)
     const isAgent = tool === 'Agent' || tool === 'Task'
@@ -2298,7 +2362,9 @@ export const register: Register = (on, options) => {
     const peer = (p: CrewSnapshot['peers'][number]) =>
       `${p.name}${p.leader ? ' (leader)' : ''}${p.acting ? ' (acting leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}` +
       (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '') +
-      (p.model ? ` · ${modelLabel(p.model)}` : '')
+      (p.model ? ` · ${modelLabel(p.model)}` : '') +
+      (p.usage != null ? ` · ${p.usage}% usage used` : '') +
+      (editingNow(p.name) ? ` · editing ${editingNow(p.name)?.path}` : '')
     const openTasks = s.tasks.filter(t => t.status !== 'done')
     const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
     const onlineNow = s.peers.filter(p => p.online).length
@@ -3238,6 +3304,8 @@ export const register: Register = (on, options) => {
                     {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                     {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
                     {p.model ? `  · ${modelLabel(p.model)}` : ''}
+                    {p.usage != null ? `  · ${p.usage}% used${p.usage >= 80 ? ' ⚠' : ''}` : ''}
+                    {p.online && editingNow(p.name) ? `  · ✎ ${editingNow(p.name)?.path}` : ''}
                     {p.version ? `  · v${p.version}${versionMark(p.version)}` : ''}
                   </Text>
                   <Box flexDirection="row">

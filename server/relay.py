@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -181,6 +181,13 @@ def is_online(p, now):
 
 LEADER_AWAY_SECONDS = 60  # the leader offline this long (or out of tokens): someone else acts as leader meanwhile
 acting = {}  # project -> the acting leader while that project's true leader is away (memory only)
+edits = {}  # project -> {path (lowercase): {"path", "name", "at"}}: who last edited which file there (memory only)
+EDIT_SECONDS = 600
+
+
+def editing_in(project, viewer, now):
+    """Files other members' Claudes edited in this project lately, for the plugin's soft file locks."""
+    return [e for e in edits.get(project, {}).values() if e["name"] != viewer and now - e["at"] < EDIT_SECONDS]
 
 
 def leader_away(project, now):
@@ -224,7 +231,8 @@ def peer_list(project=MAIN):
         {"name": n, "online": is_online(p, now), "lastSeen": int(p["seen"]),
          "activity": p["activity"], "leader": n == leader, "acting": n == stand_in, "since": p["since"],
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
-         "version": p.get("version"), "model": p.get("model"), "project": p.get("project", MAIN)}
+         "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"),
+         "project": p.get("project", MAIN)}
         for n, p in sorted(peers.items())
     ]
 
@@ -289,6 +297,10 @@ def touch(name, headers):
     p["chatTo"] = (headers.get("X-Crew-Chat-To") or "").strip()[:40] or None
     p["version"] = (headers.get("X-Crew-Version") or "").strip()[:20] or p.get("version")  # who needs to update
     p["model"] = (headers.get("X-Crew-Model") or "").strip()[:60] or p.get("model")  # the leader splits work by it
+    try:  # how much of their usage limit is gone: the leader gives big tasks to whoever has room
+        p["usage"] = max(0, min(999, round(float(headers.get("X-Crew-Usage") or ""))))
+    except ValueError:
+        pass
     p["project"] = project_of(headers)  # which project this member's Claude is working in right now
 
 
@@ -431,7 +443,7 @@ class Handler(BaseHTTPRequestHandler):
                                  "leader": leader_of(pr), "acting": acting.get(pr),
                                  "shared": sorted(docs_of(pr).keys()), "projects": projects_list(now, self.name),
                                  "cursor": state["next_id"] - 1, "chatEpoch": epoch_of(pr),
-                                 "version": VERSION})
+                                 "editing": editing_in(pr, self.name, now), "version": VERSION})
             elif url.path == "/projects":
                 self.reply(200, {"projects": projects_list(time.time(), self.name)})
             elif url.path == "/pong":
@@ -536,6 +548,11 @@ class Handler(BaseHTTPRequestHandler):
                 pid = secrets.token_hex(4)
                 pings[pid] = {"from": self.name, "to": to, "at": now, "answeredAt": None}
                 return self.reply(200, {"id": pid, "at": now})
+            if path == "/touch":  # a member's Claude is editing a file in the project (soft file locks)
+                rel = str(b.get("path", "")).strip()[:200]
+                if rel:
+                    edits.setdefault(self.project, {})[rel.lower()] = {"path": rel, "name": self.name, "at": time.time()}
+                return self.reply(200, {"ok": True})
             if path == "/pong":  # the target's plugin answering a ping
                 pg = pings.get(str(b.get("id") or ""))
                 if pg and pg["to"] == self.name and not pg["answeredAt"]:

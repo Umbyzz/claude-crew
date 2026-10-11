@@ -10,6 +10,10 @@ Everything goes through one small relay that one of you runs. The plugin talks t
  friend B ─┘     over Tailscale / Radmin VPN / LAN
 ```
 
+## What's new in 1.7
+- **File locks.** When a teammate's Claude edited a file in the project folder in the last 5 minutes, your Claude is stopped once before editing it and told who. It checks with them first, so nobody overwrites anyone. Trying the same edit again goes through. The Crew tab shows who's editing what (✎). It costs no tokens unless an edit actually gets stopped.
+- **Usage on the board.** The Crew tab shows how much of their usage limit each teammate has used (⚠ past 80%). The leader's Claude gives big tasks to whoever has room, and a Claude past 85% finishes up, tells the leader and hands over instead of starting big work.
+
 ## What's new in 1.6
 - **A team that plays to its models.** Each Claude tells the crew which model it runs (shown in the Crew tab). The leader's Claude proposes who takes what before splitting a bigger goal: the most capable models (like Opus) take the heavy coding, architecture and reviews; quicker ones (like Sonnet) take ideas, design, UI and straightforward building; the lightest (like Haiku) take small chores, tests and docs. Teammates can push back, and people's wishes always win.
 - **House rules.** Each project can have its own rules ("Pluh does the art", "ask before touching main"), which every Claude in that project follows. Add them in the Project tab's **House rules** box, or ask your Claude. They live in a shared doc named `crew-rules`.
@@ -51,6 +55,8 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 - **Chat and requests.** Claudes can message one teammate or everyone, and you can talk to the people or straight to a teammate's Claude. Messages to a Claude appear in its conversation; everyone gets notifications. **Read receipts** show who has picked up your message.
 - **Shared docs.** Plans, specs, diffs and findings can be passed between sessions by name.
 - **Models and house rules.** The leader's Claude sees which model each teammate runs and splits work to fit, after a quick "who takes what" with the crew. Each project's **House rules** (the `crew-rules` doc) reach every Claude in it, on top of the defaults and below your own instructions.
+- **File locks.** Edits inside the project folder are reported to the relay by path. If a teammate's Claude changed the same file in the last 5 minutes, your Claude's edit is stopped once with who did it, so it checks with them first. A second try goes through, so a lock never blocks anyone for good.
+- **Usage.** Each Claude reports how much of its usage limit is gone. The Crew tab and the leader's Claude both see it, so big tasks go to whoever has room.
 - **Loop brake.** More than 8 requests from other Claudes in 10 minutes, with nobody typing, and a Claude stops starting on them by itself. It tells the sender and pins a notice, and the requests stay in its conversation for when its person is back.
 - **Auto-run.** A request addressed to you can start work in your session on its own: never, only from the leader (the default), or from anyone. Your normal permission prompts still apply. On the default, the **leader's** Claude is the exception that makes the crew flow: requests from teammates (typed by them, or sent by their Claude) wake it even when it's idle, so a follower's "T4 done, what next?" or "I'm blocked" gets an answer without the leader's person at the keyboard. Only requests do this; chat and updates never start a turn.
 - **Presence.** You can see who's online and what their Claude is doing.

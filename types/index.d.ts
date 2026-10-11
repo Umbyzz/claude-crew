@@ -31,6 +31,7 @@ export type CrewPeer = {
   project?: string // the crew project their Claude is working in
   version?: string | null // their crew plugin version, as their last check-in said
   model?: string | null // the model their Claude runs (the leader splits work by it)
+  usage?: number | null // the most of any usage-limit window they've used, in percent
 }
 
 export type CrewTask = {
