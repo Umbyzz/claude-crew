@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -30,6 +30,7 @@ ACTIVITIES = ("idle", "thinking", "typing", "working", "chatting", "done", "chee
 KINDS = ("chat", "request", "update", "out", "back", "join", "leave", "image")
 
 lock = threading.Lock()
+arrived = threading.Condition(lock)  # rung on every new message, for /wait (crew_wait)
 state = {"next_id": 1, "messages": [], "tasks": [], "shared": {}, "leader": None,
          "chat_epoch": 0}  # bumped by "Reset chat": every plugin then empties its chat
 # name -> {"seen", "activity", "since", "subagents", "chatTo", "joinedAt", "left", "gone"}, memory only
@@ -124,10 +125,12 @@ def touch(name, headers):
 
 
 def post_message(sender, to, text, kind, **extra):
+    # "at" is the relay's clock to the millisecond: one clock for everyone, so delivery times can be compared.
     msg = {"id": new_id(), "from": sender, "to": to or "all", "kind": kind,
-           "text": text[:MAX_TEXT], "at": int(time.time()), **extra}
+           "text": text[:MAX_TEXT], "at": round(time.time(), 3), **extra}
     state["messages"].append(msg)
     del state["messages"][:-MAX_MESSAGES]
+    arrived.notify_all()  # callers hold the lock, so anyone in /wait wakes up
     return msg
 
 
@@ -182,6 +185,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         q = parse_qs(url.query)
         with lock:
+            if url.path == "/wait":
+                # crew_wait: hold the request open until a message for this member arrives (or the timeout),
+                # so a Claude can wait for a reply without polling in a loop.
+                since = int(q.get("since", ["0"])[0])
+                only = q.get("from", [""])[0]
+                deadline = time.time() + max(1.0, min(90.0, float(q.get("timeout", ["60"])[0])))
+
+                def matches():
+                    return [m for m in state["messages"] if m["id"] > since and m["from"] != self.name
+                            and m["to"] in ("all", self.name) and m["kind"] not in ("update", "join")
+                            and (not only or m["from"] == only)]
+
+                found = matches()
+                while not found and time.time() < deadline:
+                    arrived.wait(deadline - time.time())
+                    found = matches()
+                return self.reply(200, {"messages": found, "now": time.time(), "timedOut": not found})
             if url.path == "/file":  # an image's raw bytes, for curl to save
                 f = files.get(q.get("id", [""])[0])
                 if not f:
@@ -269,17 +289,29 @@ class Handler(BaseHTTPRequestHandler):
                 if not text:
                     return self.reply(400, {"error": "empty text"})
                 kind = b.get("kind") if b.get("kind") in ("chat", "request", "update", "out", "back") else "chat"
-                msg = post_message(self.name, str(b.get("to") or "all")[:40], text, kind)
+                if kind == "out":  # "out of tokens" once per outage, not again on every reconnect
+                    last = next((m for m in reversed(state["messages"])
+                                 if m["from"] == self.name and m["kind"] in ("out", "back")), None)
+                    if last and last["kind"] == "out" and time.time() - last["at"] < 6 * 3600:
+                        return self.reply(200, last)
+                extra = {"notify": True} if b.get("notify") else {}  # "for your human": shown to them, not just their Claude
+                msg = post_message(self.name, str(b.get("to") or "all")[:40], text, kind, **extra)
                 save()
                 return self.reply(200, msg)
             if path == "/tasks":
                 return self.tasks(b)
             if path == "/leader":
                 leader = str(b.get("name") or "").strip()[:40] or None
+                if leader == state["leader"]:
+                    return self.reply(200, {"leader": leader})  # no change, no log line
                 state["leader"] = leader
-                post_message(self.name, "all",
-                             f"made {leader} the crew leader" if leader else "cleared the crew leader",
-                             "update")
+                text = f"made {leader} the crew leader" if leader else "cleared the crew leader"
+                last = state["messages"][-1] if state["messages"] else None
+                if last and last.get("leaderChange") and time.time() - last["at"] < 60:
+                    # back-to-back leader changes collapse into one line instead of a tug-of-war log
+                    last.update(text=text, at=round(time.time(), 3), **{"from": self.name})
+                else:
+                    post_message(self.name, "all", text, "update", leaderChange=True)
                 save()
                 return self.reply(200, {"leader": leader})
             if path == "/shared":
@@ -298,7 +330,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def assign(self, t, assignee):
         t["assignee"] = assignee
-        if assignee:
+        if assignee and assignee != self.name:  # assigning yourself needs no "you've got a task" request
             post_message(self.name, assignee,
                          f"Task #{t['id']} is assigned to you: {t['title']}"
                          + (f"\n\n{t['note']}" if t["note"] else "")
@@ -338,8 +370,11 @@ class Handler(BaseHTTPRequestHandler):
             self.assign(t, assignee)
         elif action == "remove":
             tasks.remove(t)
+        elif action == "edit":  # fix a stale title or note without removing and re-adding the task
+            if str(b.get("title") or "").strip():
+                t["title"] = str(b["title"]).strip()[:500]
         else:
-            return self.reply(400, {"error": "action must be add|claim|done|release|assign|remove"})
+            return self.reply(400, {"error": "action must be add|claim|done|release|assign|edit|remove"})
         if b.get("note") and action != "assign":
             t["note"] = str(b["note"])[:5000]
         who = f" to {assignee}" if action == "assign" else ""

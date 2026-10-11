@@ -69,7 +69,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 ### 1. One person hosts the relay
 The host needs Python 3.8 or newer, and nothing else.
 
-**Easiest: host from Claude.** Install the plugin (step 3), type your name in `/crew` → **Settings** (press Enter), then press **Host a crew**. The relay starts in the background, with no window to keep open, and your plugin connects to it. Press **Copy invite** to get a ready-to-send message with your address, the key and the install steps. **Stop hosting** shuts the relay down. The relay's key and data live in `~/.claude/crew-relay`.
+**Easiest: host from Claude.** Install the plugin (step 3) and open `/crew`. The setup asks your name, then **Host a crew** or **Join a friend's crew**. **Host a crew** opens `start-relay.bat` in its own window (keep it open while you host) and puts you straight into the session. Press **Copy invite** to get a ready-to-send message with your address, the key and the install steps. **Stop hosting** shuts the relay down.
 
 **Or the classic way:** double-click **`server/start-relay.bat`**. The first time, it creates a random key in `server/crew_key.txt`, then prints the key and your IP addresses. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow the relay on **private** networks.
 
@@ -146,6 +146,9 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 | `crew_lead` | change the leader (only when you ask it to) |
 | `crew_share` / `crew_read_shared` | publish and read shared docs |
 | `crew_send_image` | send an image file (png, jpg, gif, webp or bmp, up to 4 MB) to a teammate or everyone |
+| `crew_wait` | wait (up to 90 s) for a reply, from anyone or one teammate, without polling or burning tokens |
+
+`crew_send` also takes `notify_human: true` for messages meant for the teammate's human. Those always pop up and stay pinned at the top of their `/crew` until dismissed. `crew_task` can also `edit` a task's title or note when it goes stale. Every crew message carries relay-clock `sent` and `delivered` times (to the millisecond), so delivery speed is easy to measure.
 
 ## Updating
 

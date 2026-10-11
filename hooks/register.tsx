@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.8.1'
+const VERSION = '0.8.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -37,6 +37,17 @@ const confirmReset = atom({ plugin: 'crew', key: 'confirmReset' } as const, fals
 // What the last update check or install said, shown in /crew (not just a toast that's gone in seconds).
 type UpdateNote = { state: '' | 'busy' | 'ok' | 'error'; text: string }
 const updateNote = atom({ plugin: 'crew', key: 'updateNote' } as const, { state: '', text: '' } as UpdateNote)
+const hostNote = atom({ plugin: 'crew', key: 'hostNote' } as const, '') // what Host a crew is doing, or what went wrong
+// Messages a teammate flagged "for your human", pinned at the top of /crew until dismissed.
+type Pin = { id: number; from: string; text: string; at: number }
+const pins = atom({ plugin: 'crew', key: 'pins' } as const, [] as Pin[])
+const pendingLeader = atom({ plugin: 'crew', key: 'pendingLeader' } as const, '') // "make X the leader?" awaiting a yes
+const joinMode = atom({ plugin: 'crew', key: 'joinMode' } as const, false) // first-run setup: joining a friend's crew
+
+// Relay time (seconds) as "HH:MM:SS.mmm UTC", for the sent/delivered stamps on crew messages.
+function stamp(at: number) {
+  return `${new Date(at * 1000).toISOString().slice(11, 23)} UTC`
+}
 let lastTalk = 0 // when a crew message last came or went: we check in faster for a while after
 const IMAGE_TYPES: Record<string, string> = {
   png: 'image/png',
@@ -59,6 +70,11 @@ type Config = {
 let cfg: Config = { base: '', me: '', key: '', autoRun: 'leader', toasts: 'all', pollMs: 3000, configured: false }
 let inflight: Promise<void> | null = null
 let delivering: Promise<void> = Promise.resolve() // crew messages being handed to Claude, one batch after another
+let skipDelivery = false // while (re)joining: the backlog goes into one catch-up instead of one message each
+// Requests that queued a "start work" prompt, and which of those Claude has already answered with crew_send:
+// an answered one's queued prompt is dropped instead of running the request a second time.
+const queuedRequests = new Map<number, string>() // request id -> who sent it
+const answeredRequests = new Set<number>()
 let working = false
 let failures = 0
 let skip = 0
@@ -132,8 +148,16 @@ async function joinSession($: EngineInterface) {
   await $.store.set(`membership:${cfg.base}`, 'joined')
   joined = true
   lastTalk = Date.now()
-  await poll($) // the first check-in tells the relay, and the crew sees us arrive
-  await catchUp($).catch(() => {}) // and our Claude learns where the crew is at
+  const lastSeen = Number((await $.store.get(`cursor:${cfg.base}`)) ?? 0)
+  // The first check-in tells the relay (the crew sees us arrive). What we missed meanwhile goes into
+  // one catch-up below rather than being replayed message by message.
+  skipDelivery = true
+  try {
+    await poll($)
+  } finally {
+    skipDelivery = false
+  }
+  await catchUp($, lastSeen).catch(() => {}) // and our Claude learns where the crew is at
   $.ui.toast('crew: you joined the crew session', { timeoutMs: 4000 })
 }
 
@@ -306,7 +330,11 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
                 ? `📷 ${m.from} sent ${direct ? 'you ' : ''}an image${m.caption ? `: ${m.caption}` : ''}`
                 : `crew · ${line(m)}`
     const important = direct || m.kind === 'out' || m.kind === 'leave'
-    if (cfg.toasts === 'all' || (cfg.toasts === 'direct' && important))
+    if (m.notify) {
+      // "for your human": always shown, whatever the notification setting, and pinned in /crew until dismissed
+      $.ui.toast(`📣 ${m.from}: ${m.text}`.slice(0, 300), { timeoutMs: 15000 })
+      await update($, pins, list => [...list, { id: m.id, from: m.from, text: m.text, at: m.at }].slice(-3))
+    } else if (cfg.toasts === 'all' || (cfg.toasts === 'direct' && important))
       $.ui.toast(toast.slice(0, 300), { timeoutMs: m.kind === 'out' || m.kind === 'leave' ? 10000 : 6000 })
     if (m.kind === 'update' || m.kind === 'join') continue
     lastTalk = Date.now()
@@ -325,7 +353,9 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
           {
             type: 'text',
             text:
-              `<crew-message from="${m.from}"${m.from === leader ? ' role="leader"' : ''} to="${m.to}" kind="${m.kind}" id="${m.id}">\n${body}\n</crew-message>\n` +
+              `<crew-message from="${m.from}"${m.from === leader ? ' role="leader"' : ''} to="${m.to}" kind="${m.kind}" id="${m.id}" ` +
+              `sent="${stamp(m.at)}" delivered="${stamp(Date.now() / 1000)}"${m.notify ? ' for-human="yes"' : ''}>\n${body}\n</crew-message>\n` +
+              (m.notify ? `(${m.from} flagged this for your user: make sure they see it.)\n` : '') +
               crewNote(m, leader),
           },
         ],
@@ -334,7 +364,10 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
     const trusted = cfg.autoRun === 'anyone' || (cfg.autoRun === 'leader' && m.from === leader)
     // A queued prompt only resolves once Claude is free to start it, so it is never awaited here:
     // waiting on it would hold up the check-ins, and the relay would think we'd dropped off.
-    if (direct && m.kind === 'request' && trusted) {
+    // Only an idle Claude needs a prompt to start on it: a busy one reads the request in its current turn,
+    // and a queued prompt would then run it a second time once it goes idle.
+    if (direct && m.kind === 'request' && trusted && !working) {
+      queuedRequests.set(m.id, m.from)
       void $.prompt
         .submit({
           text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
@@ -369,7 +402,8 @@ async function pollOnce($: EngineInterface) {
     const leader: string | null = data.leader ?? null
     // A first-ever connection shows recent history in the pane but doesn't replay it into the conversation.
     // Delivery runs on its own track (in order), so a slow image download never delays the next check-in.
-    if (stored >= 0 || prev.cursor > 0) delivering = delivering.then(() => deliver($, msgs, leader)).catch(() => {})
+    if (!skipDelivery && (stored >= 0 || prev.cursor > 0))
+      delivering = delivering.then(() => deliver($, msgs, leader)).catch(() => {})
     const cursor = Math.max(since, Number(data.cursor) || 0)
     await $.store.set(`cursor:${cfg.base}`, cursor)
     const epoch = Number(data.chatEpoch ?? 0)
@@ -659,47 +693,70 @@ async function hostCrew($: EngineInterface) {
     $.ui.toast('crew: save Your name first (type it and press Enter), then press Host a crew', { timeoutMs: 8000 })
     return
   }
-  const dir = await crewDir($)
-  let key = cfg.key
-  if (await relayVersionAt($, HOST_URL)) {
-    // A relay is already running here (start-relay.bat, or an earlier Host): use it, and its key if we lack one.
-    key = key || (await readKey($, `${dir}\\key.txt`)) || (await readKey($, `${$.plugin.root}\\server\\crew_key.txt`))
-    if (!key) {
-      $.ui.toast("crew: a relay is already running on this PC, but I don't know its key. Paste it into Crew key.", { timeoutMs: 10000 })
+  // The relay's own folder: start-relay.bat keeps its key (crew_key.txt) and data (crew_state.json) there,
+  // so hosting from here and double-clicking the .bat are the same relay with the same chat and tasks.
+  const server = `${$.plugin.root}\\server`
+  const keyFile = `${server}\\crew_key.txt`
+  if (!(await relayVersionAt($, HOST_URL))) {
+    setHostNote($, 'Starting your relay (a "Crew relay" window opens: keep it open while you host)…')
+    try {
+      await $.process.run(['cmd', '/c', 'start', '"Crew relay"', `${server}\\start-relay.bat`], { timeoutMs: 15000 })
+    } catch (err) {
+      setHostNote($, `Couldn't open start-relay.bat: ${err instanceof Error ? err.message : err}`)
       return
     }
-  } else {
-    $.ui.toast('crew: starting your relay…', { timeoutMs: 4000 })
-    key = key || newKey()
-    await $.process.run(['cmd', '/c', `if not exist "${dir}" mkdir "${dir}"`], { timeoutMs: 10000 })
-    await $.fs.write(`${dir}\\key.txt`, `${key}\n`)
-    const script = `${$.plugin.root}\\server\\relay.py`
-    const relayArgs = ['--key-file', `${dir}\\key.txt`, '--data', `${dir}\\crew_state.json`]
-    for (const py of ['pythonw', 'pyw', 'python']) {
-      try {
-        const r = await $.process.run(['cmd', '/c', 'start', '""', '/min', py, script, ...relayArgs], { timeoutMs: 10000 })
-        if (r.exitCode === 0) break
-      } catch {
-        // try the next Python launcher
-      }
-    }
     let up = false
-    for (let i = 0; i < 12 && !up; i++) {
+    for (let i = 0; i < 20 && !up; i++) {
       await $.clock.sleep(500)
       up = (await relayVersionAt($, HOST_URL)) !== null
     }
     if (!up) {
-      $.ui.toast("crew: couldn't start the relay. Is Python installed? (python.org)", { timeoutMs: 10000 })
+      setHostNote($, "The relay didn't start. Is Python installed (python.org)? The Crew relay window shows the error.")
       return
     }
   }
-  await update($, hostInfo, () => ({ ip: '', key }))
+  // A relay is up here: use its key (the .bat's file first, then an older Host's), or the one already saved.
+  const key = (await readKey($, keyFile)) || (await readKey($, `${await crewDir($)}\\key.txt`)) || cfg.key
+  if (!key) {
+    setHostNote($, "A relay is running on this PC, but I can't find its key. Paste it into Crew key below.")
+    return
+  }
   const ip = await lanAddress($)
   await update($, hostInfo, () => ({ ip, key }))
-  $.ui.toast(`crew: you're hosting! Press Copy invite and send it to your friends.`, { timeoutMs: 8000 })
-  // Point this plugin at its own relay. Each saved setting reloads the plugin, which then reconnects.
+  setHostNote($, '')
+  // Straight into the session: mark us joined, then point the plugin at its own relay.
+  await update($, membership, () => 'joined' as Membership)
+  await $.store.set(`membership:${HOST_URL}`, 'joined')
+  $.ui.toast("crew: you're hosting and in the session! Press Copy invite and send it to your friends.", { timeoutMs: 8000 })
+  if (cfg.key === key && cfg.base === HOST_URL) {
+    await joinSession($) // nothing to save, so no reload: join right here
+    return
+  }
+  // Each saved setting reloads the plugin; the reload connects and joins on its own.
   if (cfg.key !== key) await $.config.set({ key: 'crew.key', value: key })
   if (cfg.base !== HOST_URL) await $.config.set({ key: 'crew.relayUrl', value: HOST_URL })
+}
+
+function setHostNote($: EngineInterface, text: string) {
+  void update($, hostNote, () => text)
+}
+
+function setJoinMode($: EngineInterface, on: boolean) {
+  void update($, joinMode, () => on)
+}
+
+function unpin($: EngineInterface, id: number) {
+  void update($, pins, list => list.filter(p => p.id !== id))
+}
+
+// Changing the leader asks first (no more accidental tug-of-war); '__none' means "clear the leader".
+function proposeLeader($: EngineInterface, name: string) {
+  void update($, pendingLeader, () => name)
+}
+
+function confirmLeader($: EngineInterface, name: string) {
+  void update($, pendingLeader, () => '')
+  setLeader($, name === '__none' ? '' : name)
 }
 
 // Hosting already (say after a restart): find the address to put in the invite.
@@ -780,10 +837,14 @@ function saveChatPress($: EngineInterface) {
 }
 
 // A Claude (re)joining a crew session gets a briefing in its conversation: who leads, what's open, what was said.
-async function catchUp($: EngineInterface) {
+async function catchUp($: EngineInterface, lastSeen = 0) {
   const data = await relay($, 'GET', '/poll?since=0')
   const tasks: CrewTask[] = (data.tasks ?? []).filter((t: CrewTask) => t.status !== 'done')
-  const msgs: CrewMessage[] = (data.messages ?? []).filter((m: CrewMessage) => m.kind !== 'join').slice(-30)
+  const all: CrewMessage[] = (data.messages ?? []).filter((m: CrewMessage) => m.kind !== 'join')
+  // Back after a break: only what happened since we last looked. First time here: the recent history.
+  const fresh = lastSeen > 0 ? all.filter(m => m.id > lastSeen) : all
+  const msgs = fresh.slice(-30)
+  const hidden = all.length - msgs.length
   if (!tasks.length && !msgs.length) return
   const leader = data.leader ?? null
   const role =
@@ -801,7 +862,9 @@ async function catchUp($: EngineInterface) {
           text:
             `<crew-catchup>\nYou just (re)joined the crew session as "${cfg.me}". Here is where things stand.\n\n` +
             `Open tasks:\n${tasks.map(fmtTask).join('\n') || '(none)'}\n\n` +
-            `Recent crew messages (oldest first):\n${msgs.map(m => `[${clockTime(m.at)}] ${line(m)}`).join('\n') || '(none)'}\n` +
+            `${lastSeen > 0 ? 'Crew messages since you were last here' : 'Recent crew messages'} (oldest first):\n` +
+            `${msgs.map(m => `[${clockTime(m.at)}] ${line(m)}`).join('\n') || '(nothing new)'}\n` +
+            (hidden > 0 ? `(${hidden} older message${hidden === 1 ? '' : 's'} not shown; crew_status has the latest.)\n` : '') +
             `</crew-catchup>\n(From the crew plugin, not typed by the user.) ${role}`,
         },
       ],
@@ -886,8 +949,26 @@ const TOOLS = [
         text: { type: 'string' },
         to: { type: 'string', description: "teammate name or 'all' (default)" },
         kind: { type: 'string', enum: ['chat', 'request', 'update'] },
+        notify_human: {
+          type: 'boolean',
+          description: "true when it's for the teammate's human, not just their Claude: shown to them directly and pinned in their /crew",
+        },
       },
       required: ['text'],
+    },
+  },
+  {
+    name: 'crew_wait',
+    description:
+      'Wait for a reply from the crew instead of polling or sleeping: returns as soon as a message for you arrives ' +
+      '(optionally only from one teammate), or after the timeout. Costs nothing while it waits.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'only wake for this teammate (default: anyone)' },
+        timeout_s: { type: 'number', description: 'how long to wait, 1 to 90 seconds (default 60)' },
+      },
     },
   },
   {
@@ -904,12 +985,12 @@ const TOOLS = [
     name: 'crew_task',
     description:
       "Work the crew's shared task board: add a task (optionally with an assignee, who gets it as a request), assign one, " +
-      'claim one before starting it, mark it done with a note of the result, release it, or remove it.',
+      'claim one before starting it, mark it done with a note of the result, release it, edit its title/note when it goes stale, or remove it.',
     isDeferred: false,
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['add', 'assign', 'claim', 'done', 'release', 'remove'] },
+        action: { type: 'string', enum: ['add', 'assign', 'claim', 'done', 'release', 'edit', 'remove'] },
         id: { type: 'number', description: 'task id (every action but add)' },
         title: { type: 'string', description: 'for add' },
         assignee: { type: 'string', description: 'teammate name, for add or assign' },
@@ -1035,6 +1116,12 @@ export const register: Register = (on, options) => {
 
   // A new prompt: the Clawd cheers before it starts thinking.
   on('prompt.submit', async ($, e, next) => {
+    // A queued crew request that Claude already answered in the meantime doesn't run again.
+    const req = /^Crew request #(\d+) from /.exec(e.text)
+    if (req && answeredRequests.has(Number(req[1]))) {
+      queuedRequests.delete(Number(req[1]))
+      return { drop: `crew: skipped request #${req[1]}, it was already answered` }
+    }
     cheerUntil = Date.now() + 5000
     doneUntil = 0
     lastBump = 0
@@ -1095,7 +1182,14 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__crew__crew_send' }, async ($, e: any) => {
     if (!joined) return ok("You're not in the crew session right now; ask the user to join it from /crew.")
     lastTalk = Date.now()
-    const msg = await relay($, 'POST', '/send', { text: e.text, to: e.to ?? 'all', kind: e.kind ?? 'chat' })
+    // Replying to someone counts as answering their queued requests, so those don't run a second time.
+    for (const [id, from] of queuedRequests) if (from === e.to) answeredRequests.add(id)
+    const msg = await relay($, 'POST', '/send', {
+      text: e.text,
+      to: e.to ?? 'all',
+      kind: e.kind ?? 'chat',
+      notify: e.notify_human === true,
+    })
     await poll($)
     return ok(`Sent #${msg.id} to ${msg.to}.`)
   }).catch(failed)
@@ -1108,8 +1202,12 @@ export const register: Register = (on, options) => {
     const n = Math.max(1, Math.min(100, Number(e.messages) || 20))
     const peer = (p: CrewSnapshot['peers'][number]) =>
       `${p.name}${p.leader ? ' (leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}`
+    const openTasks = s.tasks.filter(t => t.status !== 'done')
+    const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
+    const onlineNow = s.peers.filter(p => p.online).length
     return ok(
       [
+        `Summary: ${onlineNow} online · ${openTasks.length} open task${openTasks.length === 1 ? '' : 's'} (${mine} yours) · leader ${s.leader ?? 'none'}`,
         `You are "${me}". Leader: ${s.leader ?? 'none'}. Plugin ${VERSION}` +
           (newer(s.latest, VERSION) ? ` (update ${s.latest} available)` : '') +
           `, relay ${s.relayVersion ?? 'unknown'}.`,
@@ -1144,6 +1242,20 @@ export const register: Register = (on, options) => {
     return ok(`Shared "${e.name}" with the crew.`)
   }).catch(failed)
 
+  // crew_wait: the relay holds the request open until a message arrives, so waiting costs no tokens or budget.
+  on('tool.call', { tool: 'mcp__crew__crew_wait' }, async ($, e: any) => {
+    if (!joined) return ok("You're not in the crew session right now; ask the user to join it from /crew.")
+    const s = await read($, snapshot)
+    const timeout = Math.max(1, Math.min(90, Number(e.timeout_s) || 60))
+    const from = typeof e.from === 'string' && e.from ? `&from=${encodeURIComponent(e.from)}` : ''
+    lastTalk = Date.now()
+    const r = await relay($, 'GET', `/wait?since=${s.cursor}${from}&timeout=${timeout}`)
+    const got: CrewMessage[] = r.messages ?? []
+    poll($).catch(() => {}) // the usual delivery picks them up too
+    if (!got.length) return ok(`No reply${e.from ? ` from ${e.from}` : ''} within ${timeout}s.`)
+    return ok(got.map(m => `#${m.id} [sent ${stamp(m.at)}] ${line(m)}`).join('\n'))
+  }).catch(failed)
+
   on('tool.call', { tool: 'mcp__crew__crew_send_image' }, async ($, e: any) => {
     if (!joined) return ok("You're not in the crew session right now; ask the user to join it from /crew.")
     const msg = await sendImage($, String(e.path ?? ''), e.to ?? 'all', String(e.caption ?? ''))
@@ -1163,11 +1275,15 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Input, Select, Button } = $.ui.resolve(e) as any
     const s = await read($, snapshot)
-    const showSettings = (await read($, settingsOpen)) || !configured
+    const showSettings = (await read($, settingsOpen)) && configured // first run uses the guided setup instead
     const member = (await read($, membership)) || (configured ? 'joined' : '')
     const host = await read($, hostInfo)
     const confirming = await read($, confirmReset)
     const note = await read($, updateNote)
+    const hostMsg = await read($, hostNote)
+    const pinned = await read($, pins)
+    const proposedLeader = await read($, pendingLeader)
+    const joining = await read($, joinMode)
     const open = s.tasks.filter(t => t.status !== 'done')
     const names = [...new Set([...s.peers.map(p => p.name), ...(me ? [me] : [])])].sort()
     const online = s.peers.filter(p => p.online).length
@@ -1223,7 +1339,69 @@ export const register: Register = (on, options) => {
           </Box>
         </Box>
 
+        {/* -- first run: a short guided setup instead of a wall of settings */}
+        {!configured && (
+          <Callout>
+            <Text bold>Set up your crew</Text>
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold={!me} dimColor={!!me}>
+                {me ? '✓' : '1.'} Your name{me ? `: ${me}` : ''}
+              </Text>
+              {!me && Input && (
+                <Input key="setup-name" placeholder="how teammates see you, then press Enter" submitLabel="next" autoFocus onSubmit={(v: string) => setOption($, 'name', v)} />
+              )}
+            </Box>
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold={!!me} dimColor={!me}>2. Host a crew, or join a friend's</Text>
+              {me && !joining && (
+                <Box flexDirection="row">
+                  <Button key="host" label="Host a crew" variant="primary" onPress={() => hostPress($)} />
+                  <Button key="join-friend" label="Join a friend's crew" onPress={() => setJoinMode($, true)} />
+                </Box>
+              )}
+              {me && joining && (
+                <Box flexDirection="column">
+                  <Text dimColor>Paste what your friend's invite says. Press Enter in each field.</Text>
+                  {Input && (
+                    <Input key="setup-url" label="Relay URL " value={base} placeholder="http://26.x.x.x:7777" submitLabel="save" autoFocus onSubmit={(v: string) => setOption($, 'relayUrl', v)} />
+                  )}
+                  {Input && (
+                    <Input key="setup-key" label="Crew key  " value="" placeholder={key ? '•••••• saved' : 'paste the key'} submitLabel="save" onSubmit={(v: string) => setOption($, 'key', v)} />
+                  )}
+                  <Text dimColor>
+                    saved: URL {base ? '✓' : '✗'} · key {key ? '✓' : '✗'}: once both are saved you're in.
+                  </Text>
+                  <Button key="back" label="← Back" dimColor onPress={() => setJoinMode($, false)} />
+                </Box>
+              )}
+              {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
+            </Box>
+          </Callout>
+        )}
+
         {/* -- notices, only when they apply */}
+        {pinned.length > 0 && (
+          <Callout>
+            {pinned.map(p => (
+              <Box flexDirection="row" justifyContent="space-between">
+                <Text>📣 {p.from}: {p.text}</Text>
+                <Button key={`pin-${p.id}`} label="✕" plain dimColor onPress={() => unpin($, p.id)} />
+              </Box>
+            ))}
+          </Callout>
+        )}
+        {inSession && proposedLeader !== '' && proposedLeader !== (s.leader ?? '') && (
+          <Callout>
+            <Text bold>
+              {proposedLeader === '__none' ? 'Clear the crew leader?' : `Make ${proposedLeader === me ? 'yourself' : proposedLeader} the crew leader?`}
+            </Text>
+            <Text dimColor>Everyone's Claude switches to taking requests from the new leader.</Text>
+            <Box flexDirection="row">
+              <Button key="leader-yes" label="Yes" variant="primary" onPress={() => confirmLeader($, proposedLeader)} />
+              <Button key="leader-no" label="Cancel" onPress={() => proposeLeader($, '')} />
+            </Box>
+          </Callout>
+        )}
         {inSession && s.error !== '' && (
           <Callout>
             <Text color="error">{s.error}</Text>
@@ -1271,7 +1449,7 @@ export const register: Register = (on, options) => {
             <Text bold>Connection</Text>
             <Box flexDirection="row">
               <Text>Host it yourself: </Text>
-              <Button key="host" label={isHosting() ? 'Hosting ✓' : 'Host a crew'} variant={isHosting() ? undefined : 'primary'} onPress={() => hostPress($)} />
+              <Button key="host-settings" label={isHosting() ? 'Hosting ✓' : 'Host a crew'} variant={isHosting() ? undefined : 'primary'} onPress={() => hostPress($)} />
             </Box>
             <Text dimColor>Or join a friend: paste their Relay URL and Crew key. Press Enter in a field to save it.</Text>
             {Input && (
@@ -1366,7 +1544,7 @@ export const register: Register = (on, options) => {
                   label="Leader "
                   value={s.leader ?? ''}
                   options={[{ value: '', label: 'no leader' }, ...names.map(n => ({ value: n, label: n === me ? `${n} (me)` : n }))]}
-                  onSelect={(v: string) => setLeader($, v)}
+                  onSelect={(v: string) => proposeLeader($, v === (s.leader ?? '') ? '' : v || '__none')}
                 />
               )}
               {s.peers.length === 0 && <Text dimColor>Nobody here yet.</Text>}

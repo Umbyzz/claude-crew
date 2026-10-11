@@ -11,6 +11,7 @@ export type CrewMessage = {
   mime?: string
   size?: number
   caption?: string
+  notify?: boolean // flagged "for your human" by the sender
 }
 
 export type CrewPeer = {
@@ -57,6 +58,10 @@ declare module 'claude-code' {
       host: { ip: string; key: string }
       confirmReset: boolean
       updateNote: { state: '' | 'busy' | 'ok' | 'error'; text: string }
+      hostNote: string
+      pins: { id: number; from: string; text: string; at: number }[]
+      pendingLeader: string
+      joinMode: boolean
     }
   }
 }

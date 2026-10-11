@@ -89,6 +89,7 @@ test('picking a leader in the pane tells the relay', { options: OPTIONS }, async
 
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.select({ key: 'leader', value: 'bob' })
+  await ui.press({ key: 'leader-yes' }) // leader changes ask first
   await ui.unmount()
 
   const call = seen.find(s => s.url.endsWith('/leader'))
@@ -98,7 +99,7 @@ test('picking a leader in the pane tells the relay', { options: OPTIONS }, async
 test('without settings the pane opens on the settings block', async ($, on) => {
   fakeRelay(on)
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
-  expect(await ui.find({ key: 'opt-key' })).toBeDefined()
+  expect(await ui.find({ key: 'setup-name' })).toBeDefined() // the guided setup starts with your name
   expect(await ui.find({ key: 'leader' })).toBeUndefined()
   await ui.unmount()
 })
@@ -402,25 +403,27 @@ test('Refresh reconnects right away, and explains a relay that is down', { optio
   await ui.unmount()
 })
 
-test('Host a crew starts a relay in the background and points this plugin at it', { options: { ...OPTIONS, relayUrl: '', key: '' } }, async ($, on) => {
+test('Host a crew opens start-relay.bat, takes its key and joins the session', { options: { ...OPTIONS, relayUrl: '', key: '' } }, async ($, on) => {
   mock.store(on)
   mock.env(on, { USERPROFILE: 'C:\\Users\\t' })
   on('clock.sleep', async () => ({ value: undefined }) as any)
   on('ui.status', async () => ({ value: undefined }))
   on('ui.toast', async () => ({ value: undefined }))
-  on('fs.write', async () => ({ value: undefined }) as any)
+  on('fs.read', async (_$: unknown, e: any) =>
+    String(e.path).endsWith('crew_key.txt') ? ({ value: 'batkey123\n' } as any) : ({ deny: 'ENOENT' } as any),
+  )
   let started = false
   const ran: string[][] = []
   on('process.run', async (_$: unknown, e: any) => {
     ran.push([...e.argv])
-    if (e.argv.some((a: string) => a.endsWith('relay.py'))) started = true
+    if (e.argv.some((a: string) => a.endsWith('start-relay.bat'))) started = true
     const stdout = e.argv[0] === 'ipconfig' ? '   IPv4 Address. . . : 192.168.1.5\r\n   IPv4 Address. . . : 26.12.34.56\r\n' : ''
     return { value: { exitCode: 0, stdout, stderr: '' } }
   })
   on('http.fetch', async (_$: unknown, e: any) => {
     if (e.url.endsWith('/health')) {
       if (!started) return { deny: 'ECONNREFUSED: Unable to connect' } as any
-      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true, "version": "0.7.8"}' } }
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true, "version": "0.8.2"}' } }
     }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
   })
@@ -433,12 +436,10 @@ test('Host a crew starts a relay in the background and points this plugin at it'
   await ui.press({ key: 'host' })
   await settle(200)
   await ui.unmount()
-  const launch = ran.find(a => a.some(x => x.endsWith('relay.py')))?.join(' ') ?? ''
-  expect(launch).toContain('--key-file C:\\Users\\t\\.claude\\crew-relay\\key.txt')
+  expect(ran.some(a => a.join(' ').includes('start "Crew relay"') && a.join(' ').endsWith('start-relay.bat'))).toBe(true)
+  expect(sets.find(s => s.key === 'crew.key')?.value).toBe('batkey123')
   expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://127.0.0.1:7777')
-  expect(String(sets.find(s => s.key === 'crew.key')?.value)).toMatch(/^[0-9a-f]{36}$/)
 })
-
 test('Reset chat warns first; Cancel does nothing, Yes clears the chat for everyone', { options: OPTIONS }, async ($, on) => {
   let epoch = 0
   const posted: string[] = []
@@ -512,7 +513,7 @@ test('rejoining a crew briefs your Claude: open tasks and recent messages', { op
       status: 200,
       ok: true,
       headers: {},
-      text: JSON.stringify({ ...POLL, messages: [{ id: 8, from: 'bob', to: 'all', kind: 'chat', text: 'walk anim is in', at: 1791700000 }], cursor: 9 }),
+      text: JSON.stringify({ ...POLL, messages: [{ id: 8, from: 'bob', to: 'all', kind: 'chat', text: 'old news', at: 1791690000 }, { id: 10, from: 'bob', to: 'all', kind: 'chat', text: 'walk anim is in', at: 1791700000 }], cursor: 10 }),
     },
   }))
   await startSession(on, $)
@@ -524,6 +525,8 @@ test('rejoining a crew briefs your Claude: open tasks and recent messages', { op
   const brief = rows.find(r => r.includes('crew-catchup')) ?? ''
   expect(brief).toContain('Write login tests')
   expect(brief).toContain('walk anim is in')
+  expect(brief).not.toContain('old news') // only what's new since we were last here
+  expect(brief).toContain('1 older message not shown')
   expect(brief).toContain('You are the crew leader')
 })
 
@@ -576,4 +579,64 @@ test('Install update works with an npm-installed claude (claude.cmd), and shows 
   expect(await ui.find({ text: /not found in marketplace/ } as any)).toBeDefined()
   await ui.unmount()
   LATEST = '0.3.0'
+})
+
+test('a request already answered with crew_send does not run a second time', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const submitted: string[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => {
+    submitted.push(e.text)
+    return e
+  })
+  let polls = 0
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') return { value: { status: 200, ok: true, headers: {}, text: '{"id": 70, "to": "bob"}' } }
+    polls += 1
+    const messages = polls === 1 ? [{ id: 64, from: 'bob', to: 'alice', kind: 'request', text: 'run crew_status', at: 0 }] : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, leader: 'bob', messages, cursor: 64 }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // the request arrives while we're idle: a prompt gets queued
+  await settle()
+  await $.tool.call({ tool: 'mcp__crew__crew_send', text: 'done!', to: 'bob' } as any) // Claude answers it meanwhile
+  const later: any = await $.prompt.submit({ text: 'Crew request #64 from bob (crew leader):\n\nrun crew_status' } as any)
+  expect(later.drop).toContain('already answered')
+})
+
+test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
+  const seen: { url: string; init: any }[] = []
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    if (e.url.includes('/wait'))
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ messages: [{ id: 9, from: 'bob', to: 'alice', kind: 'chat', text: 'pong', at: 1791700000.25 }] }) } }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_wait', from: 'bob', timeout_s: 30 } as any)
+  expect(seen.some(s => s.url.includes('/wait?') && s.url.includes('from=bob') && s.url.includes('timeout=30'))).toBe(true)
+  expect(String(r.result)).toContain('pong')
+  expect(String(r.result)).toContain('UTC')
+})
+
+test('a message flagged for your human is pinned in /crew until dismissed', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  let polls = 0
+  on('http.fetch', async () => {
+    polls += 1
+    const messages = polls === 1 ? [{ id: 69, from: 'bob', to: 'alice', kind: 'chat', text: 'we have to finish Pumpkin Panic', at: 0, notify: true }] : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 69 }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /Pumpkin Panic/ } as any)).toBeDefined()
+  await ui.press({ key: 'pin-69' })
+  expect(await ui.find({ key: 'pin-69' })).toBeUndefined()
+  await ui.unmount()
 })
