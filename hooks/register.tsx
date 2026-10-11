@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.3.0'
+const VERSION = '1.3.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -198,7 +198,7 @@ async function switchProject($: EngineInterface, raw: string) {
     skipDelivery = false
   }
   await catchUp($, lastSeen).catch(() => {})
-  await loadFolder($).catch(() => {})
+  await homeFolderFor($).catch(() => {}) // a new project gets its folder under the projects home
   $.ui.toast(`crew: now in project "${name}"`, { timeoutMs: 4000 })
 }
 
@@ -240,6 +240,29 @@ async function setFolder($: EngineInterface, raw: string) {
   if (!path) return
   await $.store.set(`folder:${cfg.base}:${projectName}`, path)
   await loadFolder($, `Folder for "${projectName}" set.`)
+}
+
+// "Projects home": set once, and every project without a folder of its own gets <home>\<project name>,
+// made on the spot. One place for all crew projects, and nobody picks folders by hand.
+async function projectsHome($: EngineInterface) {
+  return String((await $.store.get(`projectsHome:${cfg.base}`)) ?? '')
+}
+
+async function setProjectsHome($: EngineInterface, raw: string) {
+  const home = raw.trim().replace(/^["']|["']$/g, '').replace(/[\\/]+$/, '')
+  await $.store.set(`projectsHome:${cfg.base}`, home)
+  if (home) await homeFolderFor($, true)
+  else await loadFolder($, 'Projects home cleared.')
+}
+
+// Give the current project its folder under the projects home, if it has none of its own yet.
+async function homeFolderFor($: EngineInterface, announce = false) {
+  const home = await projectsHome($)
+  if (!home || (await $.store.get(`folder:${cfg.base}:${projectName}`))) return loadFolder($)
+  const path = `${home}\\${projectName.replace(/[<>:"/\\|?*]/g, '').trim() || 'main'}`
+  const made = await makeDir($, path)
+  if (made.ok) await $.store.set(`folder:${cfg.base}:${projectName}`, path)
+  await loadFolder($, made.ok ? (announce ? `Projects home set: "${projectName}" lives in ${path}.` : `Made ${path} for "${projectName}".`) : `Couldn't make ${path}: ${made.out.slice(0, 120)}`)
 }
 
 async function useChatFolder($: EngineInterface) {
@@ -1686,7 +1709,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['add', 'assign', 'claim', 'done', 'release', 'edit', 'remove'] },
-        id: { type: ['number', 'string'], description: 'task number, like 3 or "T3" (every action but add)' },
+        id: { type: 'string', description: 'task number, like "3" or "T3" (every action but add)' },
         title: { type: 'string', description: 'for add' },
         assignee: { type: 'string', description: 'teammate name, for add or assign' },
         note: { type: 'string', description: 'details, or the result summary on done' },
@@ -1768,10 +1791,23 @@ export const register: Register = (on, options) => {
   cfg = { base, me, key, autoRun, toasts, pollMs, configured }
 
   on('session.start', async ($, e, next) => {
-    for (const tool of TOOLS) await $.tool.register(tool)
-    await $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' })
-    await $.command.register({ name: 'clawds', description: 'Open the Clawds window: your crew as little pixel friends (uses no tokens)' })
-    await $.command.register({ name: 'crewlog', description: "Open the crew log window: every crew message live, the Claudes' requests and replies too (uses no tokens)" })
+    // Commands first, each on its own: if anything later fails, /crew is still there to show what went wrong.
+    const problems: string[] = []
+    const attempt = async (what: string, fn: () => Promise<unknown>) => {
+      try {
+        await fn()
+      } catch (err) {
+        problems.push(`${what}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    await attempt('/crew', () => $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' }))
+    await attempt('/clawds', () => $.command.register({ name: 'clawds', description: 'Open the Clawds window: your crew as little pixel friends (uses no tokens)' }))
+    await attempt('/crewlog', () => $.command.register({ name: 'crewlog', description: "Open the crew log window: every crew message live, the Claudes' requests and replies too (uses no tokens)" }))
+    for (const tool of TOOLS) await attempt(tool.name, () => $.tool.register(tool))
+    if (problems.length) {
+      $.ui.toast(`crew: couldn't set up ${problems.length} part(s): ${problems.join(' · ')}`.slice(0, 400), { timeoutMs: 20000 })
+      $.ui.status(`crew: setup problem (${problems[0].slice(0, 60)})`)
+    }
     void checkUpdate($)
     $.clock.every(SIX_HOURS, () => void checkUpdate($))
     if (!configured) {
@@ -2089,6 +2125,7 @@ export const register: Register = (on, options) => {
     const peek = await read($, docOpen)
     const folder = await read($, folderView)
     const kicking = await read($, kickPending)
+    const home = configured ? await projectsHome($) : ''
     const canKick = s.leader === me || isHosting() // the relay checks this too
     const docs: DocMeta[] = s.shared
       .map(n => meta.docs.find(d => d.name === n) ?? { name: n, by: '', at: 0, size: 0 })
@@ -2593,6 +2630,16 @@ export const register: Register = (on, options) => {
               )}
               {Input && (
                 <Input key="folder-set" label="Change to " placeholder="paste a folder path, then Enter" submitLabel="set" onSubmit={(v: string) => folderPress($, () => setFolder($, v))} />
+              )}
+              {Input && (
+                <Input
+                  key="projects-home"
+                  label="Projects home "
+                  value={home}
+                  placeholder="e.g. C:\Users\you\Documents\Crew projects (new projects get a folder here)"
+                  submitLabel="set"
+                  onSubmit={(v: string) => folderPress($, () => setProjectsHome($, v))}
+                />
               )}
             </Card>
 

@@ -957,6 +957,27 @@ test("the Project tab shows the project's folder, opens it, lists and makes subf
   expect(lines.some(l => l.includes("New-Item -ItemType Directory -Force -Path 'C:\\Games\\Lava\\levels'"))).toBe(true)
 })
 
+test('with a projects home set, a new project gets its own folder there', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  mock.session(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  const ran: string[] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push(e.argv.join(' '))
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  await ui.input({ key: 'projects-home', text: 'C:\\Crew' })
+  await ui.input({ key: 'new-project', text: 'lava' })
+  await settle()
+  expect(ran.some(l => l.includes("-Path 'C:\\Crew\\lava'"))).toBe(true)
+  expect(await ui.find({ text: /C:\\Crew\\lava/ } as any)).toBeDefined()
+  await ui.unmount()
+  await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any) // leave the shared module state on main
+})
+
 test('the leader can remove someone after a confirm', { options: OPTIONS }, async ($, on) => {
   const seen = fakeRelay(on) // alice leads in POLL
   on('ui.toast', async () => ({ value: undefined }))

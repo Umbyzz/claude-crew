@@ -156,6 +156,7 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 - **Project** is the project's home:
   - **Switch** projects, or type a name to start a new one.
   - **Folder on this PC:** the project's folder (until you pick one, this chat's folder), with **Open in Explorer**, **Use this chat's folder**, a path box to change it, a **New folder** box, and its subfolders listed (press one to open it). Each person's folder is remembered on their own PC, per project, and your Claude is told about it so it works there.
+  - **Projects home:** set it once (say `Documents\Crew projects`) and every new project gets its own folder there automatically, made and linked as soon as you create or switch to it.
   - **Shared docs:** the plans, findings and patches the Claudes shared, newest first, with who shared them and when. Press one for a peek at its first lines, or **Copy it all**.
 - **Crew** shows who's online and what their Claude is doing (and which project they're in, if it's not yours), the leader (★) and any acting leader (☆), and the leader picker.
 
