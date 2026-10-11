@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.9.9'
+const VERSION = '1.0.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -43,7 +43,12 @@ type Pin = { id: number; from: string; text: string; at: number }
 const pins = atom({ plugin: 'crew', key: 'pins' } as const, [] as Pin[])
 const pendingLeader = atom({ plugin: 'crew', key: 'pendingLeader' } as const, '') // "make X the leader?" awaiting a yes
 const joinMode = atom({ plugin: 'crew', key: 'joinMode' } as const, false) // first-run setup: joining a friend's crew
-const askTo = atom({ plugin: 'crew', key: 'askTo' } as const, '') // whose Claude "Ask a Claude" goes to ('' = the leader)
+const askTo = atom({ plugin: 'crew', key: 'askTo' } as const, '') // the chat's "To:": '' = the people, a name = that teammate's Claude
+// /crew's tabs: one card at a time instead of everything stacked. Settings is the ⚙ tab (settingsOpen).
+type Tab = 'chat' | 'tasks' | 'docs' | 'crew'
+const tab = atom({ plugin: 'crew', key: 'tab' } as const, 'chat' as Tab)
+// The Chat tab's two views: 'all' is every crew message, Claude↔Claude included; 'people' only what humans typed.
+const chatView = atom({ plugin: 'crew', key: 'chatView' } as const, 'all' as 'all' | 'people')
 const briefed = atom({ plugin: 'crew', key: 'briefed' } as const, 0) // newest message id (+1) this session's Claude was caught up to
 const confirmClear = atom({ plugin: 'crew', key: 'confirmClear' } as const, false) // "remove every open task?" awaiting a yes
 const confirmLeave = atom({ plugin: 'crew', key: 'confirmLeave' } as const, false) // "leave the crew session?" awaiting a yes
@@ -729,16 +734,16 @@ function fitChat(items: ChatItem[], rows: number, bubbleCols: number) {
 }
 
 // The pane's two building blocks, made once per surface's Box/Text (see the ui.render hook).
-const blockCache = new Map<any, { Section: any; Callout: any }>()
+const blockCache = new Map<any, { Card: any; Callout: any }>()
 function blocksFor(Box: any, Text: any) {
   let made = blockCache.get(Box)
   if (!made) blockCache.set(Box, (made = makeBlocks(Box, Text)))
   return made
 }
 function makeBlocks(Box: any, Text: any) {
-  // A titled block: one bold heading, then its content, with a blank line above.
-  const Section = ({ title, right, children }: any) => (
-    <Box flexDirection="column" marginTop={1}>
+  // A card: its own framed box, a bold title (and anything on the right of it), then its content.
+  const Card = ({ title, right, children }: any) => (
+    <Box flexDirection="column" borderStyle="round" paddingX={1} marginTop={1}>
       <Box flexDirection="row" justifyContent="space-between">
         <Text bold>{title}</Text>
         {right}
@@ -752,7 +757,22 @@ function makeBlocks(Box: any, Text: any) {
       {children}
     </Box>
   )
-  return { Section, Callout }
+  return { Card, Callout }
+}
+
+// -- tabs, and the Chat tab's view and "To:"
+
+function setTab($: EngineInterface, to: Tab) {
+  void update($, tab, () => to).then(() => update($, settingsOpen, () => false))
+}
+
+function setChatView($: EngineInterface, view: 'all' | 'people') {
+  void update($, chatView, () => view)
+}
+
+// The People view: only what humans typed in /crew (chat, and asks to a Claude).
+function peopleOnly(feed: CrewMessage[]) {
+  return feed.filter(m => m.human)
 }
 
 // -- the task manager in /crew: the same board the Claudes use through crew_task
@@ -1074,6 +1094,10 @@ async function popOut($: EngineInterface) {
 // The crew log: every crew message live in its own window, Claude↔Claude traffic included. No tokens either.
 async function crewLogOut($: EngineInterface) {
   return launchWindow($, 'crew_log.py', () => 'The crew log is open: Everything / Claudes / People at the top, and "On top" to pin it.')
+}
+
+function crewLogPress($: EngineInterface) {
+  void crewLogOut($).then(text => $.ui.toast(`crew: ${text}`, { timeoutMs: 8000 }))
 }
 
 async function launchWindow($: EngineInterface, file: string, done: (py: string) => string) {
@@ -1858,31 +1882,50 @@ export const register: Register = (on, options) => {
     const open = s.tasks.filter(t => t.status !== 'done')
     const others = s.peers.filter(p => p.name !== me).map(p => p.name).sort()
     const clearing = (await read($, confirmClear)) && open.length > 0
+    // the chat's "To:": the people (''), or a teammate's Claude while they're still in the crew
     const askPick = await read($, askTo)
-    const askTarget = askPick && others.includes(askPick) ? askPick : s.leader && s.leader !== me ? s.leader : ''
+    const askTarget = askPick && others.includes(askPick) ? askPick : ''
     const names = [...new Set([...s.peers.map(p => p.name), ...(me ? [me] : [])])].sort()
     const online = s.peers.filter(p => p.online).length
     const inSession = configured && member === 'joined'
     const hasUpdate = newer(s.latest, VERSION)
     const leaving = inSession && (await read($, confirmLeave))
+    const current: Tab | 'settings' = showSettings ? 'settings' : await read($, tab)
+    const view = await read($, chatView)
     // Shared docs, newest first. Details arrive a moment after the names; until then, the names alone.
     const meta = await read($, docList)
     const peek = await read($, docOpen)
     const docs: DocMeta[] = s.shared
       .map(n => meta.docs.find(d => d.name === n) ?? { name: n, by: '', at: 0, size: 0 })
       .sort((a, b) => b.at - a.at)
-    const docRows = docs.length ? Math.min(docs.length, 5) + 1 : 1
-    const room = Math.max(8, (e.viewport?.rows ?? 30) - (showSettings ? 30 : 18) - Math.min(open.length, 6) - docRows)
+    // The notices above the tabs, and how many rows they take, so a tab's card fits in what's left.
+    const leaderAsk = inSession && proposedLeader !== '' && proposedLeader !== (s.leader ?? '')
+    const relayOld = inSession && !!s.relayVersion && s.relayVersion !== VERSION
+    const hostingDown = configured && isHosting() && !s.connected
+    const noticeRows =
+      (leaving ? 6 : 0) + (pinned.length ? pinned.length + 2 : 0) + (leaderAsk ? 5 : 0) + (inSession && s.error ? 3 : 0) +
+      (member === 'ask' ? 5 : 0) + (hasUpdate ? 5 : 0) + (relayOld ? 1 : 0) + (hostingDown ? 4 : 0)
+    // left for a tab's body: the header (2), the tab row (2) and the card's frame and title (3) come off the top
+    const body = Math.max(6, (e.viewport?.rows ?? 30) - 7 - noticeRows)
+    // the chat also keeps rows for its To: and message fields (3) and a read receipt (1)
+    const room = Math.max(6, body - 4 - (confirming ? 7 : 0))
     const bubbleCols = Math.floor((e.viewport?.columns ?? 80) * 0.65)
-    const chat = fitChat(chatItems(s.feed, me), room - 1, bubbleCols) // a row kept for the read receipt
+    const feed = view === 'people' ? peopleOnly(s.feed) : s.feed
+    const chat = fitChat(chatItems(feed, me), room, bubbleCols)
     const lastMine = [...chat].reverse().find(i => i.type === 'group' && i.mine)
     const seen = lastMine?.type === 'group' ? receipt(lastMine.msgs[lastMine.msgs.length - 1], s, me) : ''
+    const taskRows = Math.max(3, body - 3 - (clearing ? 4 : 0))
+    const docRows = Math.max(3, body - 1 - (peek.name ? 12 : 0))
     const activityWord = (p: CrewSnapshot['peers'][number]) =>
       !p.online ? 'offline' : p.activity === 'out' ? 'out of tokens' : p.activity === 'idle' ? '' : p.activity
 
     // Made once and reused: a component defined fresh on every draw counts as a new kind of element, so
     // everything inside it was rebuilt on each redraw, and a click could land on a Button already replaced.
-    const { Section, Callout } = blocksFor(Box, Text)
+    const { Card, Callout } = blocksFor(Box, Text)
+    // a tab in the row under the header (a plain call, not a component, for the same reason)
+    const tabButton = (id: Tab | 'settings', label: string, press: () => void) => (
+      <Button key={id === 'settings' ? 'settings' : `tab-${id}`} label={label} variant={current === id ? 'primary' : undefined} dimColor={current !== id} onPress={press} />
+    )
 
     return (
       <Box flexDirection="column">
@@ -1910,9 +1953,9 @@ export const register: Register = (on, options) => {
             {configured && isHosting() && !s.connected && <Button key="start-relay-top" label="▶ Start relay" variant="primary" onPress={() => startRelayPress($)} />}
             {configured && !isHosting() && <Button key="host-top" label="Host" onPress={() => hostPress($)} />}
             <Button key="clawds" label="Clawds" onPress={() => popOutPress($)} />
+            {configured && <Button key="crew-log" label="Log" onPress={() => crewLogPress($)} />}
             {inSession && !leaving && <Button key="leave" label="Leave…" onPress={() => askLeave($, true)} />}
             {configured && member === 'left' && <Button key="join" label="Join session" variant="primary" onPress={() => joinPress($)} />}
-            <Button key="settings" label={showSettings ? 'Close settings' : '⚙ Settings'} onPress={() => toggleSettings($)} />
           </Box>
         </Box>
 
@@ -1980,7 +2023,7 @@ export const register: Register = (on, options) => {
             ))}
           </Callout>
         )}
-        {inSession && proposedLeader !== '' && proposedLeader !== (s.leader ?? '') && (
+        {leaderAsk && (
           <Callout>
             <Text bold>
               {proposedLeader === '__none' ? 'Clear the crew leader?' : `Make ${proposedLeader === me ? 'yourself' : proposedLeader} the crew leader?`}
@@ -2017,7 +2060,7 @@ export const register: Register = (on, options) => {
             </Box>
           </Callout>
         )}
-        {inSession && s.relayVersion && s.relayVersion !== VERSION && (
+        {relayOld && (
           <Box flexDirection="row">
             <Text dimColor>
               Relay {s.relayVersion} ≠ plugin {VERSION}:{' '}
@@ -2026,130 +2069,316 @@ export const register: Register = (on, options) => {
             {isHosting() && newer(VERSION, s.relayVersion) && <Button key="restart-relay" label="Restart relay" variant="primary" onPress={() => restartRelayPress($)} />}
           </Box>
         )}
-        {configured && isHosting() && (
+        {/* hosting with the relay down is a notice on every tab; while it runs, the invite lives on the Crew tab */}
+        {hostingDown && (
           <Callout>
-            <Text bold>
-              {s.connected ? `You're hosting${host.ip ? ` · friends join at http://${host.ip}:7777` : ''}` : "You're set up to host, but your relay isn't running"}
-            </Text>
-            {s.connected && !host.ip && <Text dimColor>No Radmin/Tailscale address found yet: connect your VPN, then press Host a crew again.</Text>}
-            {!s.connected && <Text dimColor>Press Start relay in Settings below to open start-relay.bat, or join a friend's crew there instead.</Text>}
+            <Text bold>You're set up to host, but your relay isn't running</Text>
+            <Text dimColor>Press ▶ Start relay (top right) to open start-relay.bat, or join a friend's crew in ⚙ Settings instead.</Text>
             {hostMsg !== '' && !showSettings && <Text dimColor>{hostMsg}</Text>}
-            {s.connected && (
-              <Box flexDirection="row">
-                <Button key="invite" label="Copy invite" variant="primary" onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
-                <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
-              </Box>
-            )}
           </Callout>
         )}
 
-        {/* -- settings, in three groups */}
-        {showSettings && (
-          <Box flexDirection="column" borderStyle="round" paddingX={1} marginTop={1}>
-            <Text bold>Connection</Text>
-            <Box flexDirection="row">
-              <Text>Host it yourself: </Text>
-              {/* ✓ only once your relay actually answers; set up to host with the relay down, Start relay is the next step */}
-              {isHosting() && s.connected ? (
-                <Button key="host-settings" label="Hosting ✓" onPress={() => hostPress($)} />
-              ) : isHosting() ? (
-                <Button key="start-relay-settings" label="Start relay (double-click)" variant="primary" onPress={() => startRelayPress($)} />
-              ) : (
-                <Box flexDirection="row">
-                  <Button key="host-settings" label="Host a crew" variant="primary" onPress={() => hostPress($)} />
-                  <Button key="start-relay-settings" label="Start relay (double-click)" onPress={() => startRelayPress($)} />
-                </Box>
+        {/* -- the tabs: one card at a time. ⚙ Settings is always there; the rest once you're in the crew session */}
+        {configured && (
+          <Box flexDirection="row" marginTop={1}>
+            {inSession && tabButton('chat', 'Chat', () => setTab($, 'chat'))}
+            {inSession && tabButton('tasks', `Tasks${open.length ? ` (${open.length})` : ''}`, () => setTab($, 'tasks'))}
+            {inSession && tabButton('docs', `Docs${docs.length ? ` (${docs.length})` : ''}`, () => setTab($, 'docs'))}
+            {inSession && tabButton('crew', `Crew (${online} online)`, () => setTab($, 'crew'))}
+            {tabButton('settings', '⚙ Settings', () => toggleSettings($))}
+          </Box>
+        )}
+        {configured && !inSession && current !== 'settings' && member === 'left' && (
+          <Card title="Not in the crew session">
+            <Text dimColor>Press Join session (top right) to see the chat, tasks, docs and crew again.</Text>
+          </Card>
+        )}
+
+        {/* -- ⚙ Settings: three cards */}
+        {current === 'settings' && (
+          <Box flexDirection="column">
+            <Card
+              title="Connection"
+              right={
+                <Text dimColor>
+                  URL {base ? '✓' : '✗'} · name {me ? '✓' : '✗'} · key {key ? '✓' : '✗'}
+                </Text>
+              }
+            >
+              <Box flexDirection="row">
+                <Text>Host it yourself: </Text>
+                {/* ✓ only once your relay actually answers; set up to host with the relay down, Start relay is the next step */}
+                {isHosting() && s.connected ? (
+                  <Button key="host-settings" label="Hosting ✓" onPress={() => hostPress($)} />
+                ) : isHosting() ? (
+                  <Button key="start-relay-settings" label="Start relay (double-click)" variant="primary" onPress={() => startRelayPress($)} />
+                ) : (
+                  <Box flexDirection="row">
+                    <Button key="host-settings" label="Host a crew" variant="primary" onPress={() => hostPress($)} />
+                    <Button key="start-relay-settings" label="Start relay (double-click)" onPress={() => startRelayPress($)} />
+                  </Box>
+                )}
+                {member !== 'joined' && <Button key="join-settings" label="Join session" onPress={() => joinPress($)} />}
+              </Box>
+              {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
+              <Box marginTop={1}>
+                <Text dimColor>Or join a friend: paste their Relay URL and Crew key. Press Enter in a field to save it.</Text>
+              </Box>
+              {Input && (
+                <Input key="opt-relayUrl" label="Relay URL " value={base} placeholder="http://26.x.x.x:7777" submitLabel="save" onSubmit={(v: string) => setOption($, 'relayUrl', v)} />
               )}
-              {member !== 'joined' && <Button key="join-settings" label="Join session" onPress={() => joinPress($)} />}
-            </Box>
-            {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
-            <Text dimColor>Or join a friend: paste their Relay URL and Crew key. Press Enter in a field to save it.</Text>
-            {Input && (
-              <Input key="opt-relayUrl" label="Relay URL " value={base} placeholder="http://26.x.x.x:7777" submitLabel="save" onSubmit={(v: string) => setOption($, 'relayUrl', v)} />
-            )}
-            {Input && (
-              <Input key="opt-name" label="Your name " value={me} placeholder="e.g. umbyz" submitLabel="save" onSubmit={(v: string) => setOption($, 'name', v)} />
-            )}
-            {Input && (
-              <Input key="opt-key" label="Crew key  " value="" placeholder={key ? '•••••• saved (type to replace)' : 'paste the relay key'} submitLabel="save" onSubmit={(v: string) => setOption($, 'key', v)} />
-            )}
-            <Box flexDirection="row">
-              <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />
-              <Text dimColor>
-                {'  '}saved: URL {base ? '✓' : '✗'} · name {me ? '✓' : '✗'} · key {key ? '✓' : '✗'}
-              </Text>
-            </Box>
+              {Input && (
+                <Input key="opt-name" label="Your name " value={me} placeholder="e.g. umbyz" submitLabel="save" onSubmit={(v: string) => setOption($, 'name', v)} />
+              )}
+              {Input && (
+                <Input key="opt-key" label="Crew key  " value="" placeholder={key ? '•••••• saved (type to replace)' : 'paste the relay key'} submitLabel="save" onSubmit={(v: string) => setOption($, 'key', v)} />
+              )}
+              <Box flexDirection="row">
+                <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />
+              </Box>
+            </Card>
 
-            <Box marginTop={1}>
-              <Text bold>Preferences</Text>
-            </Box>
-            {Select && (
-              <Select
-                key="opt-autoRun"
-                label="Auto-run requests "
-                value={autoRun}
-                options={[
-                  { value: 'off', label: 'off (just show them)' },
-                  { value: 'leader', label: 'from the leader only' },
-                  { value: 'anyone', label: 'from anyone' },
-                ]}
-                onSelect={(v: string) => setOption($, 'autoRun', v)}
-              />
-            )}
-            {Select && (
-              <Select
-                key="opt-toasts"
-                label="Notifications "
-                value={toasts}
-                options={[
-                  { value: 'all', label: 'all messages' },
-                  { value: 'direct', label: 'only to me' },
-                  { value: 'off', label: 'off' },
-                ]}
-                onSelect={(v: string) => setOption($, 'toasts', v)}
-              />
-            )}
-            {Select && (
-              <Select
-                key="opt-poll"
-                label="Check in every "
-                value={String(pollMs / 1000)}
-                options={['2', '3', '5', '10'].map(v => ({ value: v, label: `${v}s` }))}
-                onSelect={(v: string) => setOption($, 'pollSeconds', v)}
-              />
-            )}
-            {Select && (
-              <Select
-                key="opt-clawds"
-                label="Clawds window with /crew "
-                value={clawdsWithCrew ? 'yes' : 'no'}
-                options={[
-                  { value: 'yes', label: 'pop it out' },
-                  { value: 'no', label: "don't" },
-                ]}
-                onSelect={(v: string) => setOption($, 'clawdsWindow', v)}
-              />
-            )}
+            <Card title="Preferences">
+              {Select && (
+                <Select
+                  key="opt-autoRun"
+                  label="Auto-run requests "
+                  value={autoRun}
+                  options={[
+                    { value: 'off', label: 'off (just show them)' },
+                    { value: 'leader', label: 'from the leader only' },
+                    { value: 'anyone', label: 'from anyone' },
+                  ]}
+                  onSelect={(v: string) => setOption($, 'autoRun', v)}
+                />
+              )}
+              {Select && (
+                <Select
+                  key="opt-toasts"
+                  label="Notifications "
+                  value={toasts}
+                  options={[
+                    { value: 'all', label: 'all messages' },
+                    { value: 'direct', label: 'only to me' },
+                    { value: 'off', label: 'off' },
+                  ]}
+                  onSelect={(v: string) => setOption($, 'toasts', v)}
+                />
+              )}
+              {Select && (
+                <Select
+                  key="opt-poll"
+                  label="Check in every "
+                  value={String(pollMs / 1000)}
+                  options={['2', '3', '5', '10'].map(v => ({ value: v, label: `${v}s` }))}
+                  onSelect={(v: string) => setOption($, 'pollSeconds', v)}
+                />
+              )}
+              {Select && (
+                <Select
+                  key="opt-clawds"
+                  label="Clawds window with /crew "
+                  value={clawdsWithCrew ? 'yes' : 'no'}
+                  options={[
+                    { value: 'yes', label: 'pop it out' },
+                    { value: 'no', label: "don't" },
+                  ]}
+                  onSelect={(v: string) => setOption($, 'clawdsWindow', v)}
+                />
+              )}
+            </Card>
 
-            <Box marginTop={1}>
-              <Text bold>Updates</Text>
-            </Box>
-            <Text dimColor>
-              You have crew {VERSION}
-              {s.latest ? ` · GitHub has ${s.latest}` : ''}
-            </Text>
-            <Box flexDirection="row">
-              <Button key="check-update" label={note.state === 'busy' ? 'Working…' : 'Check for updates'} onPress={() => checkNow($)} />
-              {hasUpdate && <Button key="install-settings" label={`Install ${s.latest}`} variant="primary" onPress={() => installPress($)} />}
-            </Box>
-            {note.text !== '' && <Text color={note.state === 'error' ? 'error' : undefined} dimColor={note.state !== 'error'}>{note.text}</Text>}
+            <Card
+              title="Updates"
+              right={
+                <Text dimColor>
+                  you have {VERSION}
+                  {s.latest ? ` · GitHub has ${s.latest}` : ''}
+                </Text>
+              }
+            >
+              <Box flexDirection="row">
+                <Button key="check-update" label={note.state === 'busy' ? 'Working…' : 'Check for updates'} onPress={() => checkNow($)} />
+                {hasUpdate && <Button key="install-settings" label={`Install ${s.latest}`} variant="primary" onPress={() => installPress($)} />}
+              </Box>
+              {note.text !== '' && <Text color={note.state === 'error' ? 'error' : undefined} dimColor={note.state !== 'error'}>{note.text}</Text>}
+            </Card>
           </Box>
         )}
 
-        {/* -- the crew itself */}
-        {inSession && (
+        {/* -- Chat: everything, or only what people typed; one field for the people or a teammate's Claude */}
+        {inSession && current === 'chat' && (
+          <Card
+            title="Chat"
+            right={
+              !confirming && (
+                <Box flexDirection="row">
+                  <Button key="view-all" label="Everything" variant={view === 'all' ? 'primary' : undefined} dimColor={view !== 'all'} onPress={() => setChatView($, 'all')} />
+                  <Button key="view-people" label="People" variant={view === 'people' ? 'primary' : undefined} dimColor={view !== 'people'} onPress={() => setChatView($, 'people')} />
+                  <Button key="save-chat" label="Save" dimColor onPress={() => saveChatPress($)} />
+                  <Button key="reset-chat" label="Reset" dimColor onPress={() => askReset($, true)} />
+                </Box>
+              )
+            }
+          >
+            {confirming && (
+              <Callout>
+                <Text bold>⚠ Reset the chat for everyone?</Text>
+                <Text dimColor>
+                  This wipes the chat history on the relay and in every teammate's /crew. A copy is saved to your
+                  ~/.claude/crew-chats first. Tasks and shared docs stay, and messages your Claudes already received stay in
+                  their conversations.
+                </Text>
+                <Box flexDirection="row">
+                  <Button key="reset-yes" label="Yes, clear it" onPress={() => resetChatPress($)} />
+                  <Button key="reset-no" label="Cancel" variant="primary" autoFocus onPress={() => askReset($, false)} />
+                </Box>
+              </Callout>
+            )}
+            {feed.length === 0 && (
+              <Text dimColor>{view === 'people' && s.feed.length ? 'Nothing from people yet. Everything shows the Claudes too.' : 'No messages yet. Say hi!'}</Text>
+            )}
+            {chat.map(item =>
+              item.type === 'more' ? (
+                <Box flexDirection="row" justifyContent="center">
+                  <Text dimColor>· {item.count} more updates ·</Text>
+                </Box>
+              ) : item.type === 'event' ? (
+                <Box flexDirection="row" justifyContent="center">
+                  <Text dimColor wrap="truncate-end">
+                    — {item.text} · {hhmm(item.at)} —
+                  </Text>
+                </Box>
+              ) : (
+                // a bubble: yours on the right, theirs on the left, at most about two thirds of the width
+                <Box flexDirection="row" justifyContent={item.mine ? 'flex-end' : 'flex-start'}>
+                  <Box flexDirection="column" width="65%" alignItems={item.mine ? 'flex-end' : 'flex-start'}>
+                    <Text dimColor bold={!item.mine}>
+                      {groupHeader(item, me)}
+                    </Text>
+                    <Box
+                      flexDirection="column"
+                      borderStyle="round"
+                      borderColor={item.request ? 'warning' : item.mine ? 'suggestion' : undefined}
+                      borderDimColor={!item.mine && !item.request}
+                      paddingX={1}
+                    >
+                      {item.msgs.map(m => (
+                        <Text>{bubbleText(m)}</Text>
+                      ))}
+                    </Box>
+                    {/* receipts only under your newest bubble: reads only move forward, so it covers the ones above */}
+                    {item === lastMine && seen !== '' && (
+                      <Text dimColor>{seen.startsWith('read') ? `✓ ${seen}` : seen}</Text>
+                    )}
+                  </Box>
+                </Box>
+              ),
+            )}
+            {/* "Ask a Claude", folded in: pick a teammate's Claude in To:, and the field sends it a request */}
+            <Box flexDirection="column" marginTop={1}>
+              {others.length > 0 && Select && (
+                <Select
+                  key="ask-to"
+                  label="To "
+                  value={askTarget}
+                  options={[
+                    { value: '', label: "the people (Claudes don't read it)" },
+                    ...others.map(n => ({ value: n, label: n === s.leader ? `${n}'s Claude ★ leader` : `${n}'s Claude` })),
+                  ]}
+                  onSelect={(v: string) => setAskTo($, v)}
+                />
+              )}
+              {Input &&
+                (askTarget ? (
+                  <Input
+                    key="ask"
+                    placeholder={`Ask ${askTarget}'s Claude (it starts right away if their Auto-run allows)`}
+                    submitLabel="ask"
+                    onSubmit={(v: string) => ask($, askTarget, v)}
+                  />
+                ) : (
+                  <Input key="say" placeholder="Message the people (@name to DM)" submitLabel="send" onSubmit={(v: string) => say($, v)} />
+                ))}
+            </Box>
+          </Card>
+        )}
+
+        {/* -- Tasks */}
+        {inSession && current === 'tasks' && (
+          <Card
+            title={`Tasks${open.length ? ` (${open.length} open)` : ''}`}
+            right={open.length > 1 && !clearing && <Button key="clear-tasks" label="Clear all" dimColor onPress={() => askClear($, true)} />}
+          >
+            {clearing && (
+              <Callout>
+                <Text bold>⚠ Remove all {open.length} open tasks, for everyone?</Text>
+                <Box flexDirection="row">
+                  <Button key="clear-yes" label="Yes, remove them" onPress={() => void clearTasks($)} />
+                  <Button key="clear-no" label="Cancel" variant="primary" onPress={() => askClear($, false)} />
+                </Box>
+              </Callout>
+            )}
+            {open.length === 0 && <Text dimColor>No open tasks.</Text>}
+            {open.slice(-taskRows).map(t => (
+              <Box flexDirection="row" justifyContent="space-between">
+                <Text>• {fmtTask(t)}</Text>
+                <Box flexDirection="row">
+                  <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `T${t.id} done`)} />
+                  <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />
+                </Box>
+              </Box>
+            ))}
+            {open.length > taskRows && <Text dimColor>…and {open.length - taskRows} more (crew_status shows them all)</Text>}
+            {Input && (
+              <Box marginTop={1}>
+                <Input key="add-task" placeholder="Add a task (end with @name to assign it)" submitLabel="add" onSubmit={(v: string) => addTask($, v)} />
+              </Box>
+            )}
+          </Card>
+        )}
+
+        {/* -- Docs */}
+        {inSession && current === 'docs' && (
+          <Card title={`Shared docs${docs.length ? ` (${docs.length})` : ''}`}>
+            {docs.length === 0 && <Text dimColor>None yet. Claudes share plans, findings and patches here with crew_share.</Text>}
+            {docs.slice(0, docRows).map(d => (
+              <Box flexDirection="column">
+                <Box flexDirection="row">
+                  <Button key={`doc-${d.name}`} label={`${peek.name === d.name ? '▾' : '▸'} ${d.name}`} plain onPress={() => openDocPress($, d.name)} />
+                  {d.by !== '' && (
+                    <Text dimColor>
+                      {'  '}
+                      {d.by} · {hhmm(d.at)} · {d.size >= 1000 ? `${(d.size / 1000).toFixed(1)}k` : d.size} chars
+                    </Text>
+                  )}
+                </Box>
+                {peek.name === d.name && (
+                  <Callout>
+                    {peek.error !== '' && <Text color="error">{peek.error}</Text>}
+                    {peek.error === '' && peek.head.length === 0 && <Text dimColor>Opening…</Text>}
+                    {peek.head.map(l => (
+                      <Text dimColor wrap="truncate-end">
+                        {l || ' '}
+                      </Text>
+                    ))}
+                    {peek.more > 0 && <Text dimColor>…{peek.more} more lines</Text>}
+                    <Box flexDirection="row">
+                      <Button key="doc-copy" label="Copy it all" onPress={() => copyDoc($, e.surface, d.name)} />
+                      <Button key="doc-close" label="Close" dimColor onPress={() => openDocPress($, d.name)} />
+                    </Box>
+                  </Callout>
+                )}
+              </Box>
+            ))}
+            {docs.length > docRows && <Text dimColor>…and {docs.length - docRows} older (crew_read_shared lists them all)</Text>}
+          </Card>
+        )}
+
+        {/* -- Crew: who's here and who leads, and the invite while you host */}
+        {inSession && current === 'crew' && (
           <Box flexDirection="column">
-            <Section title="Crew">
+            <Card title={`Crew (${online} online)`}>
               {Select && names.length > 0 && (
                 <Select
                   key="leader"
@@ -2164,167 +2393,23 @@ export const register: Register = (on, options) => {
                 <Text dimColor={!p.online}>
                   {p.online ? '●' : '○'} {p.name}
                   {p.leader ? ' ★' : ''}
+                  {p.acting ? ' ☆ acting leader' : ''}
                   {p.name === me ? ' (you)' : ''}
                   {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                 </Text>
               ))}
-            </Section>
-
-            <Section
-              title={`Tasks${open.length ? ` (${open.length} open)` : ''}`}
-              right={open.length > 1 && !clearing && <Button key="clear-tasks" label="Clear all" dimColor onPress={() => askClear($, true)} />}
-            >
-              {clearing && (
-                <Callout>
-                  <Text bold>⚠ Remove all {open.length} open tasks, for everyone?</Text>
-                  <Box flexDirection="row">
-                    <Button key="clear-yes" label="Yes, remove them" onPress={() => void clearTasks($)} />
-                    <Button key="clear-no" label="Cancel" variant="primary" onPress={() => askClear($, false)} />
-                  </Box>
-                </Callout>
-              )}
-              {open.length === 0 && <Text dimColor>No open tasks.</Text>}
-              {open.slice(-8).map(t => (
-                <Box flexDirection="row" justifyContent="space-between">
-                  <Text>• {fmtTask(t)}</Text>
-                  <Box flexDirection="row">
-                    <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `T${t.id} done`)} />
-                    <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />
-                  </Box>
+            </Card>
+            {isHosting() && s.connected && (
+              <Card title="Invite friends">
+                <Text>You're hosting{host.ip ? ` · friends join at http://${host.ip}:7777` : ''}</Text>
+                {!host.ip && <Text dimColor>No Radmin/Tailscale address found yet: connect your VPN, then press Host a crew again.</Text>}
+                {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
+                <Box flexDirection="row">
+                  <Button key="invite" label="Copy invite" variant="primary" onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
+                  <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
                 </Box>
-              ))}
-              {open.length > 8 && <Text dimColor>…and {open.length - 8} more (crew_status shows them all)</Text>}
-              {Input && (
-                <Input key="add-task" placeholder="Add a task (end with @name to assign it)" submitLabel="add" onSubmit={(v: string) => addTask($, v)} />
-              )}
-            </Section>
-
-            <Section title={`Shared docs${docs.length ? ` (${docs.length})` : ''}`}>
-              {docs.length === 0 && <Text dimColor>None yet. Claudes share plans, findings and patches here with crew_share.</Text>}
-              {docs.slice(0, 5).map(d => (
-                <Box flexDirection="column">
-                  <Box flexDirection="row">
-                    <Button key={`doc-${d.name}`} label={`${peek.name === d.name ? '▾' : '▸'} ${d.name}`} plain onPress={() => openDocPress($, d.name)} />
-                    {d.by !== '' && (
-                      <Text dimColor>
-                        {'  '}
-                        {d.by} · {hhmm(d.at)} · {d.size >= 1000 ? `${(d.size / 1000).toFixed(1)}k` : d.size} chars
-                      </Text>
-                    )}
-                  </Box>
-                  {peek.name === d.name && (
-                    <Callout>
-                      {peek.error !== '' && <Text color="error">{peek.error}</Text>}
-                      {peek.error === '' && peek.head.length === 0 && <Text dimColor>Opening…</Text>}
-                      {peek.head.map(l => (
-                        <Text dimColor wrap="truncate-end">
-                          {l || ' '}
-                        </Text>
-                      ))}
-                      {peek.more > 0 && <Text dimColor>…{peek.more} more lines</Text>}
-                      <Box flexDirection="row">
-                        <Button key="doc-copy" label="Copy it all" onPress={() => copyDoc($, e.surface, d.name)} />
-                        <Button key="doc-close" label="Close" dimColor onPress={() => openDocPress($, d.name)} />
-                      </Box>
-                    </Callout>
-                  )}
-                </Box>
-              ))}
-              {docs.length > 5 && <Text dimColor>…and {docs.length - 5} older (crew_read_shared lists them all)</Text>}
-            </Section>
-
-            <Section title="Ask a Claude">
-                <Text dimColor>
-                  {others.length
-                    ? "Talk straight to a teammate's Claude. It starts on it right away if their Auto-run allows it."
-                    : "Talk straight to a teammate's Claude: it shows up here as soon as someone else joins."}
-                </Text>
-                {others.length > 0 && Select && (
-                  <Select
-                    key="ask-to"
-                    label="To "
-                    value={askTarget}
-                    options={others.map(n => ({ value: n, label: n === s.leader ? `${n}'s Claude ★ leader` : `${n}'s Claude` }))}
-                    onSelect={(v: string) => setAskTo($, v)}
-                  />
-                )}
-                {others.length > 0 && Input && (
-                  <Input
-                    key="ask"
-                    placeholder={askTarget ? `Ask ${askTarget}'s Claude…` : 'Pick whose Claude to ask'}
-                    submitLabel="ask"
-                    onSubmit={(v: string) => ask($, askTarget, v)}
-                  />
-                )}
-              </Section>
-
-            <Section
-              title="Chat"
-              right={
-                !confirming && (
-                  <Box flexDirection="row">
-                    <Button key="save-chat" label="Save chat" dimColor onPress={() => saveChatPress($)} />
-                    <Button key="reset-chat" label="Reset chat" dimColor onPress={() => askReset($, true)} />
-                  </Box>
-                )
-              }
-            >
-              {confirming && (
-                <Callout>
-                  <Text bold>⚠ Reset the chat for everyone?</Text>
-                  <Text dimColor>
-                    This wipes the chat history on the relay and in every teammate's /crew. A copy is saved to your
-                    ~/.claude/crew-chats first. Tasks and shared docs stay, and messages your Claudes already received stay in
-                    their conversations.
-                  </Text>
-                  <Box flexDirection="row">
-                    <Button key="reset-yes" label="Yes, clear it" onPress={() => resetChatPress($)} />
-                    <Button key="reset-no" label="Cancel" variant="primary" autoFocus onPress={() => askReset($, false)} />
-                  </Box>
-                </Callout>
-              )}
-              {s.feed.length === 0 && <Text dimColor>No messages yet. Say hi!</Text>}
-              {chat.map(item =>
-                item.type === 'more' ? (
-                  <Box flexDirection="row" justifyContent="center">
-                    <Text dimColor>· {item.count} more updates ·</Text>
-                  </Box>
-                ) : item.type === 'event' ? (
-                  <Box flexDirection="row" justifyContent="center">
-                    <Text dimColor wrap="truncate-end">
-                      — {item.text} · {hhmm(item.at)} —
-                    </Text>
-                  </Box>
-                ) : (
-                  // a bubble: yours on the right, theirs on the left, at most about two thirds of the width
-                  <Box flexDirection="row" justifyContent={item.mine ? 'flex-end' : 'flex-start'}>
-                    <Box flexDirection="column" width="65%" alignItems={item.mine ? 'flex-end' : 'flex-start'}>
-                      <Text dimColor bold={!item.mine}>
-                        {groupHeader(item, me)}
-                      </Text>
-                      <Box
-                        flexDirection="column"
-                        borderStyle="round"
-                        borderColor={item.request ? 'warning' : item.mine ? 'suggestion' : undefined}
-                        borderDimColor={!item.mine && !item.request}
-                        paddingX={1}
-                      >
-                        {item.msgs.map(m => (
-                          <Text>{bubbleText(m)}</Text>
-                        ))}
-                      </Box>
-                      {/* receipts only under your newest bubble: reads only move forward, so it covers the ones above */}
-                      {item === lastMine && seen !== '' && (
-                        <Text dimColor>{seen.startsWith('read') ? `✓ ${seen}` : seen}</Text>
-                      )}
-                    </Box>
-                  </Box>
-                ),
-              )}
-              {Input && (
-                <Input key="say" placeholder="Message the people (Claudes don't read this; @name to DM)" submitLabel="send" onSubmit={(v: string) => say($, v)} />
-              )}
-            </Section>
+              </Card>
+            )}
           </Box>
         )}
       </Box>

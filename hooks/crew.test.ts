@@ -72,14 +72,20 @@ test('the pane draws leader, crew, tasks and settings on terminal and desktop', 
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'crew', surface, ...PANE })
+    expect(await ui.find({ key: 'say' })).toBeDefined() // Chat is the tab /crew opens on
+    await ui.press({ key: 'tab-crew' })
     expect(await ui.find({ key: 'leader' })).toBeDefined()
     expect(await ui.find({ text: /bob.*working/ } as any)).toBeDefined()
+    await ui.press({ key: 'tab-tasks' })
     expect(await ui.find({ text: /for bob/ } as any)).toBeDefined()
+    expect(await ui.find({ key: 'leader' })).toBeUndefined() // one tab at a time
     expect(await ui.find({ key: 'opt-relayUrl' })).toBeUndefined()
     await ui.press({ key: 'settings' })
     expect(await ui.find({ key: 'opt-relayUrl' })).toBeDefined()
     expect(await ui.find({ key: 'opt-autoRun' })).toBeDefined()
     await ui.press({ key: 'settings' })
+    expect(await ui.find({ text: /for bob/ } as any)).toBeDefined() // closing Settings goes back to the tab you were on
+    await ui.press({ key: 'tab-chat' }) // /crew reopens on the last tab, so leave it where the next surface starts
     await ui.unmount()
   }
 })
@@ -89,6 +95,7 @@ test('picking a leader in the pane tells the relay', { options: OPTIONS }, async
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
 
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
   await ui.select({ key: 'leader', value: 'bob' })
   await ui.press({ key: 'leader-yes' }) // leader changes ask first
   await ui.unmount()
@@ -509,6 +516,7 @@ test('one press of Stop hosting stops the relay and /crew shows it straight away
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'refresh' })
   await settle(100)
+  await ui.press({ key: 'tab-crew' }) // the invite and Stop hosting live on the Crew tab while the relay runs
   expect(await ui.find({ key: 'stop-host' })).toBeDefined()
   await ui.press({ key: 'stop-host' })
   await settle(200)
@@ -785,11 +793,14 @@ test('a follower runs the acting leader\'s requests, and the acting leader brief
   expect(all).toContain('bob is back, so you')
 })
 
-test('Ask a Claude sends a request to the leader by default, flagged as typed by a person', { options: { ...OPTIONS, name: 'carol' } }, async ($, on) => {
+test("the chat's To: picker asks a teammate's Claude, flagged as typed by a person", { options: { ...OPTIONS, name: 'carol' } }, async ($, on) => {
   const seen = fakeRelay(on)
   on('ui.toast', async () => ({ value: undefined }))
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'ask' })).toBeUndefined() // To: starts on the people
+  await ui.select({ key: 'ask-to', value: 'alice' })
+  expect(await ui.find({ key: 'say' })).toBeUndefined()
   await ui.input({ key: 'ask', text: 'plan the next sprint' })
   await settle()
   await ui.unmount()
@@ -815,6 +826,7 @@ test('the task manager in /crew finishes, removes, adds and clears tasks', { opt
   })
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-tasks' })
   await ui.press({ key: 'task-done-3' })
   await ui.press({ key: 'task-rm-4' })
   await ui.input({ key: 'add-task', text: 'Fix the jump @bob' })
@@ -1011,6 +1023,7 @@ test('shared docs show who shared them, and open a peek', { options: OPTIONS }, 
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   await settle()
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
   expect(await ui.find({ key: 'doc-plan' })).toBeDefined()
   expect(await ui.find({ text: /bob · \d\d:\d\d · 17 chars/ } as any)).toBeDefined()
   await ui.press({ key: 'doc-plan' })
@@ -1096,4 +1109,50 @@ test('crew_ping times relay round trips and a teammate\'s echo', { options: OPTI
   expect(seen.some(s => s.startsWith('POST') && s.endsWith('/ping'))).toBe(true)
   expect(String(r.result)).toContain('Relay round trip (2×)')
   expect(String(r.result)).toContain("bob's crew plugin echoed in")
+})
+
+// -- /crew's tabs
+
+test('/crew shows one tab at a time; ⚙ Settings is a tab too, and picking another tab leaves it', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'crew', surface, ...PANE })
+    for (const k of ['tab-chat', 'tab-tasks', 'tab-docs', 'tab-crew', 'settings', 'leave', 'clawds', 'crew-log']) expect(await ui.find({ key: k })).toBeDefined()
+    await ui.press({ key: 'settings' })
+    expect(await ui.find({ key: 'opt-relayUrl' })).toBeDefined()
+    expect(await ui.find({ key: 'check-update' })).toBeDefined()
+    expect(await ui.find({ key: 'say' })).toBeUndefined()
+    await ui.press({ key: 'tab-docs' })
+    expect(await ui.find({ key: 'opt-relayUrl' })).toBeUndefined()
+    expect(await ui.find({ text: /None yet/ } as any)).toBeDefined()
+    await ui.press({ key: 'tab-chat' })
+    expect(await ui.find({ key: 'say' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test("the chat's People view shows only what people typed; Everything shows the Claudes too", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const messages = [
+    { id: 2, from: 'bob', to: 'all', kind: 'chat', text: 'lunch at 1?', at: 1000, human: true },
+    { id: 3, from: 'bob', to: 'alice', kind: 'request', text: 'review the relay patch', at: 1010 },
+    { id: 4, from: 'bob', to: 'all', kind: 'update', text: 'added task T5: docs', at: 1020 },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 4 }) } }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /review the relay patch/ } as any)).toBeDefined() // Everything is the default
+  await ui.press({ key: 'view-people' })
+  expect(await ui.find({ text: /lunch at 1\?/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /review the relay patch/ } as any)).toBeUndefined()
+  expect(await ui.find({ text: /added task T5/ } as any)).toBeUndefined()
+  await ui.press({ key: 'view-all' })
+  expect(await ui.find({ text: /added task T5/ } as any)).toBeDefined()
+  await ui.unmount()
 })
