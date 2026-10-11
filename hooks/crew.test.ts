@@ -241,14 +241,17 @@ test('with the Clawds window switched off, /crew opens only the pane', { options
   await settle()
   expect(launched.length).toBe(0)
 })
-test('Check for updates, then Install update pulls the new version through the claude CLI', { options: OPTIONS }, async ($, on) => {
+test('Check for updates, then Install update downloads crew from GitHub and copies it over the plugin', { options: OPTIONS }, async ($, on) => {
   fakeRelay(on)
   LATEST = '9.9.9'
+  mock.env(on, { TEMP: 'C:\\Temp' })
   const ran: string[][] = []
   on('process.run', async (_$: unknown, e: any) => {
     ran.push([...e.argv])
-    return { value: { exitCode: 0, stdout: e.argv[0] === 'where' ? 'C:\\bin\\claude.exe\r\n' : 'ok', stderr: '' } }
+    // not a git checkout; robocopy's 1 means "files copied"
+    return { value: { exitCode: e.argv[0] === 'robocopy' ? 1 : 0, stdout: 'no', stderr: '' } }
   })
+  on('fs.read', async () => ({ value: '{"version":"9.9.9"}' }) as any)
   on('ui.toast', async () => ({ value: undefined }))
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'settings' })
@@ -257,10 +260,14 @@ test('Check for updates, then Install update pulls the new version through the c
   expect(await ui.find({ key: 'install' })).toBeDefined()
   await ui.press({ key: 'install' })
   await settle(100)
+  expect(await ui.find({ text: /Restart Claude/ } as any)).toBeDefined()
   await ui.unmount()
   const lines = ran.map(a => a.join(' '))
-  expect(lines).toContain('C:\\bin\\claude.exe plugin marketplace update claude-crew')
-  expect(lines).toContain('C:\\bin\\claude.exe plugin update crew@claude-crew')
+  expect(lines.some(l => l.startsWith('curl.exe') && l.endsWith('main.zip'))).toBe(true)
+  expect(lines.some(l => l.startsWith('tar.exe -xf'))).toBe(true)
+  const copy = lines.find(l => l.startsWith('robocopy')) ?? ''
+  expect(copy).toContain('crew_key.txt') // the relay's key is never overwritten
+  expect(lines.some(l => l.includes('plugin marketplace update'))).toBe(false) // no CLI needed
   LATEST = '0.3.0'
 })
 
@@ -440,6 +447,31 @@ test('Host a crew opens start-relay.bat, takes its key and joins the session', {
   expect(sets.find(s => s.key === 'crew.key')?.value).toBe('batkey123')
   expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://127.0.0.1:7777')
 })
+test("a host whose relay is down sees it, and Start relay opens start-relay.bat", { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
+  mock.store(on)
+  on('clock.sleep', async () => ({ value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  let started = false
+  on('process.run', async (_$: unknown, e: any) => {
+    if (e.argv.some((a: string) => a.endsWith('start-relay.bat'))) started = true
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (!started) return { deny: 'ECONNREFUSED: Unable to connect' } as any
+    if (e.url.endsWith('/health')) return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true, "version": "0.8.3"}' } }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'refresh' })
+  await settle(100)
+  expect(await ui.find({ text: /relay isn't running/ } as any)).toBeDefined()
+  await ui.press({ key: 'start-relay' })
+  await settle(200)
+  expect(started).toBe(true)
+  expect(await ui.find({ text: /relay isn't running/ } as any)).toBeUndefined()
+  await ui.unmount()
+})
 test('Reset chat warns first; Cancel does nothing, Yes clears the chat for everyone', { options: OPTIONS }, async ($, on) => {
   let epoch = 0
   const posted: string[] = []
@@ -549,13 +581,15 @@ test('a busy Claude never stalls the check-ins (the flickering-offline bug)', { 
   expect(polls).toBeGreaterThanOrEqual(2)
 })
 
-test('Install update works with an npm-installed claude (claude.cmd), and shows failures in the pane', { options: OPTIONS }, async ($, on) => {
+test('when the download fails, Install update falls back to an npm-installed claude (claude.cmd), and shows failures', { options: OPTIONS }, async ($, on) => {
   fakeRelay(on)
   LATEST = '9.9.9'
+  mock.env(on, { TEMP: 'C:\\Temp' })
   const ran: string[][] = []
   let failSecond = false
   on('process.run', async (_$: unknown, e: any) => {
     ran.push([...e.argv])
+    if (e.argv[0] === 'curl.exe') return { value: { exitCode: 6, stdout: '', stderr: 'Could not resolve host' } }
     if (e.argv[0] === 'where') return { value: { exitCode: 0, stdout: 'C:\\npm\\claude\r\nC:\\npm\\claude.cmd\r\n', stderr: '' } }
     if (failSecond && e.argv.includes('crew@claude-crew'))
       return { value: { exitCode: 1, stdout: '', stderr: 'Plugin "crew" not found in marketplace' } }

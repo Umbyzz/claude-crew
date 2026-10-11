@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.8.2"
+VERSION = "0.8.3"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -208,8 +208,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(404, {"error": "no such image (the relay keeps the latest few)"})
                 return self.reply_bytes(f["data"], f["mime"])
             if url.path == "/watch":
+                # Direct messages between other people stay private: the window learns that they talked
+                # (for the animation) but not what was said.
+                viewer = self.name
+
+                def visible(m):
+                    return m["to"] == "all" or (viewer and viewer in (m["to"], m["from"]))
+
                 recent = [{"id": m["id"], "from": m["from"], "to": m["to"], "kind": m["kind"],
-                           "text": m["text"][:80], "at": m["at"]}
+                           "text": m["text"][:80] if visible(m) else "", "at": m["at"]}
                           for m in state["messages"][-30:]
                           if m["kind"] in ("chat", "request", "out", "back", "join", "leave", "image")]
                 self.reply(200, {"peers": peer_list(), "leader": state["leader"], "recent": recent,

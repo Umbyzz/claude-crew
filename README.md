@@ -69,7 +69,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 ### 1. One person hosts the relay
 The host needs Python 3.8 or newer, and nothing else.
 
-**Easiest: host from Claude.** Install the plugin (step 3) and open `/crew`. The setup asks your name, then **Host a crew** or **Join a friend's crew**. **Host a crew** opens `start-relay.bat` in its own window (keep it open while you host) and puts you straight into the session. Press **Copy invite** to get a ready-to-send message with your address, the key and the install steps. **Stop hosting** shuts the relay down.
+**Easiest: host from Claude.** Install the plugin (step 3) and open `/crew`. The setup asks your name, then **Host a crew** or **Join a friend's crew**. **Host a crew** opens `start-relay.bat` in its own window (keep it open while you host) and puts you straight into the session. Press **Copy invite** to get a ready-to-send message with your address, the key and the install steps. **Stop hosting** shuts the relay down. If you're set up as host but the relay isn't running (say, after a reboot), `/crew` says so and shows a **Start relay** button; it's also in Settings → Connection.
 
 **Or the classic way:** double-click **`server/start-relay.bat`**. The first time, it creates a random key in `server/crew_key.txt`, then prints the key and your IP addresses. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow the relay on **private** networks.
 
@@ -152,7 +152,9 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 
 ## Updating
 
-Open `/crew` → **Settings** and press **Check for updates** (it also checks by itself every 6 hours). When a newer version is on GitHub, press **Install update**: it pulls the new version straight from GitHub. Then restart Claude.
+Open `/crew` → **Settings** and press **Check for updates** (it also checks by itself every 6 hours). When a newer version is on GitHub, press **Install update**: it downloads the new version straight from GitHub and copies it over the plugin's folder (curl, tar and robocopy come with Windows 10/11). That works however you installed crew, including a desktop-app upload, and needs no git or claude CLI. Your relay key and chat are never overwritten. If the download fails, it falls back to the claude CLI. Then restart Claude.
+
+> **On 0.8.2 or older and installed by uploading the plugin in the desktop app?** Those versions' updater needs the claude CLI, so update once by hand: download the repo zip from GitHub and upload it again. From 0.8.3 on, Install update does it for you.
 
 If that doesn't work, **Copy commands** copies the manual way, two terminal commands:
 

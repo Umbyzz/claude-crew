@@ -336,13 +336,16 @@ class World:
                 continue
             c = self.clawds.get(m["from"])
             if c and m["kind"] == "request":
-                self.start_meeting(c, m["text"])
+                self.start_meeting(c, m["text"] or "a private chat")
             if c and m["kind"] == "image":
                 c.say("*sends a picture* 📸", 3)
                 c.hop(2)
             if c and m["kind"] in ("chat", "request"):
-                text = m["text"][:34] + ("…" if len(m["text"]) > 34 else "")
-                c.say(text.upper() + "!!!" if c.dramatic else text, 5)
+                if not m["text"]:  # a private message between two other people: you see them talk, not what
+                    c.say(f"*whispers to {m['to']}*", 4)
+                else:
+                    text = m["text"][:34] + ("…" if len(m["text"]) > 34 else "")
+                    c.say(text.upper() + "!!!" if c.dramatic else text, 5)
                 other = self.clawds.get(m["to"])
                 if other and other is not c:
                     other.look = 1 if c.x > other.x else -1

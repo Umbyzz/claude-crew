@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.8.2'
+const VERSION = '0.8.3'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -583,13 +583,71 @@ async function findClaude($: EngineInterface): Promise<string[] | null> {
   return null
 }
 
-// Pulls the latest version straight from GitHub: refresh the marketplace, then update the plugin.
+const ZIP_URL = 'https://github.com/Umbyzz/claude-crew/archive/refs/heads/main.zip'
+
+async function ran($: EngineInterface, argv: string[], timeoutMs = 60000) {
+  const r = await $.process.run(argv, { timeoutMs })
+  return { ok: r.exitCode === 0, code: r.exitCode, out: `${r.stdout}\n${r.stderr}`.trim() }
+}
+
+// The plugin updates its own files: download the latest from GitHub and copy it over this plugin's folder.
+// That works however crew was installed (marketplace, desktop-app upload, a copied folder) and needs no
+// claude CLI. The relay's key and data are never touched. Returns null when it worked, else what went wrong.
+async function selfUpdate($: EngineInterface): Promise<string | null> {
+  const root = $.plugin.root.replace(/\//g, '\\')
+  const temp = (await $.env.get('TEMP')) || (await $.env.get('TMP')) || `${root}\\..`
+  const dir = `${temp}\\crew-update-${Date.now()}`
+  const src = `${dir}\\claude-crew-main`
+  try {
+    setUpdateNote($, 'busy', 'Downloading the latest crew from GitHub…')
+    await ran($, ['cmd', '/c', `mkdir "${dir}"`])
+    const dl = await ran($, ['curl.exe', '-sSfL', '-o', `${dir}\\crew.zip`, ZIP_URL], 120000)
+    if (!dl.ok) return `download failed (${dl.out.slice(0, 160) || `curl exit ${dl.code}`})`
+    setUpdateNote($, 'busy', 'Unpacking…')
+    const unzip = await ran($, ['tar.exe', '-xf', `${dir}\\crew.zip`, '-C', dir])
+    if (!unzip.ok) return `unpacking failed (${unzip.out.slice(0, 160) || `tar exit ${unzip.code}`})`
+    const want = String(JSON.parse(String(await $.fs.read(`${src}\\.claude-plugin\\plugin.json`))).version ?? '')
+    setUpdateNote($, 'busy', `Installing crew ${want}…`)
+    // robocopy: exit codes below 8 mean success. Never copy over the relay's key or saved chat.
+    const copy = await ran($, ['robocopy', src, root, '/E', '/XD', '.git', '/XF', 'crew_key.txt', 'crew_state.json',
+      '/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], 120000)
+    if (copy.code >= 8) return `copying the files failed (${copy.out.slice(0, 160) || `robocopy exit ${copy.code}`})`
+    const now = String(JSON.parse(String(await $.fs.read(`${root}\\.claude-plugin\\plugin.json`))).version ?? '')
+    if (now !== want) return `the files didn't take (still ${now}): is the plugin folder read-only?`
+    return null
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  } finally {
+    $.process.run(['cmd', '/c', `rmdir /s /q "${dir}"`], { timeoutMs: 30000 }).catch(() => {})
+  }
+}
+
+async function isGitCheckout($: EngineInterface) {
+  try {
+    const r = await $.process.run(['cmd', '/c', `if exist "${$.plugin.root}\\.git" (echo yes) else (echo no)`], { timeoutMs: 10000 })
+    return r.stdout.includes('yes')
+  } catch {
+    return false
+  }
+}
+
+// Install update: the plugin updates its own files from GitHub; the claude CLI is only the fallback.
 // Every step shows up in /crew, so if it fails you can see exactly where and why.
 async function installUpdate($: EngineInterface) {
-  setUpdateNote($, 'busy', 'Looking for the claude CLI…')
+  if (await isGitCheckout($)) {
+    setUpdateNote($, 'error', "This copy runs from a git checkout (you're developing crew): pull the latest in GitHub Desktop, then restart Claude.")
+    return
+  }
+  const failure = await selfUpdate($)
+  if (failure === null) {
+    setUpdateNote($, 'ok', 'Updated! Restart Claude to load the new version.')
+    $.ui.toast('crew: updated! Restart Claude to load the new version.', { timeoutMs: 15000 })
+    return
+  }
+  setUpdateNote($, 'busy', `Direct update didn't work (${failure}). Trying the claude CLI…`)
   const claude = await findClaude($)
   if (!claude) {
-    setUpdateNote($, 'error', `Couldn't find the claude CLI on this PC. Use Copy commands and run them in a terminal.`)
+    setUpdateNote($, 'error', `Update failed: ${failure}. There's no claude CLI to fall back on either: use Copy commands, or reinstall from GitHub.`)
     return
   }
   const steps: [string, string[]][] = [
@@ -688,33 +746,42 @@ async function readKey($: EngineInterface, path: string) {
   }
 }
 
+// Starts the relay on this PC by opening start-relay.bat in its own window. The .bat keeps its key
+// (crew_key.txt) and data (crew_state.json) next to it, so it's the same relay with the same chat and tasks
+// every time. Returns true once the relay answers.
+async function startRelay($: EngineInterface): Promise<boolean> {
+  if (await relayVersionAt($, HOST_URL)) return true
+  setHostNote($, 'Starting your relay (a "Crew relay" window opens: keep it open while you host)…')
+  try {
+    await $.process.run(['cmd', '/c', 'start', '"Crew relay"', `${$.plugin.root}\\server\\start-relay.bat`], { timeoutMs: 15000 })
+  } catch (err) {
+    setHostNote($, `Couldn't open start-relay.bat: ${err instanceof Error ? err.message : err}`)
+    return false
+  }
+  for (let i = 0; i < 20; i++) {
+    await $.clock.sleep(500)
+    if (await relayVersionAt($, HOST_URL)) {
+      setHostNote($, '')
+      return true
+    }
+  }
+  setHostNote($, "The relay didn't start. Is Python installed (python.org)? The Crew relay window shows the error.")
+  return false
+}
+
+function startRelayPress($: EngineInterface) {
+  void startRelay($).then(up => {
+    if (up) refresh($).catch(() => {})
+  })
+}
+
 async function hostCrew($: EngineInterface) {
   if (!cfg.me) {
     $.ui.toast('crew: save Your name first (type it and press Enter), then press Host a crew', { timeoutMs: 8000 })
     return
   }
-  // The relay's own folder: start-relay.bat keeps its key (crew_key.txt) and data (crew_state.json) there,
-  // so hosting from here and double-clicking the .bat are the same relay with the same chat and tasks.
-  const server = `${$.plugin.root}\\server`
-  const keyFile = `${server}\\crew_key.txt`
-  if (!(await relayVersionAt($, HOST_URL))) {
-    setHostNote($, 'Starting your relay (a "Crew relay" window opens: keep it open while you host)…')
-    try {
-      await $.process.run(['cmd', '/c', 'start', '"Crew relay"', `${server}\\start-relay.bat`], { timeoutMs: 15000 })
-    } catch (err) {
-      setHostNote($, `Couldn't open start-relay.bat: ${err instanceof Error ? err.message : err}`)
-      return
-    }
-    let up = false
-    for (let i = 0; i < 20 && !up; i++) {
-      await $.clock.sleep(500)
-      up = (await relayVersionAt($, HOST_URL)) !== null
-    }
-    if (!up) {
-      setHostNote($, "The relay didn't start. Is Python installed (python.org)? The Crew relay window shows the error.")
-      return
-    }
-  }
+  const keyFile = `${$.plugin.root}\\server\\crew_key.txt`
+  if (!(await startRelay($))) return
   // A relay is up here: use its key (the .bat's file first, then an older Host's), or the one already saved.
   const key = (await readKey($, keyFile)) || (await readKey($, `${await crewDir($)}\\key.txt`)) || cfg.key
   if (!key) {
@@ -1434,10 +1501,15 @@ export const register: Register = (on, options) => {
         )}
         {configured && isHosting() && (
           <Callout>
-            <Text bold>You're hosting{host.ip ? ` · friends join at http://${host.ip}:7777` : ''}</Text>
-            {!host.ip && <Text dimColor>No Radmin/Tailscale address found yet: connect your VPN, then press Host a crew again.</Text>}
+            <Text bold>
+              {s.connected ? `You're hosting${host.ip ? ` · friends join at http://${host.ip}:7777` : ''}` : "You're set up to host, but your relay isn't running"}
+            </Text>
+            {s.connected && !host.ip && <Text dimColor>No Radmin/Tailscale address found yet: connect your VPN, then press Host a crew again.</Text>}
+            {!s.connected && <Text dimColor>Press Start relay to open start-relay.bat, or join a friend's crew in Settings instead.</Text>}
+            {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
             <Box flexDirection="row">
-              <Button key="invite" label="Copy invite" variant="primary" onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
+              {!s.connected && <Button key="start-relay" label="Start relay" variant="primary" onPress={() => startRelayPress($)} />}
+              <Button key="invite" label="Copy invite" variant={s.connected ? 'primary' : undefined} onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
               <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
             </Box>
           </Callout>
@@ -1450,6 +1522,7 @@ export const register: Register = (on, options) => {
             <Box flexDirection="row">
               <Text>Host it yourself: </Text>
               <Button key="host-settings" label={isHosting() ? 'Hosting ✓' : 'Host a crew'} variant={isHosting() ? undefined : 'primary'} onPress={() => hostPress($)} />
+              <Button key="start-relay-settings" label="Start relay" onPress={() => startRelayPress($)} />
             </Box>
             <Text dimColor>Or join a friend: paste their Relay URL and Crew key. Press Enter in a field to save it.</Text>
             {Input && (
