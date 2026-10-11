@@ -41,10 +41,8 @@ export type CrewSnapshot = {
   shared: string[]
 }
 
-export type ClawdScene = { name: 'idle' | 'wave' | 'dance' | 'hi5' | 'hop' | 'walk'; seed: number }
-
 declare module 'claude-code' {
   interface PluginState {
-    crew: { snapshot: CrewSnapshot; settingsOpen: boolean; clawdScene: ClawdScene }
+    crew: { snapshot: CrewSnapshot; settingsOpen: boolean }
   }
 }

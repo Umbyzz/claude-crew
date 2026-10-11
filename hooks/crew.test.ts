@@ -1,5 +1,4 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { cast, clawdRaster, clawdSvg, RASTER_COLUMNS, RASTER_ROWS, SCENES } from './clawds'
 
 const OPTIONS = { relayUrl: 'http://relay.test:7777/', name: 'alice', key: 'k' }
 
@@ -184,55 +183,6 @@ test('a teammate running out reaches the conversation with the pookie line', { o
   expect(toasts.some(t => t.includes('bob has no more tokens'))).toBe(true)
 })
 
-test('the Clawds pane draws every scene on terminal and desktop, asleep and working ones too', { options: OPTIONS }, async ($, on) => {
-  on('http.fetch', async () => ({
-    value: {
-      status: 200,
-      ok: true,
-      headers: {},
-      text: JSON.stringify({
-        ...POLL,
-        peers: [
-          { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true },
-          { name: 'bob', online: true, lastSeen: 0, activity: 'out', leader: false },
-          { name: 'carol', online: true, lastSeen: 0, activity: 'working', leader: false },
-        ],
-      }),
-    },
-  }))
-  mock.store(on)
-  on('ui.status', async () => ({ value: undefined }))
-  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
-  const CLAWDS = { ...PANE, requestId: 'clawds' }
-
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ plugin: 'crew', surface, ...CLAWDS })
-    const art = surface === 'desktop' ? await ui.find({ type: 'Svg' } as any) : await ui.find({ key: 'clawds' })
-    expect(art).toBeDefined()
-    expect(await ui.find({ text: /bob is snoozing/ } as any)).toBeDefined()
-    await ui.unmount()
-  }
-})
-
-test('every scene draws as SVG and as terminal cells', async () => {
-  const crew = cast(
-    [
-      { name: 'bob', online: true, activity: 'out', leader: false },
-      { name: 'alice', online: true, activity: 'idle', leader: true },
-    ],
-    'alice',
-  )
-  expect(crew.map(m => m.name)).toEqual(['alice', 'bob', ''])
-  for (const scene of SCENES) {
-    const svg = clawdSvg(scene, crew, 7)
-    expect(svg.startsWith('<svg')).toBe(true)
-    expect(svg).toContain(`s-${scene}`)
-    expect(svg).toContain('m-sleep')
-    const cells = clawdRaster(scene, crew, 7)
-    expect(cells.length).toBe(Math.ceil((RASTER_COLUMNS * RASTER_ROWS * 12) / 3) * 4)
-  }
-})
-
 const settle = (ms = 60) => new Promise(r => setTimeout(r, ms))
 
 test('a new prompt makes this Clawd cheer', { options: OPTIONS }, async ($, on) => {
@@ -264,4 +214,29 @@ test('subagents show up as mini Clawds, and a finished turn dances', { options: 
   await settle()
   expect(seen[seen.length - 1].init.headers['X-Crew-Activity']).toBe('done')
   expect(seen[seen.length - 1].init.headers['X-Crew-Subagents']).toBe('0')
+})
+test('/crew pops out the Clawds window, unless that is switched off', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  const launched: string[][] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    launched.push([...e.argv])
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('ui.open', async () => ({ value: { isPlaced: true } }) as any)
+  await $.command.run({ command: 'crew', args: '' } as any)
+  await settle()
+  expect(launched.some(argv => argv.join(' ').includes('clawd_window.py'))).toBe(true)
+})
+
+test('with the Clawds window switched off, /crew opens only the pane', { options: { ...OPTIONS, clawdsWindow: 'no' } }, async ($, on) => {
+  fakeRelay(on)
+  const launched: string[][] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    launched.push([...e.argv])
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('ui.open', async () => ({ value: { isPlaced: true } }) as any)
+  await $.command.run({ command: 'crew', args: '' } as any)
+  await settle()
+  expect(launched.length).toBe(0)
 })

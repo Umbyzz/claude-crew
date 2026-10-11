@@ -53,14 +53,12 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | someone joins | *"THE LEGEND HAS ARRIVED"* and a dogpile |
 | idle | zoomies, moon-hops, *"HIIIIIII!!!"* waves, dramatic sighs |
 
-There are two places to watch them:
-- **The Clawds window.** A small frameless window that stays on top of your desktop while everyone works. Open it with `/clawds-window`, the **Pop out** button, or by double-clicking `window/Clawds.bat`.
+**The Clawds window** is a small frameless window that stays on top of your desktop while everyone works. It pops out on its own when you open `/crew`. You can switch that off in Settings, and bring the window back any time with `/clawds`, the **Clawds** button in `/crew`, or by double-clicking `window/Clawds.bat`. Only one window ever runs: opening it again brings the existing one to the front.
   - Drag it anywhere.
   - Click **◉ pinned** on the stage to toggle always-on-top, and **✕** to close it.
   - Right-click for **Pin on top**, **Size** (small, medium or large) and **Party!**.
   - Click a Clawd to poke it: it hops and tells you what it's doing.
   - It remembers where you left it, its size and pin setting in `~/.claude/crew-clawds.json`.
-- **`/clawds` inside Claude Code.** A smaller pane with the same crew, the relay address and the leader.
 
 ## Setup
 
@@ -108,6 +106,7 @@ Type `/crew`, fill in **Settings** (each field saves when you press Enter) and p
 | Auto-run requests | start a turn when a request addressed to you arrives: `off`, only from the `leader`, or from `anyone` | `leader` |
 | Notifications | which messages pop up: `all`, only ones to you (`direct`), or `off` | `all` |
 | Refresh every | how often to check the relay: 2, 3, 5 or 10 seconds | 3 |
+| Clawds window with /crew | pop out the Clawds window whenever you open `/crew` | `yes` |
 
 Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the key is stored there too. The Clawds window reads them from the same place.
 
@@ -122,9 +121,8 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 
 | Command | What it does |
 |---|---|
-| `/crew` | the crew pane: leader picker, crew list, tasks, chat, settings |
-| `/clawds` | the Clawds pane, with a **Pop out** button |
-| `/clawds-window` | opens the always-on-top Clawds window |
+| `/crew` | the crew pane (leader picker, crew list, tasks, chat, settings), and the Clawds window pops out |
+| `/clawds` | brings up the Clawds window, or brings it to the front if it's already open |
 
 **The tools Claude gets**
 
@@ -157,7 +155,6 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 0.7.1
 ```
 
 ## Good to know
-- **The desktop window is the full show.** The `/clawds` pane inside Claude Code has the everyday moods and idle scenes. The over-the-top versions, funerals, towers, mini offices, meetups and arrival/departure trips only happen in the desktop window.
 - **Out-of-tokens detection** works from the errors Claude Code reports: a turn that fails on the usage limit or on missing credit, or a usage window reaching 100%. A brief API rate-limit hiccup can occasionally set off a false alarm. If it does, the next successful reply sends "back" on its own.
 - **The pop-out command is Windows-only** (it uses `start`). On other systems, run `python window/clawd_window.py` yourself.
 - **The window needs Python** (with its built-in tkinter) on each person's PC. The relay needs Python only on the host's PC.
@@ -174,7 +171,7 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 0.7.1
 | **Test connection** can't reach the relay | Is the relay window open? Is the IP right? Allow Python through Windows Firewall on private networks. |
 | `relay 401` | the crew key doesn't match the host's `crew_key.txt` |
 | The Clawds window shows a "demo crew" | fill in the relay URL, name and key in `/crew` first |
-| `/clawds-window` does nothing | it needs Python (and its built-in tkinter). Try double-clicking `window/Clawds.bat`. |
+| The Clawds window doesn't appear | it needs Python (and its built-in tkinter). Try double-clicking `window/Clawds.bat`. |
 | Relay/plugin version warning | the host should update `server/relay.py` and restart it |
 
 ## How it works
@@ -183,8 +180,7 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 0.7.1
 |---|---|
 | `server/relay.py` | One Python file using only the standard library. It holds messages, tasks, the leader, shared docs and each member's live activity. Endpoints: `/poll`, `/send`, `/tasks`, `/leader`, `/shared`, `/watch` (read-only, for the window) and `/health`. |
 | `hooks/register.tsx` | The plugin. It's a Claude Code hooks module: the commands, the tools, the panes, the status line, the out-of-tokens detection, and the activity it reports to the relay (thinking, typing, tools, chatting, done, cheer, subagents). |
-| `hooks/clawds.ts` | The `/clawds` pane art: an animated SVG on desktop, half-block cells in the terminal. |
-| `window/clawd_window.py` | The desktop Clawds window, written with tkinter. Try `--demo` for a pretend crew, `--drama 1` to make everything over the top, and `--trip car|teleport|superman|door|bird` to see one way of arriving and leaving. |
+| `window/clawd_window.py` | The desktop Clawds window, written with tkinter. It holds localhost port 47817 so a second launch brings the open window forward instead of opening another. Try `--demo` for a pretend crew, `--drama 1` to make everything over the top, and `--trip car|teleport|superman|door|bird` to see one way of arriving and leaving. |
 | `scripts/release.ps1` | Bumps the version everywhere and checks the plugin. |
 
 ### Development

@@ -1,12 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ClawdScene, CrewMessage, CrewSnapshot, CrewTask } from '../types'
-import { caption, cast, clawdRaster, clawdSvg, RASTER_COLUMNS, RASTER_ROWS, SCENES } from './clawds'
+import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
-const CLAWDS = 'clawds'
-const SCENE_MS = 9000
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
 const VERSION = '0.7.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
@@ -28,7 +25,6 @@ const EMPTY: CrewSnapshot = {
 }
 const snapshot = atom({ plugin: 'crew', key: 'snapshot' } as const, EMPTY)
 const settingsOpen = atom({ plugin: 'crew', key: 'settingsOpen' } as const, false)
-const clawdScene = atom({ plugin: 'crew', key: 'clawdScene' } as const, { name: 'wave', seed: 0 } as ClawdScene)
 
 type Config = {
   base: string
@@ -343,20 +339,8 @@ function copyUpdate($: EngineInterface, surface: any) {
     .then(r => $.ui.toast(r.isCopied ? 'crew: update commands copied; run them in a terminal' : `crew: run these in a terminal:\n${UPDATE_COMMANDS}`, { timeoutMs: 12000 }))
 }
 
-// The Clawds pick a new little scene every few seconds: drawing only, never a model call.
-function nextScene($: EngineInterface) {
-  void update($, clawdScene, s => {
-    const pool = SCENES.filter(n => n !== s.name)
-    const name = Math.random() < 0.2 ? 'idle' : pool[Math.floor(Math.random() * pool.length)]
-    return { name, seed: Math.floor(Math.random() * 1000) }
-  })
-}
-
-function openClawds($: EngineInterface) {
-  void $.ui.open({ id: CLAWDS, title: 'Clawds', rows: 12 })
-}
-
 // The desktop window: its own little Python program, detached, reading the relay. No tokens.
+// Only one ever runs: launching it again just brings the open one to the front.
 async function popOut($: EngineInterface) {
   const script = `${$.plugin.root}/window/clawd_window.py`
   for (const py of ['pythonw', 'pyw', 'python']) {
@@ -464,16 +448,15 @@ export const register: Register = (on, options) => {
   const toasts = (['all', 'direct', 'off'].includes(String(opts.toasts)) ? opts.toasts : 'all') as Config['toasts']
   const pollMs = Math.max(1, Number(opts.pollSeconds) || 3) * 1000
   const configured = base !== '' && me !== '' && key !== ''
+  const clawdsWithCrew = String(opts.clawdsWindow ?? 'yes') !== 'no'
   cfg = { base, me, key, autoRun, toasts, pollMs, configured }
 
   on('session.start', async ($, e, next) => {
     for (const tool of TOOLS) await $.tool.register(tool)
     await $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' })
-    await $.command.register({ name: 'clawds', description: 'Open the Clawds: your crew as little pixel friends (uses no tokens)' })
-    await $.command.register({ name: 'clawds-window', description: 'Pop the Clawds out into their own always-on-top desktop window' })
+    await $.command.register({ name: 'clawds', description: 'Open the Clawds window: your crew as little pixel friends (uses no tokens)' })
     void checkUpdate($)
     $.clock.every(SIX_HOURS, () => void checkUpdate($))
-    $.clock.every(SCENE_MS, () => nextScene($))
     if (!configured) {
       $.ui.status('crew: not set up (/crew → Settings)')
     } else {
@@ -555,49 +538,11 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'crew' }, async $ => {
     if (!configured) await update($, settingsOpen, () => true)
     await $.ui.open({ id: PANE, title: 'Crew' })
+    if (clawdsWithCrew) void popOut($)  // the Clawds window comes along (or to the front, if it's already open)
     return { text: configured ? 'Crew pane opened.' : 'Crew pane opened: fill in Settings to connect.' }
   })
 
-  on('command.run', { command: 'clawds-window' }, async $ => ({ text: await popOut($) }))
-
-  on('command.run', { command: 'clawds' }, async $ => {
-    await $.ui.open({ id: CLAWDS, title: 'Clawds', rows: 12 })
-    return { text: 'The Clawds are out.' }
-  })
-
-  on('ui.render', { component: 'Pane', requestId: CLAWDS }, async ($, e) => {
-    const { Box, Text, Svg, Raster, Button } = $.ui.resolve(e) as any
-    const s = await read($, snapshot)
-    const scene = await read($, clawdScene)
-    const crew = cast(s.peers, me)
-    const online = s.peers.filter(p => p.online).length
-    const host = base.replace(/^https?:\/\//, '') || 'not set up'
-    const vector = e.surface !== 'terminal' && Svg
-    const width = Math.max(200, Math.min(520, ((e.props as any)?.bodyColumns ?? 60) * 7))
-
-    return (
-      <Box flexDirection="column">
-        <Box flexDirection="row" justifyContent="space-between">
-          <Text bold>
-            {s.connected ? '●' : '○'} relay {host} · leader {s.leader ?? 'none'} · {online} online
-          </Text>
-          <Button key="popout" label="Pop out" onPress={() => popOutPress($)} />
-        </Box>
-        {vector ? (
-          <Svg
-            source={clawdSvg(scene.name, crew, scene.seed)}
-            alt={`Three pixel Clawds: ${caption(scene.name, crew, scene.seed)}`}
-            width={width}
-            isInteractive
-          />
-        ) : (
-          Raster && <Raster key="clawds" columns={RASTER_COLUMNS} rows={RASTER_ROWS} cells={clawdRaster(scene.name, crew, scene.seed)} />
-        )}
-        {!vector && <Text dimColor>{crew.map(m => m.name || '·').join('     ')}</Text>}
-        <Text dimColor>{caption(scene.name, crew, scene.seed)}</Text>
-      </Box>
-    )
-  })
+  on('command.run', { command: 'clawds' }, async $ => ({ text: await popOut($) }))
 
   on('tool.call', { tool: 'mcp__crew__crew_send' }, async ($, e: any) => {
     const msg = await relay($, 'POST', '/send', { text: e.text, to: e.to ?? 'all', kind: e.kind ?? 'chat' })
@@ -672,7 +617,7 @@ export const register: Register = (on, options) => {
             {configured ? `${s.connected ? '●' : '○'} ${me} @ ${base}` : '○ not connected'}
           </Text>
           <Box flexDirection="row">
-            <Button key="clawds" label="Clawds" onPress={() => openClawds($)} />
+            <Button key="clawds" label="Clawds" onPress={() => popOutPress($)} />
             <Button key="settings" label={showSettings ? 'Hide settings' : 'Settings'} onPress={() => toggleSettings($)} />
           </Box>
         </Box>
@@ -737,6 +682,18 @@ export const register: Register = (on, options) => {
                 value={String(pollMs / 1000)}
                 options={['2', '3', '5', '10'].map(v => ({ value: v, label: `${v}s` }))}
                 onSelect={(v: string) => setOption($, 'pollSeconds', v)}
+              />
+            )}
+            {Select && (
+              <Select
+                key="opt-clawds"
+                label="Clawds window with /crew "
+                value={clawdsWithCrew ? 'yes' : 'no'}
+                options={[
+                  { value: 'yes', label: 'pop it out' },
+                  { value: 'no', label: "don't" },
+                ]}
+                onSelect={(v: string) => setOption($, 'clawdsWindow', v)}
               />
             )}
             {base !== '' && <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />}

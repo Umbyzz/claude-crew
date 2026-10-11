@@ -18,6 +18,7 @@ import json
 import math
 import os
 import random
+import socket
 import sys
 import threading
 import time
@@ -25,6 +26,7 @@ import tkinter as tk
 import urllib.request
 
 FPS = 15
+ONE_WINDOW_PORT = 47817  # a localhost port the open window holds, so a second launch can find it
 DRAMA = 0.2  # the chance that anything a Clawd does is the WAY over-the-top version
 TRIPS = ("car", "teleport", "superman", "door", "bird")  # ways to arrive and leave
 FORCE_TRIP = None  # --trip picks one, for trying them out
@@ -1693,6 +1695,31 @@ class App:
         self.save()
         self.root.destroy()
 
+    def listen(self, server):
+        """Another launch knocked: come to the front instead of a second window opening."""
+        def serve():
+            while True:
+                try:
+                    conn, _ = server.accept()
+                    conn.close()
+                    self.root.after(0, self.come_forward)
+                except OSError:
+                    return
+        threading.Thread(target=serve, daemon=True).start()
+
+    def come_forward(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        if not self.pinned:  # just a moment on top, then back to how they had it
+            self.root.after(1500, lambda: self.root.attributes("-topmost", self.pinned))
+        for c in self.world.clawds.values():
+            if not c.hidden and c.online:
+                c.hop(2.5)
+        clawds = [c for c in self.world.clawds.values() if not c.hidden]
+        if clawds:
+            random.choice(clawds).say(random.choice(["we're right here!", "hi again!", "you rang?"]), 2)
+
     # dragging moves the window; a click without a drag pokes a Clawd or hits a button
     def press(self, e):
         self.drag_from = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
@@ -1817,7 +1844,20 @@ def main():
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:  # noqa: BLE001 - older Windows: just a little blurrier
             pass
-    App(args).root.mainloop()
+    # One Clawds window at a time: if one is already open, wave at it and bow out.
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        server.bind(("127.0.0.1", ONE_WINDOW_PORT))
+        server.listen(4)
+    except OSError:
+        try:
+            socket.create_connection(("127.0.0.1", ONE_WINDOW_PORT), timeout=2).close()
+        except OSError:
+            pass
+        return
+    app = App(args)
+    app.listen(server)
+    app.root.mainloop()
 
 
 if __name__ == "__main__":
