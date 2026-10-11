@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.5.2"
+VERSION = "1.5.3"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -118,7 +118,17 @@ def docs_of(project):
     return {v["name"]: v for k, v in state["shared"].items() if v.get("project", MAIN) == project}
 
 
-def projects_list(now):
+def unread_in(project, viewer):
+    """Messages in a project the viewer hasn't seen: chat and requests to everyone or to them, not their own,
+    newer than their read mark there (people coming and going don't count)."""
+    if not viewer:
+        return 0
+    seen = peers.get(viewer, {}).get("readIn", {}).get(project, 0)
+    return sum(1 for m in state["messages"] if m["id"] > seen and m.get("project") == project
+               and m["kind"] in ("chat", "request", "image") and m["from"] != viewer and m["to"] in ("all", viewer))
+
+
+def projects_list(now, viewer=None):
     names = {MAIN} | set(state.get("leaders", {})) | {t.get("project", MAIN) for t in state["tasks"]} \
         | {v.get("project", MAIN) for v in state["shared"].values()} \
         | {m["project"] for m in state["messages"] if m.get("project")} \
@@ -128,7 +138,7 @@ def projects_list(now):
     for n in sorted(names, key=lambda x: (x != MAIN, x.lower())):
         out.append({"name": n, "leader": leader_of(n),
                     "openTasks": sum(1 for t in state["tasks"] if task_in(t, n) and t["status"] != "done"),
-                    "docs": len(docs_of(n)),
+                    "docs": len(docs_of(n)), "unread": unread_in(n, viewer),
                     "here": sorted(x for x, p in peers.items() if p.get("project", MAIN) == n and is_online(p, now))})
     return out
 
@@ -358,6 +368,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Read receipts: this member's plugin now has everything up to the cursor (shown in their /crew,
                 # handed to their Claude). Every poll reply carries everyone's mark, and any pings waiting for them.
                 peers[self.name]["read"] = state["next_id"] - 1
+                peers[self.name].setdefault("readIn", {})[self.project] = state["next_id"] - 1  # unread counts per project
                 self.extra = {"reads": {n: p.get("read", 0) for n, p in peers.items()},
                               "pings": [i for i, pg in pings.items() if pg["to"] == self.name and not pg["answeredAt"]]}
             if url.path == "/wait":
@@ -417,11 +428,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr), "project": pr,
                                  "tasks": [task_view(t, now) for t in state["tasks"] if task_in(t, pr)],
                                  "leader": leader_of(pr), "acting": acting.get(pr),
-                                 "shared": sorted(docs_of(pr).keys()), "projects": projects_list(now),
+                                 "shared": sorted(docs_of(pr).keys()), "projects": projects_list(now, self.name),
                                  "cursor": state["next_id"] - 1, "chatEpoch": epoch_of(pr),
                                  "version": VERSION})
             elif url.path == "/projects":
-                self.reply(200, {"projects": projects_list(time.time())})
+                self.reply(200, {"projects": projects_list(time.time(), self.name)})
             elif url.path == "/pong":
                 # crew_ping waits here for the echo (like /wait: held open, no polling, max 25s per call)
                 pg = pings.get(q.get("id", [""])[0])

@@ -46,6 +46,20 @@ def roll(*parts):
 
 
 ONE_WINDOW_PORT = 47817  # a localhost port the open window holds, so a second launch can find it
+def desktop_bounds(sw, sh):
+    """(left, top, width, height) of all monitors together on Windows; elsewhere just the main screen."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            m = ctypes.windll.user32.GetSystemMetrics
+            w, h = m(78), m(79)  # SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN
+            if w and h:
+                return m(76), m(77), w, h  # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN
+        except Exception:  # noqa: BLE001
+            pass
+    return 0, 0, sw, sh
+
+
 _held = []  # keeps the single-instance mutex alive for as long as the window runs
 
 
@@ -66,6 +80,7 @@ def one_instance(name):
     return True
 
 
+MAX_CLAWDS = 10  # Clawds on stage at once (a bigger crew: the offline ones step aside first)
 CLOSE_AFTER = 60  # seconds after your own Claude leaves (or the relay goes away) before the window closes
 
 
@@ -335,7 +350,8 @@ class World:
         peers = snap.get("peers", []) if snap else []
         if not peers:
             peers = [{"name": n, "online": True, "activity": "idle", "subagents": 0} for n in ("", " ", "  ")]
-        peers = sorted(peers, key=lambda p: p["name"])[:6]  # the same order in every window
+        # the same order in every window: whoever's online first, then by name; room on stage for ten
+        peers = sorted(peers, key=lambda p: (not p.get("online", True), p["name"]))[:MAX_CLAWDS]
         names = [p["name"] for p in peers]
         for gone in [n for n in self.clawds if n not in names]:
             c = self.clawds[gone]
@@ -1826,7 +1842,9 @@ class App:
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         x = self.prefs.get("x", sw - w - 24)
         y = self.prefs.get("y", sh - h - 64)
-        x, y = max(0, min(sw - 80, x)), max(0, min(sh - 60, y))
+        # keep it reachable, anywhere on the whole desktop (a second monitor too, even left of or above the main one)
+        vx, vy, vw, vh = desktop_bounds(sw, sh)
+        x, y = max(vx, min(vx + vw - 80, x)), max(vy, min(vy + vh - 60, y))
         self.root.geometry(f"{w}x{h}+{x}+{y}")
         self.canvas.config(width=w, height=h)
 

@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.5.2'
+const VERSION = '1.5.3'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -2798,7 +2798,9 @@ export const register: Register = (on, options) => {
                   value={projectName}
                   options={projectNames.map(n => {
                     const p = (s.projects ?? []).find(x => x.name === n)
-                    const bits = p ? [p.here.length ? `${p.here.length} here` : '', p.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : ''].filter(Boolean) : []
+                    const bits = p
+                      ? [p.unread && n !== projectName ? `${p.unread} new` : '', p.here.length ? `${p.here.length} here` : '', p.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : ''].filter(Boolean)
+                      : []
                     return { value: n, label: bits.length ? `${n} · ${bits.join(' · ')}` : n }
                   })}
                   onSelect={(v: string) => switchProjectPress($, v)}
@@ -2893,6 +2895,7 @@ export const register: Register = (on, options) => {
                 const lead = mine ? s.leader : p.leader // the project you're in: the leader the pane already has
                 const canDelete = p.name !== 'main' && (lead === me || isHosting())
                 const bits = [
+                  p.unread && !mine ? `${p.unread} new` : '',
                   p.here.length ? `${p.here.join(', ')} here` : '',
                   p.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : '',
                   lead ? `led by ${lead}` : '',

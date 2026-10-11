@@ -68,6 +68,7 @@ export type CrewProject = {
   openTasks: number
   docs: number
   here: string[] // who's online in it right now
+  unread?: number // messages there you haven't seen yet (relay 1.5.3+)
 }
 
 declare module 'claude-code' {
