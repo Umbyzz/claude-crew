@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.9.8"
+VERSION = "0.9.9"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -98,11 +98,48 @@ def is_online(p, now):
     return not p.get("left") and now - p["seen"] < ONLINE_SECONDS
 
 
+LEADER_AWAY_SECONDS = 60  # the leader offline this long (or out of tokens): someone else acts as leader meanwhile
+acting = {"name": None}  # the acting leader while the true leader is away (memory only)
+
+
+def leader_away(now):
+    leader = state["leader"]
+    if not leader:
+        return False
+    p = peers.get(leader)
+    if p and is_online(p, now):
+        return p["activity"] == "out"
+    return away_for(leader, now) >= LEADER_AWAY_SECONDS
+
+
+def update_acting(now):
+    """While the true leader is away, the online member who has been in the session longest acts as leader
+    (and stays acting until they go too, or the leader is back). Tells the crew whenever that changes."""
+    leader, cur = state["leader"], acting["name"]
+    want = None
+    if leader_away(now):
+        ok = lambda n: n != leader and n in peers and is_online(peers[n], now) and peers[n]["activity"] != "out"
+        want = cur if cur and ok(cur) else next(
+            (n for n, _ in sorted(((n, p["joinedAt"]) for n, p in peers.items() if ok(n)), key=lambda x: (x[1], x[0]))),
+            None)
+    if want == cur:
+        return
+    acting["name"] = want
+    if want:
+        post_message(want, "all", f"is acting leader while {leader} is away. Requests from them count as the "
+                                  f"leader's until {leader} is back.", "update", leaderChange=True)
+    elif cur:
+        back = leader and not leader_away(now)
+        post_message(cur, "all", f"hands leadership back to {leader}" if back else "is no longer acting leader",
+                     "update", leaderChange=True, **({"handover": leader} if back else {}))
+    save()
+
+
 def peer_list():
     now = time.time()
     return [
         {"name": n, "online": is_online(p, now), "lastSeen": int(p["seen"]),
-         "activity": p["activity"], "leader": n == state["leader"], "since": p["since"],
+         "activity": p["activity"], "leader": n == state["leader"], "acting": n == acting["name"], "since": p["since"],
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
          "version": p.get("version")}
         for n, p in sorted(peers.items())
@@ -129,6 +166,7 @@ def sweep():
         if not p.get("gone") and not p.get("left") and now - p["seen"] >= GONE_SECONDS:
             announce_leave(name, "lost connection (their Claude was closed or went offline)")
             save()
+    update_acting(now)
     # A claim nobody is working on any more goes back on the board.
     for t in state["tasks"]:
         if t["status"] == "claimed" and t.get("owner") and away_for(t["owner"], now) >= RELEASE_MINUTES * 60:
@@ -267,7 +305,7 @@ class Handler(BaseHTTPRequestHandler):
                 since = int(q.get("since", ["0"])[0])
                 msgs = [m for m in state["messages"] if m["id"] > since
                         and (m["to"] == "all" or (viewer and viewer in (m["to"], m["from"])))]
-                return self.reply(200, {"messages": msgs[-300:], "leader": state["leader"],
+                return self.reply(200, {"messages": msgs[-300:], "leader": state["leader"], "acting": acting["name"],
                                         "peers": peer_list(), "cursor": state["next_id"] - 1,
                                         "chatEpoch": state.get("chat_epoch", 0), "now": time.time(),
                                         "version": VERSION})
@@ -283,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
                            "text": m["text"][:80] if visible(m) else "", "at": m["at"]}
                           for m in state["messages"][-30:]
                           if m["kind"] in ("chat", "request", "out", "back", "join", "leave", "image")]
-                self.reply(200, {"peers": peer_list(), "leader": state["leader"], "recent": recent,
+                self.reply(200, {"peers": peer_list(), "leader": state["leader"], "acting": acting["name"], "recent": recent,
                                  "now": time.time(), "version": VERSION})
             elif url.path == "/poll":
                 since = int(q.get("since", ["0"])[0])
@@ -291,7 +329,7 @@ class Handler(BaseHTTPRequestHandler):
                         and (m["to"] in ("all", self.name) or m["from"] == self.name)]
                 now = time.time()
                 self.reply(200, {"messages": msgs[-200:], "peers": peer_list(),
-                                 "tasks": [task_view(t, now) for t in state["tasks"]], "leader": state["leader"],
+                                 "tasks": [task_view(t, now) for t in state["tasks"]], "leader": state["leader"], "acting": acting["name"],
                                  "shared": sorted(state["shared"].keys()),
                                  "cursor": state["next_id"] - 1, "chatEpoch": state.get("chat_epoch", 0),
                                  "version": VERSION})
@@ -417,6 +455,7 @@ class Handler(BaseHTTPRequestHandler):
                     last.update(text=text, at=round(time.time(), 3), **{"from": self.name})
                 else:
                     post_message(self.name, "all", text, "update", leaderChange=True)
+                acting["name"] = None  # a new true leader: any stand-in steps down without a handover
                 save()
                 return self.reply(200, {"leader": leader})
             if path == "/shared":

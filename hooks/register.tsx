@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.9.8'
+const VERSION = '0.9.9'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -309,7 +309,7 @@ function fmtTask(t: CrewTask) {
   return `T${t.id} [${t.status}${who}] ${t.title}${t.note ? ` — ${t.note}` : ''}`
 }
 
-function roleText(leader: string | null, peers: CrewSnapshot['peers'] = []) {
+function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acting: string | null = null) {
   const common =
     `You are "${cfg.me}" in a crew: several people's Claude Code sessions linked through the crew relay. ` +
     `Use crew_status to see teammates, the task board and recent messages; crew_task to add, assign, claim and finish tasks ` +
@@ -335,10 +335,24 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = []) {
     )
   const lead = peers.find(p => p.name === leader)
   const away = leader && (!lead || !lead.online || lead.activity === 'out')
+  const where = lead?.activity === 'out' ? 'out of tokens' : 'offline'
+  if (leader && acting === cfg.me)
+    return (
+      `${common}\n\nYou are the ACTING crew leader: ${leader} (the true leader) is ${where}, so the crew's requests and ` +
+      `task assignments come from you until they're back, and teammates' Claudes treat your requests as the leader's. ` +
+      `Keep the crew moving: assign and unblock tasks, answer teammates, review what they report, take tasks yourself. ` +
+      `Stay inside the plan ${leader} set; small decisions are yours, but leave big re-plans and new directions for ${leader}. ` +
+      `Note every decision on the board or in a crew_share doc, so the handover is easy: when ${leader} is back, ` +
+      `leadership returns to them on its own and you'll send them a short summary.` +
+      pace
+    )
   if (leader && away)
     return (
-      `${common}\n\n${leader} leads the crew but is ${lead?.activity === 'out' ? 'out of tokens' : 'offline'} right now. ` +
-      `Don't stall waiting for them: keep going on tasks already assigned to you or claimed by you, and take open ` +
+      `${common}\n\n${leader} leads the crew but is ${where} right now.` +
+      (acting
+        ? ` ${acting} is acting leader meanwhile: treat ${acting}'s requests and assignments as the leader's, and report to ${acting}.`
+        : '') +
+      ` Don't stall waiting for them: keep going on tasks already assigned to you or claimed by you, and take open ` +
       `unassigned ones that clearly fit. Coordinate with the teammates who are online through crew_send, and note ` +
       `decisions on the board so ${leader} can catch up. Leave bigger re-plans and new directions for ${leader} when ` +
       `they're back, and don't change the leader unless your user asks.` +
@@ -356,8 +370,19 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = []) {
   return `${common}\n\nThere is no crew leader right now: coordinate as peers through the task board.`
 }
 
-async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string | null) {
+async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string | null, actingLeader: string | null = null) {
   for (const m of msgs) {
+    // We were acting leader and the true leader is back: this Claude briefs them, so nothing gets lost in between.
+    // (Queued even mid-turn: it's its own job, so it runs once Claude is free, never twice.)
+    if (m.from === cfg.me && m.kind === 'update' && m.handover && cfg.autoRun !== 'off') {
+      void $.prompt
+        .submit({
+          text:
+            `${m.handover} is back, so you've handed leadership back. Send ${m.handover} a short handover with crew_send: ` +
+            `what got done while they were away, decisions you made, open questions, and what's next. Keep it brief.`,
+        })
+        .catch(() => {})
+    }
     if (m.from === cfg.me) continue
     const direct = m.to === cfg.me
     const toast =
@@ -411,7 +436,11 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
     // the leader's Claude is the crew's coordinator, and a person asking it is the point of having one.
     const trusted =
       cfg.autoRun === 'anyone' ||
-      (cfg.autoRun === 'leader' && (m.from === leader || (m.human === true && leader === cfg.me)))
+      // while the true leader is away, the acting leader's requests count as the leader's
+      (cfg.autoRun === 'leader' &&
+        (m.from === leader ||
+          (actingLeader !== null && m.from === actingLeader) ||
+          (m.human === true && (leader === cfg.me || actingLeader === cfg.me))))
     // A queued prompt only resolves once Claude is free to start it, so it is never awaited here:
     // waiting on it would hold up the check-ins, and the relay would think we'd dropped off.
     // Only an idle Claude needs a prompt to start on it: a busy one reads the request in its current turn,
@@ -420,7 +449,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
       queuedRequests.set(m.id, m.from)
       void $.prompt
         .submit({
-          text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : ''}${m.human ? ', typed by them in /crew' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
+          text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : m.from === actingLeader ? ` (acting leader while ${leader} is away)` : ''}${m.human ? ', typed by them in /crew' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
         })
         .catch(() => {})
     }
@@ -450,12 +479,13 @@ async function pollOnce($: EngineInterface) {
     const data = await relay($, 'GET', `/poll?since=${since}`)
     const msgs: CrewMessage[] = data.messages ?? []
     const leader: string | null = data.leader ?? null
+    const actingLeader: string | null = data.acting ?? null // stands in while the true leader is away
     // A teammate's crew_ping: echo it right away. The plugin answers; this Claude never sees it (no tokens).
     for (const id of Array.isArray(data.pings) ? data.pings : []) void relay($, 'POST', '/pong', { id }).catch(() => {})
     // A first-ever connection shows recent history in the pane but doesn't replay it into the conversation.
     // Delivery runs on its own track (in order), so a slow image download never delays the next check-in.
     if (!skipDelivery && (stored >= 0 || prev.cursor > 0))
-      delivering = delivering.then(() => deliver($, msgs, leader)).catch(() => {})
+      delivering = delivering.then(() => deliver($, msgs, leader, actingLeader)).catch(() => {})
     const cursor = Math.max(since, Number(data.cursor) || 0)
     await $.store.set(`cursor:${cfg.base}`, cursor)
     const epoch = Number(data.chatEpoch ?? 0)
@@ -464,6 +494,7 @@ async function pollOnce($: EngineInterface) {
       error: '',
       cursor,
       leader,
+      acting: actingLeader,
       latest: s.latest ?? null,
       relayVersion: data.version ?? null,
       chatEpoch: epoch,
@@ -1665,7 +1696,7 @@ export const register: Register = (on, options) => {
     const composed = await next(e)
     if (!configured || !joined) return composed
     const s = await read($, snapshot)
-    return { sections: [...composed.sections, { id: 'crew:role', text: roleText(s.leader, s.peers), scope: 'session' as const }] }
+    return { sections: [...composed.sections, { id: 'crew:role', text: roleText(s.leader, s.peers, s.acting ?? null), scope: 'session' as const }] }
   })
 
   on('command.run', { command: 'crew' }, async $ => {
@@ -1702,7 +1733,7 @@ export const register: Register = (on, options) => {
     if (!s.connected) return ok(`Not connected to the relay: ${s.error || 'not set up'}`)
     const n = Math.max(1, Math.min(100, Number(e.messages) || 20))
     const peer = (p: CrewSnapshot['peers'][number]) =>
-      `${p.name}${p.leader ? ' (leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}`
+      `${p.name}${p.leader ? ' (leader)' : ''}${p.acting ? ' (acting leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}`
     const openTasks = s.tasks.filter(t => t.status !== 'done')
     const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
     const onlineNow = s.peers.filter(p => p.online).length

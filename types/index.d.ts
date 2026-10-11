@@ -13,6 +13,7 @@ export type CrewMessage = {
   caption?: string
   notify?: boolean // flagged "for your human" by the sender
   human?: boolean // typed by a person in /crew rather than sent by their Claude
+  handover?: string // an acting leader handing back: the true leader who's back
 }
 
 export type CrewPeer = {
@@ -23,6 +24,7 @@ export type CrewPeer = {
   subagents?: number
   chatTo?: string | null
   leader: boolean
+  acting?: boolean // standing in for the leader while they're away
 }
 
 export type CrewTask = {
@@ -42,6 +44,7 @@ export type CrewSnapshot = {
   error: string
   cursor: number
   leader: string | null
+  acting?: string | null // the acting leader while the true leader is away (relay 0.9.9+)
   latest: string | null
   relayVersion: string | null
   feed: CrewMessage[]

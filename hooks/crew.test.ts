@@ -751,6 +751,40 @@ test("people's /crew chat stays out of Claude's context; a Claude's message and 
   expect(submitted.some(t => t.includes('Crew request #82 from bob, typed by them in /crew'))).toBe(true)
 })
 
+test('a follower runs the acting leader\'s requests, and the acting leader briefs the leader when they\'re back', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const submitted: string[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => {
+    submitted.push(e.text)
+    return e
+  })
+  on('turn.complete', async () => ({ text: '' }) as any)
+  let polls = 0
+  on('http.fetch', async () => {
+    polls += 1
+    const messages =
+      polls === 1
+        ? [
+            // ids no other test uses: "already answered" memory is module-wide in the test run
+            { id: 9020, from: 'carol', to: 'alice', kind: 'request', text: 'fix the jump', at: 0 },
+            { id: 9021, from: 'alice', to: 'all', kind: 'update', text: 'hands leadership back to bob', at: 0, handover: 'bob' },
+          ]
+        : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, leader: 'bob', acting: 'carol', messages, cursor: 9021 }) } }
+  })
+  // an earlier test's queued prompt can leave the plugin thinking Claude is mid-turn: finish that turn first
+  await $.turn.complete({ reason: 'answer', text: 'done' } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(session.appended().length).toBeGreaterThan(0)
+  const all = submitted.join(' || ')
+  expect(all).toContain('Crew request #9020 from carol (acting leader while bob is away)')
+  expect(all).toContain('bob is back, so you')
+})
+
 test('Ask a Claude sends a request to the leader by default, flagged as typed by a person', { options: { ...OPTIONS, name: 'carol' } }, async ($, on) => {
   const seen = fakeRelay(on)
   on('ui.toast', async () => ({ value: undefined }))
@@ -837,6 +871,25 @@ test('with the leader offline, followers keep working instead of stalling', { op
   const role = composed.sections.find((s: any) => s.id === 'crew:role')
   expect(role.text).toContain('bob leads the crew but is offline right now')
   expect(role.text).toContain("Don't stall")
+})
+
+test('while the leader is away, the acting leader is briefed as such and their requests run like the leader\'s', { options: OPTIONS }, async ($, on) => {
+  // bob leads but is offline; alice (us) is acting leader; carol's requests aren't trusted, alice's role says acting
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const peers = [
+    { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: false, acting: true },
+    { name: 'bob', online: false, lastSeen: 0, activity: 'idle', leader: true },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers, leader: 'bob', acting: 'alice' }) } }))
+  on('prompt.compose', async () => ({ sections: [] }) as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const composed: any = await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as any)
+  expect(composed.sections.find((s: any) => s.id === 'crew:role').text).toContain('You are the ACTING crew leader')
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(String(r.result)).toContain('alice (acting leader)')
 })
 
 test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {
