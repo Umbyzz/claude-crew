@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.4.1'
+const VERSION = '1.4.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -215,6 +215,7 @@ async function projectFolder($: EngineInterface) {
 }
 
 async function loadFolder($: EngineInterface, note = '') {
+  if (!userHome) userHome = String((await $.env.get('USERPROFILE').catch(() => '')) ?? '') // only for shorter paths
   const { path, chosen } = await projectFolder($)
   folderPath = path
   if (!path) {
@@ -282,6 +283,37 @@ function openInExplorer($: EngineInterface, path: string) {
   if (!path) return
   // explorer.exe returns at once (and often with exit code 1, which means nothing): no need to wait on it
   void $.process.run(['explorer.exe', path], { timeoutMs: 10000 }).catch(() => {})
+}
+
+// Which inline box the Project card shows: none by default, so there are no fields until you ask for one.
+type FolderMode = '' | 'new' | 'home' | 'sub' | 'change'
+const folderModeAtom = atom({ plugin: 'crew', key: 'folderMode' } as const, '' as FolderMode)
+let userHome = ''
+
+function setFolderMode($: EngineInterface, mode: FolderMode) {
+  void update($, folderModeAtom, () => mode)
+}
+
+// "Desktop\ClaudeStuff\Crew projects\lava" instead of "C:\Users\orma5\Desktop\…"
+function shortPath(p: string) {
+  return userHome && p.toLowerCase().startsWith(userHome.toLowerCase() + '\\') ? p.slice(userHome.length + 1) : p
+}
+
+function copyPath($: EngineInterface, surface: any, path: string) {
+  void $.ui
+    .copy({ text: path, surface })
+    .then(r => $.ui.toast(r.isCopied ? 'crew: folder path copied' : `crew: ${path}`, { timeoutMs: 5000 }))
+}
+
+function newProjectPress($: EngineInterface, raw: string) {
+  const name = cleanProject(raw)
+  if (!raw.trim()) return
+  void (async () => {
+    const existed = (await read($, snapshot)).projects?.some(p => p.name === name)
+    await switchProject($, name)
+    setFolderMode($, '')
+    if (!existed) $.ui.toast(`crew: made "${name}" (and its folder). Teammates can pick it from the list.`, { timeoutMs: 8000 })
+  })().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
 
 function folderPress($: EngineInterface, action: () => Promise<void>) {
@@ -2156,6 +2188,9 @@ export const register: Register = (on, options) => {
     const folder = await read($, folderView)
     const kicking = await read($, kickPending)
     const home = configured ? await projectsHome($) : ''
+    const folderMode = await read($, folderModeAtom)
+    const projectNames = [...new Set(['main', projectName, ...(s.projects ?? []).map(p => p.name)])]
+    const here = s.peers.filter(p => p.online && (p.project ?? 'main') === projectName).map(p => p.name)
     const canKick = s.leader === me || isHosting() // the relay checks this too
     const docs: DocMeta[] = s.shared
       .map(n => meta.docs.find(d => d.name === n) ?? { name: n, by: '', at: 0, size: 0 })
@@ -2345,7 +2380,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" marginTop={1}>
             {inSession && tabButton('chat', 'Chat', () => setTab($, 'chat'))}
             {inSession && tabButton('tasks', `Tasks${open.length ? ` (${open.length})` : ''}`, () => setTab($, 'tasks'))}
-            {inSession && tabButton('docs', `Project${docs.length ? ` (${docs.length})` : ''}`, () => setTab($, 'docs'))}
+            {inSession && tabButton('docs', `📂 ${projectName}`, () => setTab($, 'docs'))}
             {inSession && tabButton('crew', `Crew (${online} online)`, () => setTab($, 'crew'))}
             {tabButton('settings', '⚙ Settings', () => toggleSettings($))}
           </Box>
@@ -2446,6 +2481,16 @@ export const register: Register = (on, options) => {
                     { value: 'no', label: "don't" },
                   ]}
                   onSelect={(v: string) => setOption($, 'clawdsWindow', v)}
+                />
+              )}
+              {Input && (
+                <Input
+                  key="projects-home-settings"
+                  label="New project folders go in "
+                  value={home}
+                  placeholder="e.g. Documents\Crew projects (each new project gets a folder here)"
+                  submitLabel="set"
+                  onSubmit={(v: string) => folderPress($, () => setProjectsHome($, v))}
                 />
               )}
             </Card>
@@ -2603,74 +2648,98 @@ export const register: Register = (on, options) => {
         {/* -- Docs */}
         {inSession && current === 'docs' && (
           <Box flexDirection="column">
-            <Card title={`Project: ${projectName}`}>
-              <Text dimColor>
-                Its own chat, tasks, docs and leader. This Claude Code chat stays in it, and a new chat in this folder starts in it too.
-              </Text>
+            <Card
+              title={`📂 ${projectName}`}
+              right={<Button key="new-project-open" label="+ New project" dimColor={folderMode !== 'new'} onPress={() => setFolderMode($, folderMode === 'new' ? '' : 'new')} />}
+            >
+              {/* -- which project: shared with the crew, switched just for you */}
               {Select && (
                 <Select
                   key="project"
-                  label="Switch to "
+                  label="You're working on "
                   value={projectName}
-                  options={[...new Set(['main', projectName, ...(s.projects ?? []).map(p => p.name)])].map(n => {
+                  options={projectNames.map(n => {
                     const p = (s.projects ?? []).find(x => x.name === n)
-                    const bits = p ? [p.openTasks ? `${p.openTasks} open` : '', p.here.length ? `${p.here.join(', ')} here` : ''].filter(Boolean) : []
-                    return { value: n, label: bits.length ? `${n}  (${bits.join(' · ')})` : n }
+                    const bits = p ? [p.here.length ? `${p.here.length} here` : '', p.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : ''].filter(Boolean) : []
+                    return { value: n, label: bits.length ? `${n} · ${bits.join(' · ')}` : n }
                   })}
                   onSelect={(v: string) => switchProjectPress($, v)}
                 />
               )}
-              {Input && (
-                <Input key="new-project" label="New project " placeholder="name it, then press Enter" submitLabel="create" onSubmit={(v: string) => switchProjectPress($, v)} />
+              <Text dimColor>
+                Switching is just for you. Everyone in a project shares its chat, tasks and docs.
+                {projectNames.length <= 1 ? " Everyone starts in 'main': make a project per game or app to keep its chat, tasks and docs separate." : ''}
+              </Text>
+              <Text dimColor>
+                Here: {here.length ? here.join(', ') : 'just you'} · Leader of {projectName}: {s.leader ?? 'none yet (Crew tab)'}
+              </Text>
+              {folderMode === 'new' && (
+                <Callout>
+                  {Input && (
+                    <Input key="new-project" label="Name " placeholder="e.g. lava rush, then Enter" submitLabel="create" autoFocus onSubmit={(v: string) => newProjectPress($, v)} />
+                  )}
+                  {home ? (
+                    <Text dimColor>Its folder goes in {shortPath(home)}.</Text>
+                  ) : (
+                    <Box flexDirection="column">
+                      <Text>New project folders go in:</Text>
+                      <Box flexDirection="row">
+                        <Button key="home-default" label={`Documents\\Crew projects`} variant="primary" onPress={() => folderPress($, () => setProjectsHome($, `${userHome}\\Documents\\Crew projects`))} />
+                        <Button key="home-choose" label="Choose…" onPress={() => setFolderMode($, 'home')} />
+                      </Box>
+                    </Box>
+                  )}
+                </Callout>
               )}
-            </Card>
+              {folderMode === 'home' && Input && (
+                <Input key="projects-home" label="New project folders go in " value={home} placeholder="paste a folder path, then Enter" submitLabel="set" autoFocus onSubmit={(v: string) => folderPress($, () => setProjectsHome($, v).then(() => setFolderMode($, 'new')))} />
+              )}
 
-            <Card
-              title="Folder on this PC"
-              right={folder.path !== '' && <Button key="folder-refresh" label="↻" dimColor onPress={() => folderPress($, () => loadFolder($))} />}
-            >
-              {folder.path === '' ? (
-                <Text dimColor>No folder yet: paste one below.</Text>
-              ) : (
-                <Text wrap="truncate-middle">
-                  {folder.path}
-                  {!folder.chosen ? '  (this chat\'s folder)' : ''}
+              {/* -- your files for it: on this PC only */}
+              <Box flexDirection="column" marginTop={1}>
+                <Box flexDirection="row" justifyContent="space-between">
+                  <Text bold>Your files for {projectName} (only on this PC)</Text>
+                  {folder.path !== '' && <Button key="folder-refresh" label="↻" dimColor onPress={() => folderPress($, () => loadFolder($))} />}
+                </Box>
+                {folder.path === '' ? (
+                  <Text dimColor>No folder yet: press "Use a different folder…".</Text>
+                ) : (
+                  <Text wrap="truncate-middle">{shortPath(folder.path)}</Text>
+                )}
+                {folder.error !== '' && <Text color="error">{folder.error}</Text>}
+                {folder.note !== '' && <Text dimColor>{folder.note}</Text>}
+                <Box flexDirection="row">
+                  {folder.path !== '' && <Button key="folder-open" label="Open folder" variant="primary" onPress={() => openInExplorer($, folder.path)} />}
+                  {folder.path !== '' && <Button key="folder-copy" label="Copy path" onPress={() => copyPath($, e.surface, folder.path)} />}
+                  {folder.path !== '' && <Button key="folder-sub-open" label="+ Folder" dimColor={folderMode !== 'sub'} onPress={() => setFolderMode($, folderMode === 'sub' ? '' : 'sub')} />}
+                  <Button key="folder-change-open" label="Use a different folder…" dimColor={folderMode !== 'change'} onPress={() => setFolderMode($, folderMode === 'change' ? '' : 'change')} />
+                </Box>
+                {folderMode === 'sub' && Input && (
+                  <Input key="folder-new" label="New folder " placeholder="name, then Enter" submitLabel="make" autoFocus onSubmit={(v: string) => folderPress($, () => newFolder($, v))} />
+                )}
+                {folderMode === 'change' && (
+                  <Box flexDirection="column">
+                    {Input && (
+                      <Input key="folder-set" label="Folder " placeholder="paste a folder path, then Enter" submitLabel="use" autoFocus onSubmit={(v: string) => folderPress($, () => setFolder($, v).then(() => setFolderMode($, '')))} />
+                    )}
+                    {sessionCwd !== '' && folder.path !== sessionCwd && (
+                      <Button key="folder-use-chat" label="Use the folder this chat is open in" onPress={() => folderPress($, () => useChatFolder($).then(() => setFolderMode($, '')))} />
+                    )}
+                  </Box>
+                )}
+                <Text dimColor>
+                  Each person has their own copy; share files with crew_share or git. Your Claude works in this folder
+                  {sessionCwd && folder.path && folder.path !== sessionCwd ? ` (this chat itself is open in ${shortPath(sessionCwd)})` : ''}.
                 </Text>
-              )}
-              {folder.error !== '' && <Text color="error">{folder.error}</Text>}
-              {folder.note !== '' && <Text dimColor>{folder.note}</Text>}
-              <Box flexDirection="row">
-                {folder.path !== '' && <Button key="folder-open" label="Open in Explorer" variant="primary" onPress={() => openInExplorer($, folder.path)} />}
-                {sessionCwd !== '' && folder.path !== sessionCwd && (
-                  <Button key="folder-use-chat" label="Use this chat's folder" onPress={() => folderPress($, () => useChatFolder($))} />
+                {folder.dirs.length > 0 && (
+                  <Box flexDirection="row" flexWrap="wrap">
+                    {folder.dirs.slice(0, 6).map(d => (
+                      <Button key={`dir-${d}`} label={`📁 ${d}`} plain onPress={() => openInExplorer($, `${folder.path}\\${d}`)} />
+                    ))}
+                    {folder.dirs.length > 6 && <Text dimColor> +{folder.dirs.length - 6} more</Text>}
+                  </Box>
                 )}
               </Box>
-              {folder.dirs.length > 0 && (
-                <Box flexDirection="column" marginTop={1}>
-                  {folder.dirs.slice(0, 8).map(d => (
-                    <Box flexDirection="row">
-                      <Button key={`dir-${d}`} label={`📁 ${d}`} plain onPress={() => openInExplorer($, `${folder.path}\\${d}`)} />
-                    </Box>
-                  ))}
-                  {folder.dirs.length > 8 && <Text dimColor>…and {folder.dirs.length - 8} more (Open in Explorer shows them all)</Text>}
-                </Box>
-              )}
-              {Input && folder.path !== '' && (
-                <Input key="folder-new" label="New folder " placeholder="name, then Enter" submitLabel="make" onSubmit={(v: string) => folderPress($, () => newFolder($, v))} />
-              )}
-              {Input && (
-                <Input key="folder-set" label="Change to " placeholder="paste a folder path, then Enter" submitLabel="set" onSubmit={(v: string) => folderPress($, () => setFolder($, v))} />
-              )}
-              {Input && (
-                <Input
-                  key="projects-home"
-                  label="Projects home "
-                  value={home}
-                  placeholder="e.g. C:\Users\you\Documents\Crew projects (new projects get a folder here)"
-                  submitLabel="set"
-                  onSubmit={(v: string) => folderPress($, () => setProjectsHome($, v))}
-                />
-              )}
             </Card>
 
           <Card title={`Shared docs${docs.length ? ` (${docs.length})` : ''}`}>

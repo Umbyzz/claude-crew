@@ -92,6 +92,7 @@ declare module 'claude-code' {
       project: string
       folder: { path: string; chosen: boolean; dirs: string[]; error: string; note: string }
       kickPending: string
+      folderMode: '' | 'new' | 'home' | 'sub' | 'change'
     }
   }
 }

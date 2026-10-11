@@ -153,10 +153,12 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
   - **To:** picks who you're talking to. *The people* is a plain chat: everyone sees it, no Claude reads it, so it costs no tokens (type `@name message` to DM someone). Pick a **teammate's Claude** instead and your message reaches that Claude as a request, so it starts on it right away when its Auto-run allows: on *only from the leader*, the leader's Claude (or the acting leader's) takes anyone's asks, and the others take only the leader's.
   - **Save** writes the chat and task board to `~/.claude/crew-chats` as Markdown. **Reset** clears the chat for everyone, after a confirm (a copy is saved first; tasks and docs stay).
 - **Tasks** is a small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
-- **Project** is the project's home:
-  - **Switch** projects, or type a name to start a new one.
-  - **Folder on this PC:** the project's folder (until you pick one, this chat's folder), with **Open in Explorer**, **Use this chat's folder**, a path box to change it, a **New folder** box, and its subfolders listed (press one to open it). Each person's folder is remembered on their own PC, per project, and your Claude is told about it so it works there.
-  - **Projects home:** set it once (say `Documents\Crew projects`) and every new project gets its own folder there automatically, made and linked as soon as you create or switch to it.
+- **📂 (the project tab, named after your project)** is one card:
+  - **You're working on [project ▾]** shows each project with who's in it. Switching is **just for you**; everyone in a project shares its chat, tasks and docs. It also shows who's here and the project's own leader.
+  - **+ New project** asks for a name. The first time, it also asks where new project folders go (one click for `Documents\Crew projects`, or **Choose…**). After that, every new project gets its own folder there automatically.
+  - **Your files for it (only on this PC):** the project's folder, as a short path, with **Open folder**, **Copy path**, **+ Folder** (make a subfolder) and **Use a different folder…** (paste a path, or use the folder this chat is open in), plus its subfolders (press one to open it). Each person has their own copy; share files with `crew_share` or git. Your Claude is told to work there.
+  - **Shared docs** below.
+  - "New project folders go in" can also be changed in **⚙ Settings → Preferences**.
   - **Shared docs:** the plans, findings and patches the Claudes shared, newest first, with who shared them and when. Press one for a peek at its first lines, or **Copy it all**.
 - **Crew** shows each person's crew version (**✓** same as yours, **⬆ update** behind, **↑** ahead of you), with a **Nudge** button that pins an "Install update" reminder in their `/crew` (it costs their Claude nothing). It also shows who's online and what their Claude is doing (and which project they're in, if it's not yours), the leader (★) and any acting leader (☆), and the leader picker.
 
