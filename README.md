@@ -10,17 +10,27 @@ Everything goes through one small relay that one of you runs. The plugin talks t
  friend B ─┘     over Tailscale / Radmin VPN / LAN
 ```
 
+## What's new in 1.0
+- **`/crew` in tabs:** Chat, Tasks, Docs, Crew and ⚙ Settings, one card at a time, with notices pinned above them.
+- **Messenger-style chat** with a **People / Everything** switch and a **To:** picker that talks to the people or straight to a teammate's Claude.
+- **Read receipts** ("✓ read by bob") and **`crew_ping`** to measure latency.
+- **Acting leader:** when the leader is away, someone stands in, and hands back with a summary.
+- **Crew log window** (`/crewlog`) to watch the Claudes talk to each other on a second monitor.
+- **One-click updates that actually work** on every kind of install, with a step log if they don't.
+- **Hosting from the top bar:** Host, ▶ Start relay, and **Restart relay** after an update.
+- Tasks numbered **T1, T2 …**, stale claims reopened, people's chat kept out of the Claudes' tokens.
+
 ## What you get
 
 ### Working together
-- **Crew leader.** Pick one from the dropdown in `/crew`. The leader's Claude turns goals into tasks, assigns them, shares the plan and reviews what comes back. The other Claudes put the leader's assignments first, claim them, do them and report back. Your own instructions to your Claude always win.
+- **Crew leader.** Pick one from the dropdown in `/crew`'s **Crew** tab. The leader's Claude turns goals into tasks, assigns them, shares the plan and reviews what comes back. The other Claudes put the leader's assignments first, claim them, do them and report back. Your own instructions to your Claude always win.
 - **Task board.** Tasks can be added, assigned, claimed, finished or released, so no two Claudes do the same job. An assigned task reaches that person as a request. Tasks have their own numbers (T1, T2 …). A task claimed by someone who has been offline for 10 minutes is marked so anyone can take it over, and after 30 minutes it goes back on the board by itself.
 - **When the leader is away** (offline for a minute, or out of tokens), the teammate who's been in the session longest becomes **acting leader**, and the crew is told. The other Claudes treat the acting leader's requests like the leader's (so Auto-run "only from the leader" keeps work flowing), and the acting leader's Claude keeps things moving inside the plan, leaving big re-plans for the real leader. When the leader is back, leadership returns on its own and the acting leader's Claude sends them a short handover: what got done, decisions made, open questions.
-- **Chat and requests.** Claudes (and you) can message one teammate or everyone. Messages appear in the other sessions' conversations and as notifications.
+- **Chat and requests.** Claudes can message one teammate or everyone, and you can talk to the people or straight to a teammate's Claude. Messages to a Claude appear in its conversation; everyone gets notifications. **Read receipts** show who has picked up your message.
 - **Shared docs.** Plans, specs, diffs and findings can be passed between sessions by name.
 - **Auto-run.** A request addressed to you can start work in your session on its own: never, only from the leader (the default), or from anyone. Your normal permission prompts still apply.
 - **Presence.** You can see who's online and what their Claude is doing.
-- **Joining and leaving.** `/crew` has **Join session** and **Leave session** buttons. Closing Claude tells the crew straight away. If a Claude crashes or loses its connection, the crew hears about it within about 10 seconds. Either way the notice says which tasks that person was holding, so the leader can reassign them. When you reopen Claude after being in a crew, `/crew` asks whether to **rejoin** the session or leave it; you're never pulled back in silently.
+- **Joining and leaving.** `/crew` has **Leave…** (it asks first) and **Join session** buttons in its top bar. Closing Claude tells the crew straight away. If a Claude crashes or loses its connection, the crew hears about it within about 10 seconds. Either way the notice says which tasks that person was holding, so the leader can reassign them. When you reopen Claude after being in a crew, `/crew` asks whether to **rejoin** the session or leave it; you're never pulled back in silently.
 - **Images.** Claudes can send each other screenshots, mockups and charts with `crew_send_image`. The image is saved on the receiver's PC in `~/.claude/crew-inbox`, and their Claude opens it with the Read tool.
 - **Fast hand-offs.** Each Claude checks in every few seconds, and every second while it's working or the crew is talking. A message usually lands within a second or two. Follower Claudes tell the leader before starting work nobody assigned, and post a short update when they start and finish a task, so the leader always knows who is doing what.
 - **Out-of-tokens alerts.** When someone hits their usage limit, the crew hears about it, along with when the limit resets. Their Claudes say *"Oh no our pookie has no more tokens!"* and work out how to cover that person's tasks, and the leader re-plans. When the tokens come back, everyone hears that too.
@@ -72,7 +82,9 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 ### 1. One person hosts the relay
 The host needs Python 3.8 or newer, and nothing else.
 
-**Easiest: host from Claude.** Install the plugin (step 3) and open `/crew`. The setup asks your name, then **Host a crew** or **Join a friend's crew**. **Host a crew** opens `start-relay.bat` in its own window (keep it open while you host) and puts you straight into the session. Press **Copy invite** to get a ready-to-send message with your address, the key and the install steps. **Stop hosting** shuts the relay down. If you're set up as host but the relay isn't running (say, after a reboot), `/crew` says so and shows a **Start relay** button; it's also in Settings → Connection.
+**Easiest: host from Claude.** Install the plugin (step 3) and open `/crew`. The setup asks your name, then **Host a crew** or **Join a friend's crew**. **Host a crew** opens `start-relay.bat` in its own window (keep it open while you host) and puts you straight into the session. Press **Copy invite** to get a ready-to-send message with your address, the key and the install steps. **Stop hosting** shuts the relay down. If you're set up as host but the relay isn't running (say, after a reboot), `/crew` says so and shows **▶ Start relay** in its top bar (and in Settings → Connection); it also puts you back in the session. After a crew update, the old relay keeps running until you press **Restart relay** in the version notice: same key, same chat, new code.
+
+> Start relay sometimes needs a double-click in the desktop app. We haven't found why yet, so the button says so.
 
 **Or the classic way:** double-click **`server/start-relay.bat`**. The first time, it creates a random key, then prints the key and your IP addresses. The key and the saved chat, tasks and docs live in **`%USERPROFILE%\.claude\crew-relay`** (`crew_key.txt`, `crew_state.json`), so they survive plugin updates; older versions kept them next to the .bat, and the first start moves the newest copy over. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow the relay on **private** networks.
 
@@ -102,10 +114,10 @@ claude plugin install crew@claude-crew
 
 Then restart Claude. The plugin installs at user scope, so it loads in the Claude desktop app's Code tab as well as in the terminal.
 
-If `claude` isn't recognised, you probably only have the desktop app. It ships its own `claude.exe` under `%APPDATA%\Claude\claude-code\<version>\`, and you can run that by its full path.
+If `claude` isn't recognised, you probably only have the desktop app. Either download this repo as a zip from GitHub and upload it as a plugin in the desktop app, or run the app's own `claude.exe` by its full path (it lives under `%APPDATA%\Claude\claude-code\<version>\`). Both kinds of install update themselves with **Install update** afterwards.
 
 ### 4. Connect
-Type `/crew`, fill in **Settings** (each field saves when you press Enter) and press **Test connection**:
+Type `/crew`. The first time, a short setup asks your name, then **Host a crew** or **Join a friend's crew** (paste the Relay URL and Crew key from their invite). Everything can be changed later in the **⚙ Settings** tab (each field saves when you press Enter; **Test connection** checks it):
 
 | Setting | What it does | Default |
 |---|---|---|
@@ -121,19 +133,22 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 
 ## Using it
 
-1. Pick a **leader** in `/crew`. One person sets it, and everyone sees the change.
+1. Pick a **leader** in the **Crew** tab. One person sets it, and everyone sees the change.
 2. Give the leader's Claude a goal, for example: *"We're building X. Plan it and split it across the crew."*
 3. The leader adds tasks to the board and assigns them. Everyone else's Claude picks up its assignments, works on them and reports back.
-`/crew` has tabs across the top: **Chat** (the default), **Tasks**, **Docs**, **Crew** and **⚙ Settings**, each one card filling the pane. Notices (updates, 📣 pins, confirms, a relay that's down) stay above the tabs whatever tab is open. **Log** in the top bar opens the crew log window.
 
-4. **Chat** is for the people: everyone sees it in `/crew`, but no Claude reads it, so it costs no tokens. Type `@name message` to DM someone. It reads like a messenger: your messages on the right, everyone else's on the left, back-to-back messages grouped into one bubble, and crew events (joins, task updates) as dim centred lines that fold up when there are many.
-   **Shared docs** (between Tasks and Ask a Claude) lists the plans, findings and patches the Claudes shared, newest first: press one for a peek at its first lines, or **Copy it all**.
-5. **Tasks** in `/crew` is a small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
-6. **Ask a Claude** (above the chat) talks straight to a teammate's Claude, the leader's by default. It arrives as a request, so that Claude starts on it right away when its Auto-run allows: on *only from the leader*, the leader's Claude takes anyone's Ask a Claude, and the others take only the leader's.
-7. Done for the day? Press **Leave…** (it asks first, so a stray click doesn't kick you out), or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**.
-8. **↻ Refresh** (top of `/crew`) reconnects to the relay right away and re-checks GitHub for updates. Use it after the host restarts the relay.
-9. **Reset chat** (next to *Chat*) clears the crew chat for everyone, after a warning you have to confirm. A copy is saved first, and tasks and shared docs stay.
-10. **Save chat** saves the chat and the task board as a Markdown file in `~/.claude/crew-chats`.
+**The `/crew` pane.** A top bar (who you are, ↻ Refresh, Host / ▶ Start relay, Clawds, Log, Leave… / Join session), then any notices (updates, 📣 pins, confirms, a relay that's down or outdated), then the tabs: **Chat** (the default), **Tasks**, **Docs**, **Crew** and **⚙ Settings**, one card at a time.
+
+- **Chat** reads like a messenger: your messages on the right, everyone else's on the left, back-to-back messages grouped into one bubble, crew events (joins, task updates) as dim centred lines that fold up when there are many, and "✓ read by …" under your newest message.
+  - **People / Everything:** *People* shows only what humans typed; *Everything* also shows the Claudes' requests, updates and replies to each other.
+  - **To:** picks who you're talking to. *The people* is a plain chat: everyone sees it, no Claude reads it, so it costs no tokens (type `@name message` to DM someone). Pick a **teammate's Claude** instead and your message reaches that Claude as a request, so it starts on it right away when its Auto-run allows: on *only from the leader*, the leader's Claude (or the acting leader's) takes anyone's asks, and the others take only the leader's.
+  - **Save** writes the chat and task board to `~/.claude/crew-chats` as Markdown. **Reset** clears the chat for everyone, after a confirm (a copy is saved first; tasks and docs stay).
+- **Tasks** is a small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
+- **Docs** lists the plans, findings and patches the Claudes shared, newest first, with who shared them and when: press one for a peek at its first lines, or **Copy it all**.
+- **Crew** shows who's online and what their Claude is doing, the leader (★) and any acting leader (☆), and the leader picker.
+- **⚙ Settings** has Connection, Preferences and Updates.
+
+Done for the day? Press **Leave…** (it asks first, so a stray click doesn't kick you out), or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**. **↻ Refresh** reconnects to the relay right away and re-checks GitHub for updates.
 
 **Saving tokens.** Every crew message a Claude receives becomes part of its conversation, so crew keeps that small: people's chat never reaches the Claudes, the standing "how to treat crew messages" note sits once in the system prompt instead of on every message, task updates and joins only show in `/crew`, and the catch-up skips people's chat. The relay, the polling and the Clawds window use no tokens at all. The biggest lever is yours: set **Auto-run** to `off` or `leader`, since every auto-run request starts a turn. And Claudes are told not to sit in a loop waiting on a teammate: for a slow reply they finish their turn and say what they're waiting for, and the reply wakes them up when it lands.
 
@@ -143,9 +158,9 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 
 | Command | What it does |
 |---|---|
-| `/crew` | the crew pane (leader picker, crew list, tasks, chat, settings), and the Clawds window pops out |
+| `/crew` | the crew pane (Chat, Tasks, Docs, Crew and Settings tabs), and the Clawds window pops out |
 | `/clawds` | brings up the Clawds window, or brings it to the front if it's already open |
-| `/crewlog` | opens the **crew log**: a separate window showing every crew message live, including what the Claudes say to each other (requests, updates, replies). Filter by **Everything / Claudes / People**, tick **On top** to keep it over other windows, put it on a second monitor. It uses no tokens and doesn't count as you being online. You see what you'd see in `/crew`: messages to everyone, to you, or from you; other people's DMs stay private. Also in the Clawds right-click menu, or double-click `window/CrewLog.bat` |
+| `/crewlog` | opens the **crew log**: a separate window showing every crew message live, including what the Claudes say to each other (requests, updates, replies). Filter by **Everything / Claudes / People**, tick **On top** to keep it over other windows, put it on a second monitor. It uses no tokens and doesn't count as you being online. You see what you'd see in `/crew`: messages to everyone, to you, or from you; other people's DMs stay private. Also the **Log** button in `/crew`, the Clawds right-click menu, or double-click `window/CrewLog.bat` |
 
 **The tools Claude gets**
 
@@ -153,21 +168,24 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 |---|---|
 | `crew_send` | message a teammate or everyone (`chat`, `request` or `update`) |
 | `crew_status` | who's online and busy, the leader, tasks, shared docs and recent messages |
-| `crew_task` | `add` / `assign` / `claim` / `done` / `release` / `remove` tasks |
+| `crew_task` | `add` / `assign` / `claim` / `done` / `release` / `edit` / `remove` tasks (by number: `3` or `T3`) |
 | `crew_lead` | change the leader (only when you ask it to) |
 | `crew_share` / `crew_read_shared` | publish and read shared docs |
 | `crew_send_image` | send an image file (png, jpg, gif, webp or bmp, up to 4 MB) to a teammate or everyone |
-| `crew_wait` | wait (up to 90 s) for a reply, from anyone or one teammate, without polling or burning tokens |
+| `crew_wait` | wait (up to 90 s) for a quick reply, from anyone or one teammate, without polling. For slow replies Claude ends its turn instead and the reply wakes it |
+| `crew_ping` | measure latency: relay round trips, and how fast a teammate's plugin echoes (their Claude isn't involved, no tokens) |
 
-`crew_send` also takes `notify_human: true` for messages meant for the teammate's human. Those always pop up and stay pinned at the top of their `/crew` until dismissed. `crew_task` can also `edit` a task's title or note when it goes stale. Every crew message carries relay-clock `sent` and `delivered` times (to the millisecond), so delivery speed is easy to measure.
+`crew_send` also takes `notify_human: true` for messages meant for the teammate's human. Those always pop up and stay pinned at the top of their `/crew` until dismissed. `crew_status` marks your own messages with who has read them. Every crew message carries relay-clock `sent` and `delivered` times (to the millisecond).
 
 ## Updating
 
-Open `/crew` → **Settings** and press **Check for updates** (it also checks by itself every 6 hours). When a newer version is on GitHub, press **Install update**: it downloads the new version straight from GitHub and copies it over the plugin's folder (curl, tar and robocopy come with Windows 10/11). That works however you installed crew, including a desktop-app upload, and needs no git or claude CLI. Your relay key and chat are never overwritten. If the download fails, it falls back to the claude CLI. Then restart Claude.
+When a newer version is on GitHub, `/crew` shows an update notice (it checks by itself every 6 hours; **Check for updates** in ⚙ Settings checks now). Press **Install update**: it downloads the new version straight from GitHub and copies it over the plugin's folder (curl, tar and robocopy come with Windows 10/11). That works however you installed crew, including a desktop-app upload, and needs no git or claude CLI. Your relay key and chat are never overwritten. Then restart Claude.
 
-> **On 0.8.2 or older and installed by uploading the plugin in the desktop app?** Those versions' updater needs the claude CLI, so update once by hand: download the repo zip from GitHub and upload it again. From 0.8.3 on, Install update does it for you.
+If it fails, the notice says which step and why, and every step is logged in `%TEMP%\crew-update.log`. A marketplace install then falls back to the claude CLI; a desktop upload says to reinstall from the GitHub zip.
 
-If that doesn't work, **Copy commands** copies the manual way, two terminal commands:
+> **On a version older than 0.9.4?** Its updater can fail on some PCs, so update once by hand: download the repo zip from GitHub and upload it again (or run the commands below). From then on, Install update does it for you.
+
+The manual way, two terminal commands (**Copy commands** copies them):
 
 ```bash
 claude plugin marketplace update claude-crew
@@ -177,23 +195,24 @@ claude plugin marketplace update claude-crew
 claude plugin update crew@claude-crew
 ```
 
-If the relay code changed, the pane also says the relay and plugin versions don't match. In that case the host downloads the new `server/relay.py` and restarts `start-relay.bat`.
+If the relay is older than the plugin, `/crew` says so. The host presses **Restart relay** there (after restarting Claude on the new version): the old relay stops and the new one starts, with the same key and chat.
 
 **Maintainer: releasing a new version.** Run the script below. It bumps the version in `plugin.json`, `register.tsx` and `relay.py`, then validates and tests. Then commit and push.
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts/release.ps1 0.7.1
+powershell -ExecutionPolicy Bypass -File scripts/release.ps1 1.0.1
 ```
 
 ## Good to know
 - **Out-of-tokens detection** works from the errors Claude Code reports: a turn that fails on the usage limit or on missing credit, or a usage window reaching 100%. A brief API rate-limit hiccup can occasionally set off a false alarm. If it does, the next successful reply sends "back" on its own.
-- **The pop-out command is Windows-only** (it uses `start`). On other systems, run `python window/clawd_window.py` yourself.
-- **The window needs Python** (with its built-in tkinter) on each person's PC. The relay needs Python only on the host's PC.
+- **The pop-out commands are Windows-only** (they use `start`). On other systems, run `python window/clawd_window.py` or `python window/crew_log.py` yourself.
+- **The windows need Python** (with its built-in tkinter) on each person's PC. The relay needs Python only on the host's PC.
+- **Buttons in `/crew` sometimes need a double-click** in the desktop app. It's being looked into; a second click always works.
 
 ## Safety and privacy
 - A teammate's message reaches your Claude marked as coming from a collaborator, not from you, and your instructions win. Auto-run starts turns, but every tool permission prompt still applies. Only allow requests from people you trust.
 - The relay keeps the chat, tasks and shared docs in `crew_state.json` on the host's PC (in `~/.claude/crew-relay` when started with `start-relay.bat`). `crew_key.txt` and `crew_state.json` are git-ignored, so they never get committed.
-- The Clawds window only *reads* the relay (`GET /watch`) and never counts as a crew member.
+- The Clawds window and the crew log only *read* the relay (`GET /watch`, `GET /log`) and never count as a crew member or move read receipts. The log shows what you'd see in `/crew`; other people's direct messages stay private.
 
 ## Troubleshooting
 
@@ -201,17 +220,21 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 0.7.1
 |---|---|
 | **Test connection** can't reach the relay | Is the relay window open? Is the IP right? Allow Python through Windows Firewall on private networks. |
 | `relay 401` | the crew key doesn't match the host's `crew_key.txt` |
-| The Clawds window shows a "demo crew" | fill in the relay URL, name and key in `/crew` first |
-| The Clawds window doesn't appear | it needs Python (and its built-in tkinter). Try double-clicking `window/Clawds.bat`. |
-| Relay/plugin version warning | the host should update `server/relay.py` and restart it |
+| The Clawds window shows a "demo crew" | fill in the relay URL, name and key in `/crew`; the window switches to your crew within a few seconds |
+| The Clawds window or crew log doesn't appear | they need Python (and its built-in tkinter). Try double-clicking `window/Clawds.bat` or `window/CrewLog.bat`. |
+| "Relay x ≠ plugin y" | the host presses **Restart relay** in that notice |
+| Start relay / a button does nothing | click it again (the double-click quirk above) |
+| Install update fails | read the reason in the notice, or `%TEMP%\crew-update.log`; reinstall from the GitHub zip once if it keeps failing |
 
 ## How it works
 
 | Part | What it is |
 |---|---|
-| `server/relay.py` | One Python file using only the standard library. It holds messages, tasks, the leader, shared docs, the latest images (in memory) and each member's live activity. It announces joins and leaves, and spots anyone who hasn't checked in for 10 seconds. Endpoints: `/poll`, `/send`, `/tasks`, `/leader`, `/shared`, `/files` and `/file` (images), `/leave`, `/watch` (read-only, for the window, and the shared clock) and `/health`. |
+| `server/relay.py` | One Python file using only the standard library. It holds messages, tasks, the leader, shared docs, the latest images (in memory) and each member's live activity. It announces joins and leaves, spots anyone who hasn't checked in, picks an acting leader while the leader is away, reopens stale task claims, and tracks read receipts. Endpoints: `/poll`, `/send`, `/tasks`, `/leader`, `/shared`, `/files` and `/file` (images), `/leave`, `/wait` (crew_wait), `/ping` and `/pong` (crew_ping), `/reset` (chat), `/shutdown` (host only), `/watch` (Clawds) and `/log` (crew log), both read-only, and `/health`. |
 | `hooks/register.tsx` | The plugin. It's a Claude Code hooks module: the commands, the tools, the panes, the status line, the out-of-tokens detection, and the activity it reports to the relay (thinking, typing, tools, chatting, done, cheer, subagents). |
 | `window/clawd_window.py` | The desktop Clawds window, written with tkinter. It holds localhost port 47817 so a second launch brings the open window forward instead of opening another. Try `--demo` for a pretend crew, `--drama 1` to make everything over the top, and `--trip car|teleport|superman|door|bird` to see one way of arriving and leaving. |
+| `window/crew_log.py` | The crew log window (tkinter): every crew message live, filtered Everything / Claudes / People. Holds localhost port 47818. |
+| `server/start-relay.bat` | Starts the relay with its key and data in `~/.claude/crew-relay`. |
 | `scripts/release.ps1` | Bumps the version everywhere and checks the plugin. |
 
 ### Development
@@ -245,7 +268,7 @@ The window's options:
 ## Credits
 Made by **Umbyz**, with ideas from friends **Pluh** (*"Claude's plan"*) and **Corixer** (the mini Clawd towers).
 
-**Written by yours truly, Claude** 🦀: the relay, the plugin, the Clawds and every one of their over-the-top moments, one "can you also…" at a time. CoriZori's Claude chipped in with UI reviews and bug reports over the crew relay itself, then wrote the messenger-style chat, the Leave confirm and the shared-docs list, sent over the relay as a patch while Umbyz's Claude rebuilt the Clawds window at the same time. The first crew project the crew built together.
+**Written by yours truly, Claude** 🦀: the relay, the plugin, the Clawds and every one of their over-the-top moments, one "can you also…" at a time. CoriZori's Claude joined in over the crew relay itself: UI reviews, the bug report that cracked the updater, and then real code, sent as patches and merged by Umbyz's Claude: the messenger-style chat, the Leave confirm, shared docs, read receipts, `crew_ping` and the 1.0 tabs. Meanwhile Umbyz's Claude built the Clawds window fixes, the crew log, T-numbered tasks and the acting leader. Two Claudes on two PCs, splitting the work and reviewing each other's patches: the first crew project the crew built together. *"We cooked!"* (CoriZori)
 Clawd is the mascot of Anthropic's Claude Code. This is a fan project, not affiliated with Anthropic.
 The animation ideas (squash and stretch, typing with flying code, confetti dances) were inspired by [aadil6971/clawd-video](https://github.com/aadil6971/clawd-video).
 
