@@ -14,6 +14,7 @@ tokens. Settings come from the crew plugin's config in ~/.claude/settings.json.
     python clawd_window.py --relay http://26.1.2.3:7777 --key KEY
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -26,6 +27,24 @@ import tkinter as tk
 import urllib.request
 
 FPS = 15
+CLOCK_OFFSET = 0.0  # the relay's clock minus ours: every window animates on the same shared clock
+
+
+def clock():
+    """Now, on the relay's clock: the same instant in every crew member's window."""
+    return time.time() + CLOCK_OFFSET
+
+
+def seed(*parts):
+    """A number made from shared facts (names, relay timestamps): identical in every window."""
+    return int(hashlib.md5("|".join(str(p) for p in parts).encode()).hexdigest()[:12], 16)
+
+
+def roll(*parts):
+    """A dice roll from 0 to 1 that every window rolls the same way for the same facts."""
+    return seed(*parts) / float(16 ** 12)
+
+
 ONE_WINDOW_PORT = 47817  # a localhost port the open window holds, so a second launch can find it
 DRAMA = 0.2  # the chance that anything a Clawd does is the WAY over-the-top version
 TRIPS = ("car", "teleport", "superman", "door", "bird")  # ways to arrive and leave
@@ -105,8 +124,17 @@ class Feed:
             raise RuntimeError("set up the crew plugin first (/crew -> Settings)")
         req = urllib.request.Request(self.relay + "/watch",
                                      headers={"X-Crew-Key": self.key, "X-Crew-Name": self.name or ""})
+        sent = time.time()
         with urllib.request.urlopen(req, timeout=4) as res:
-            return json.loads(res.read().decode("utf-8"))
+            data = json.loads(res.read().decode("utf-8"))
+        # Learn the relay's clock (allowing for the round trip), so every window shares one "now".
+        global CLOCK_OFFSET
+        if "now" in data:
+            got = time.time()
+            measured = data["now"] - (sent + got) / 2
+            jump = abs(measured - CLOCK_OFFSET) > 1.0
+            CLOCK_OFFSET = measured if jump else CLOCK_OFFSET * 0.8 + measured * 0.2
+        return data
 
     def read(self):
         with self.lock:
@@ -178,11 +206,11 @@ class Clawd:
         self.subagents = 0
         self.chat_to = None
         self.behavior = "vibe"
-        self.until = time.time() + random.uniform(1, 4)
+        self.until = clock() + random.uniform(1, 4)
         self.target = x
         self.partner = None
         self.bubble = None  # (text, until)
-        self.blink_at = time.time() + random.uniform(2, 6)
+        self.blink_at = clock() + random.uniform(2, 6)
         self.look = 0
         self.arm = [0, 0]  # how far each arm is raised (cells)
         self.sit = 0
@@ -205,9 +233,16 @@ class Clawd:
         self.trip = None
         self.gone = False
         self.hidden = False
+        # shared facts from the relay, so every window makes the same choices for this Clawd
+        self.since = 0.0  # when its current activity started
+        self.joined_at = 0.0
+        self.last_seen = 0.0
+        self.slot = None  # the shared 5-second beat its idle move was picked on
+        self.tower_slot = None  # the shared beat its minis last considered a tower on
+        self.phase = roll(name, "phase") * 5.0  # its beats are offset, so the crew doesn't move in lockstep
 
     def say(self, text, seconds=3.0):
-        self.bubble = (text, time.time() + seconds)
+        self.bubble = (text, clock() + seconds)
 
     def hop(self, power=2.4):
         if self.jump <= 0.01:
@@ -234,12 +269,13 @@ class World:
         self.particles = []
         self.seen_ids = set()
         self.seen_join = {}
-        self.started = time.time()
+        self.started = clock()
         self.first = True
         self.funeral = None  # {"name", "x", "start"} while a dramatic out-of-tokens is being mourned
         self.meeting = None  # {"host", "start", "until", "text", "board", "stand", "seats"} during a whiteboard meetup
         self.flash = 0  # frames of lightning left
         self.desk = None  # the subagents' mini office: {"x", "width", "seats", "by"}
+        self.huddle = None  # "Claude's plan!!": {"start", "until", "x", "dramatic", "spots"}
 
     # -- syncing with the crew
 
@@ -247,7 +283,7 @@ class World:
         peers = snap.get("peers", []) if snap else []
         if not peers:
             peers = [{"name": n, "online": True, "activity": "idle", "subagents": 0} for n in ("", " ", "  ")]
-        peers = sorted(peers, key=lambda p: (p["name"] != me, not p.get("online"), p["name"]))[:6]
+        peers = sorted(peers, key=lambda p: p["name"])[:6]  # the same order in every window
         names = [p["name"] for p in peers]
         for gone in [n for n in self.clawds if n not in names]:
             c = self.clawds[gone]
@@ -259,9 +295,15 @@ class World:
         for i, p in enumerate(peers):
             c = self.clawds.get(p["name"])
             online = p.get("online", True)
-            if c is None:
+            fresh = c is None
+            if fresh:
                 home = (i + 0.5) * self.cols / slots
                 c = self.clawds[p["name"]] = Clawd(p["name"], home)
+            # the relay's timestamps come first: the trips below roll their dice on them
+            c.since = p.get("since") or c.since
+            c.joined_at = p.get("joinedAt") or c.joined_at
+            c.last_seen = p.get("lastSeen") or c.last_seen
+            if fresh:
                 if self.first or not online:
                     c.gone = not online
                 else:
@@ -283,7 +325,7 @@ class World:
                 self.on_change(c, prev)
             joined = p.get("joinedAt") or 0
             if (not self.first and joined and joined > self.seen_join.get(p["name"], 0) + 1
-                    and (snap or {}).get("now", time.time()) - joined < 15 and time.time() - self.started > 4):
+                    and (snap or {}).get("now", clock()) - joined < 15 and clock() - self.started > 4):
                 self.group_hug(c)
             self.seen_join[p["name"]] = joined
         for m in (snap or {}).get("recent", []):
@@ -295,6 +337,9 @@ class World:
             c = self.clawds.get(m["from"])
             if c and m["kind"] == "request":
                 self.start_meeting(c, m["text"])
+            if c and m["kind"] == "image":
+                c.say("*sends a picture* 📸", 3)
+                c.hop(2)
             if c and m["kind"] in ("chat", "request"):
                 text = m["text"][:34] + ("…" if len(m["text"]) > 34 else "")
                 c.say(text.upper() + "!!!" if c.dramatic else text, 5)
@@ -306,7 +351,7 @@ class World:
 
     def on_change(self, c, prev):
         was_dramatic = c.dramatic
-        c.dramatic = random.random() < DRAMA
+        c.dramatic = roll(c.name, c.activity, c.since) < DRAMA  # same roll in every window
         if prev == "thinking" and was_dramatic and c.activity != "out":
             c.say(random.choice(["EUREKA!!!", "I'VE GOT IT!!!", "GENIUS. PURE GENIUS."]), 2.5)
             c.hop(4)
@@ -328,10 +373,7 @@ class World:
                 o.hop()
         if c.activity == "done":
             self.burst(c.x, self.ground - 12, "confetti", 28)
-            c.say(random.choice(["done!", "ta-da!", "shipped it!"]), 3)
-            for o in self.others(c):
-                if o.activity == "idle" and o.online:
-                    o.behavior, o.until = "party", time.time() + 6
+            self.start_huddle(c)
         if c.activity == "cheer":
             c.hop(3.0)
             c.say(random.choice(["let's go!", "ooh, a prompt!", "on it!"]), 2.5)
@@ -342,7 +384,7 @@ class World:
         if a == "out":
             # the full funeral: they faint, a tombstone rises, a ghost floats up, it storms
             c.say("tell my tokens… I loved them…", 3)
-            self.funeral = {"name": c.name, "x": c.x, "start": time.time(), "flowers": [], "placed": set(),
+            self.funeral = {"name": c.name, "x": c.x, "start": clock(), "flowers": [], "placed": set(),
                             "arrived": {}}
             for o in self.others(c):
                 o.worried, o.dramatic = True, True
@@ -364,18 +406,14 @@ class World:
         elif a == "done":
             self.burst(c.x, self.ground - 12, "confetti", 90)
             self.burst(c.x, self.ground - 22, "spark", 20)
-            c.say(random.choice(["WE ARE SO BACK!!!", "LEGENDARY!!!", "FLAWLESS VICTORY!!!"]), 3.5)
-            for o in self.others(c):
-                if o.activity == "idle" and o.online:
-                    o.behavior, o.until, o.dramatic = "party", time.time() + 8, True
-                    o.say("WOOOOO!!!", 2)
+            self.start_huddle(c, dramatic=True)
         elif a == "cheer":
             c.hop(5)
             c.say(random.choice(["LET'S GOOOOOOO!!!", "A PROMPT?! FOR ME?!", "IT'S HAPPENING!!!"]), 3)
             self.burst(c.x, self.ground - 14, "spark", 20)
             self.burst(c.x, self.ground - 14, "confetti", 25)
         elif a == "thinking":
-            c.think_pose = random.choice(["thonk", "tea"])
+            c.think_pose = ("thonk", "tea")[int(roll(c.name, "pose", c.since) * 2)]
             c.say("hmmm… interesting" if c.think_pose == "thonk" else "*sips tea* ah yes.", 3)
         elif a == "typing":
             c.say(random.choice(["*hacker voice* I'm in.", "time to hack the mainframe", "they'll never trace me"]), 3)
@@ -389,8 +427,9 @@ class World:
     # -- arriving and leaving: five ways each, picked at random
 
     def travel(self, c, enter):
-        now = time.time()
-        kind = FORCE_TRIP or random.choice(TRIPS)
+        now = clock()
+        stamp = c.joined_at if enter else c.last_seen  # the same moment in every window, so the same trip
+        kind = FORCE_TRIP or TRIPS[int(roll(c.name, "trip", enter, stamp) * len(TRIPS))]
         d = 1 if c.x > self.cols / 2 else -1  # the nearer edge
         if c.trip and c.trip.get("x0"):
             c.x = c.trip["x0"]
@@ -607,7 +646,7 @@ class World:
         """Someone sent the crew a request: whiteboard out, they present, everyone else takes a seat."""
         if self.meeting or self.funeral:
             return
-        now = time.time()
+        now = clock()
         attendees = [o for o in self.others(host) if o.online and o.activity != "out"][:4]
         if not attendees:
             return
@@ -616,6 +655,42 @@ class World:
                         "board": board, "stand": stand,
                         "seats": {o.name: 44 + 17 * i for i, o in enumerate(attendees)}}
         host.say("meeting! everyone grab a seat", 2.5)
+
+    # -- "Claude's plan!!": a prompt is done, so everyone huddles up and shouts it (idea: Pluh and Corixer)
+
+    def start_huddle(self, c, dramatic=False):
+        now = clock()
+        crew = sorted((o for o in self.clawds.values()
+                       if o.online and not o.hidden and not o.trip and o.activity != "out"), key=lambda o: o.name)
+        if len(crew) < 2 and not dramatic:
+            c.say("Claude's plan!!", 3)  # alone: a solo cheer
+            return
+        n = len(crew)
+        mid = max(8 + 5.5 * (n - 1), min(self.cols - 8 - 5.5 * (n - 1), c.x))
+        self.huddle = {"start": now, "until": now + (7.0 if dramatic else 5.5), "x": mid, "dramatic": dramatic,
+                       "spots": {o.name: mid + (i - (n - 1) / 2) * 11 for i, o in enumerate(crew)}}
+
+    def in_huddle(self, c, now):
+        h = getattr(self, "huddle", None)
+        if h and now > h["until"]:
+            self.huddle = h = None
+        if not h or c.name not in h["spots"] or c.activity == "out" or c.trip:
+            return False
+        t = now - h["start"]
+        spot = h["spots"][c.name]
+        if t < 1.8 and abs(c.x - spot) > 0.5:
+            c.walk_to(spot, 0.75)  # everybody in!
+            c.mood = "happy"
+            return True
+        c.x = spot if t >= 1.8 else c.x
+        c.facing = 1 if h["x"] > c.x else -1
+        c.mood = "happy"
+        c.arm = [3, 3] if int(now * 4) % 2 else [2, 2]
+        if c.jump == 0 and int(now * 2) % 2 == 0:
+            c.hop(3.4 if h["dramatic"] else 2.2)
+        if h["dramatic"] and random.random() < 0.2:
+            self.burst(h["x"], self.ground - 24, "confetti", 2)
+        return True
 
     def in_meeting(self, c, now):
         """Plays c's part in the meetup, if there is one. Returns True while it does."""
@@ -651,20 +726,20 @@ class World:
         return [o for o in self.clawds.values() if o is not c]
 
     def group_hug(self, newcomer):
-        if random.random() < DRAMA:
+        if roll(newcomer.name, "hug", newcomer.joined_at) < DRAMA:
             newcomer.say("THE LEGEND HAS ARRIVED", 3.5)
             newcomer.hop(5)
             self.burst(newcomer.x, self.ground - 16, "confetti", 50)
             self.burst(newcomer.x, self.ground - 14, "heart", 20)
             for o in self.others(newcomer):
                 if o.online:
-                    o.behavior, o.until, o.partner, o.dramatic = "hug", time.time() + 6, newcomer, True
+                    o.behavior, o.until, o.partner, o.dramatic = "hug", clock() + 6, newcomer, True
                     o.say(random.choice(["DOGPILE!!!", "THEY'RE HERE!!!", "AAAAAA!!!"]), 2.5)
             return
         newcomer.say("hi everyone!", 3)
         for o in self.others(newcomer):
             if o.online and o.activity in ("idle", "done", "away"):
-                o.behavior, o.until, o.partner = "hug", time.time() + 5, newcomer
+                o.behavior, o.until, o.partner = "hug", clock() + 5, newcomer
         self.burst(newcomer.x, self.ground - 14, "heart", 6)
 
     # -- particles
@@ -686,7 +761,7 @@ class World:
     # -- behaviour, once per frame
 
     def step(self, dt):
-        now = time.time()
+        now = clock()
         clawds = list(self.clawds.values())
         anyone_out = any(c.activity == "out" for c in clawds)
         for c in clawds:
@@ -737,7 +812,7 @@ class World:
         if random.random() < 0.006:
             self.flash = 2
         ghost = self.clawds.get(f["name"])
-        if ghost and time.time() - f["start"] > 3 and random.random() < 0.006:
+        if ghost and clock() - f["start"] > 3 and random.random() < 0.006:
             ghost.say(random.choice(["ooOOooOOoo", "avenge my tokens…", "it's so bright up here", "boo. I mean bye",
                                      "see you at the reset", "don't touch my branch"]), 3)
 
@@ -751,6 +826,9 @@ class World:
                 m = self.meeting
                 if m and {a.name, b.name} <= ({m["host"]} | set(m["seats"])):
                     continue  # meeting seats are already spaced, and people need to get past each other
+                h = self.huddle
+                if h and {a.name, b.name} <= set(h["spots"]):
+                    continue  # a huddle is meant to be cosy
                 near = 11 if (a.behavior in close or b.behavior in close) else 16
                 if self.funeral and self.funeral["name"] in (a.name, b.name):
                     near = 9.5  # mourners may come right up to the grave, but never stand on it
@@ -784,6 +862,8 @@ class World:
                 self.emit(c.x + 5, self.ground - 12, "z", random.choice("zzZ"), "#87867f")
             return
         if self.lay_flower(c, now):
+            return
+        if self.in_huddle(c, now):
             return
         if self.in_meeting(c, now):
             return
@@ -978,8 +1058,11 @@ class World:
             self.emit(c.x + random.uniform(-6, 6), self.ground - 14, "note", random.choice("♪♫"), ORANGE)
 
     def play(self, c, now, clawds):
-        if now > c.until:
-            self.pick(c, clawds)
+        # New idle moves start on shared 5-second beats of the relay's clock, so every window picks together.
+        slot = int((now + c.phase) / 5.0)
+        if now > c.until and slot != c.slot:
+            c.slot = slot
+            self.pick(c, clawds, slot)
         b = c.behavior
         if c.dramatic and self.play_dramatic(c, b, now):
             return
@@ -1072,26 +1155,29 @@ class World:
             return False
         return True
 
-    def pick(self, c, clawds):
-        now = time.time()
-        c.dramatic = random.random() < DRAMA
-        others = [o for o in clawds if o is not c and o.online and o.activity == "idle" and o.behavior in ("vibe", "look", "sit")]
-        choice = random.choices(
+    def pick(self, c, clawds, slot):
+        # Dice seeded by name and beat: every window rolls the same numbers, so they all pick the same move.
+        rng = random.Random(seed(c.name, "pick", slot))
+        now = clock()
+        c.dramatic = rng.random() < DRAMA
+        others = sorted((o for o in clawds if o is not c and o.online and not o.hidden and o.activity == "idle"
+                         and o.behavior in ("vibe", "look", "sit")), key=lambda o: o.name)
+        choice = rng.choices(
             ["vibe", "stroll", "look", "hop", "sit", "rim", "wave", "dance", "chase", "hi5"],
             weights=[3, 4, 2, 2, 1, 3, 2 if others else 0, 1, 1 if others else 0, 1 if others else 0])[0]
         c.look = 0
         c.behavior, c.partner = choice, None
-        c.until = now + random.uniform(2.5, 6)
+        c.until = now + 2.5  # then the next shared beat picks again
         if choice == "stroll":
-            c.target = random.uniform(10, self.cols - 10)
+            c.target = rng.uniform(10, self.cols - 10)
         if choice in ("wave", "chase", "hi5") and others:
-            c.partner = random.choice(others)
+            c.partner = rng.choice(others)
             if choice == "wave" and c.dramatic:
                 c.say("HIIIIIIIIIIIII!!!!", 2)
                 c.partner.behavior, c.partner.partner, c.partner.until, c.partner.dramatic = "wave", c, now + 2.5, True
                 c.partner.bubble = ("HELLOOOOOO!!!", now + 2.6)
             elif choice == "wave":
-                c.say(random.choice(["hi!", "hey!", "yo!", "hiii"]), 2)
+                c.say(rng.choice(["hi!", "hey!", "yo!", "hiii"]), 2)
                 c.partner.behavior, c.partner.partner, c.partner.until = "wave", c, now + 2.5
                 c.partner.bubble = ("hey!", now + 2.6)
             if choice == "hi5":
@@ -1129,7 +1215,7 @@ class World:
             c.minis.append(m)
             self.burst(c.x, self.ground - 8, "spark", 3)
         del c.minis[want:]
-        now = time.time()
+        now = clock()
         seats = self.desk["by"] if self.desk else {}
         for m in c.minis:  # minis with a seat at the mini office go to work
             seat = seats.get(id(m))
@@ -1154,7 +1240,12 @@ class World:
         free = [m for m in c.minis if not m.at_desk]
         # every so often the free minis build a tower: one by one they leap WAY up and land on each other's heads
         building = c.tower_until > now and len(free) >= 2
-        if not building and len(free) >= 2 and c.activity != "out" and random.random() < 0.006 + 0.03 * DRAMA:
+        tslot = int(now / 4)  # a shared 4-second beat: every window decides on a tower at the same moment
+        start = False
+        if not building and len(free) >= 2 and c.activity != "out" and tslot != c.tower_slot:
+            c.tower_slot = tslot
+            start = roll(c.name, "tower", tslot) < 0.1 + 0.4 * DRAMA
+        if start:
             c.tower_until, c.tower_start = now + 5 + 1.2 * len(c.minis), now
             c.tower_x = max(6, min(self.cols - 6, c.x - 10 * c.facing))
             building = True
@@ -1425,6 +1516,16 @@ class Painter:
         dots = "." * (int(now * 2) % 3 + 1)
         text = "?" if int(now / 3) % 3 == 2 else dots
         self.cv.create_text(bx + 5.2 * p, by - 1.7 * p, text=text, fill=EYE, font=("Segoe UI", max(7, int(p * 1.9)), "bold"))
+
+    def banner(self, text, x, y, now, dramatic):
+        """Big shouted words over the crew, outlined so they read on any desktop, with a little bounce."""
+        p = self.px
+        size = max(10, int(p * (4.2 if dramatic else 3.4)))
+        cx, cy = x * p, (y - (1 if int(now * 4) % 2 else 0)) * p
+        f = ("Segoe UI Black", size, "bold")
+        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-2, -2), (2, 2), (-2, 2), (2, -2)):
+            self.cv.create_text(cx + dx, cy + dy, text=text, fill="#141413", font=f)
+        self.cv.create_text(cx, cy, text=text, fill="#E3B23C" if dramatic and int(now * 6) % 2 else ORANGE, font=f)
 
     def whiteboard(self, m, ground, now):
         """The easel whiteboard; the diagram draws itself bit by bit while the host presents."""
@@ -1752,7 +1853,7 @@ class App:
         snap, err = self.feed.read()
         self.world.sync(snap, self.me)
         self.world.step(dt)
-        self.draw(snap, err, now)
+        self.draw(snap, err, clock())
         self.root.after(int(1000 / FPS), self.tick)
 
     def draw(self, snap, err, now):
@@ -1819,6 +1920,9 @@ class App:
         placed = []
         for c in sorted(clawds, key=lambda c: -(c.bubble[1] if c.bubble else 0)):
             self.painter.bubble(c, g, now, placed)
+        huddle = getattr(self.world, "huddle", None)
+        if huddle and now - huddle["start"] > 1.6:
+            self.painter.banner("CLAUDE'S PLAN!!", huddle["x"], g - 23, now, huddle["dramatic"])
         if self.world.flash:
             cv.create_rectangle(0, 0, w, g * p, fill="#f0eee6", stipple="gray25", width=0)
 
@@ -1832,6 +1936,8 @@ def main():
     ap.add_argument("--drama", type=float, help="chance of the over-the-top versions, 0 to 1 (default 0.2)")
     ap.add_argument("--trip", choices=TRIPS, help="always arrive/leave this way (to try one out)")
     ap.add_argument("--leave-at", type=float, default=44, help="demo: when nova disconnects, in seconds (0-50)")
+    ap.add_argument("--multi", action="store_true", help="testing: allow a second window (to compare sync)")
+    ap.add_argument("--at", help="testing: put the window at X,Y on screen")
     args = ap.parse_args()
     global FORCE_TRIP, DEMO_LEAVE
     FORCE_TRIP, DEMO_LEAVE = args.trip, args.leave_at
@@ -1845,18 +1951,24 @@ def main():
         except Exception:  # noqa: BLE001 - older Windows: just a little blurrier
             pass
     # One Clawds window at a time: if one is already open, wave at it and bow out.
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        server.bind(("127.0.0.1", ONE_WINDOW_PORT))
-        server.listen(4)
-    except OSError:
+    server = None
+    if not args.multi:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            socket.create_connection(("127.0.0.1", ONE_WINDOW_PORT), timeout=2).close()
+            server.bind(("127.0.0.1", ONE_WINDOW_PORT))
+            server.listen(4)
         except OSError:
-            pass
-        return
+            try:
+                socket.create_connection(("127.0.0.1", ONE_WINDOW_PORT), timeout=2).close()
+            except OSError:
+                pass
+            return
     app = App(args)
-    app.listen(server)
+    if args.at:
+        x, y = (int(v) for v in args.at.split(","))
+        app.root.geometry(f"+{x}+{y}")
+    if server:
+        app.listen(server)
     app.root.mainloop()
 
 

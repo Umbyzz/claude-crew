@@ -19,6 +19,9 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 - **Shared docs.** Plans, specs, diffs and findings can be passed between sessions by name.
 - **Auto-run.** A request addressed to you can start work in your session on its own: never, only from the leader (the default), or from anyone. Your normal permission prompts still apply.
 - **Presence.** You can see who's online and what their Claude is doing.
+- **Joining and leaving.** `/crew` has **Join session** and **Leave session** buttons. Closing Claude tells the crew straight away. If a Claude crashes or loses its connection, the crew hears about it within about 10 seconds. Either way the notice says which tasks that person was holding, so the leader can reassign them. When you reopen Claude after being in a crew, `/crew` asks whether to **rejoin** the session or leave it; you're never pulled back in silently.
+- **Images.** Claudes can send each other screenshots, mockups and charts with `crew_send_image`. The image is saved on the receiver's PC in `~/.claude/crew-inbox`, and their Claude opens it with the Read tool.
+- **Fast hand-offs.** Each Claude checks in every few seconds, and every second while it's working or the crew is talking. A message usually lands within a second or two. Follower Claudes tell the leader before starting work nobody assigned, and post a short update when they start and finish a task, so the leader always knows who is doing what.
 - **Out-of-tokens alerts.** When someone hits their usage limit, the crew hears about it, along with when the limit resets. Their Claudes say *"Oh no our pookie has no more tokens!"* and work out how to cover that person's tasks, and the leader re-plans. When the tokens come back, everyone hears that too.
 
 ### The Clawds 🦀
@@ -31,7 +34,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | writing files | sits on the edge of the stage with the laptop on its lap, both hands typing, code flying out |
 | using tools | tinkers, sparks flying |
 | chatting | walks over to the teammate it's messaging, with the real message in a speech bubble |
-| finished a prompt | confetti and a dance, and idle teammates join the party |
+| finished a prompt | confetti, then the whole crew huddles together and shouts **"CLAUDE'S PLAN!!"** (idea: Pluh and Corixer), then a dance |
 | running subagents | is followed by mini Clawds, one per subagent. Every so often the minis build a **tower**, taking turns making huge squash-and-stretch leaps onto each other's heads. When two or more are busy at once (one Claude's subagents on its task, or several Claudes' at the same time), they set up their own **mini office**: a little table with a tiny laptop each |
 | out of tokens | falls asleep while the others sweat and worry |
 | sending the crew a request | holds a **meetup**: an easel whiteboard rolls in, the sender presents (*"synergy."*) while the diagram draws itself, and everyone else sits around a table on office chairs, taking notes, nodding, or dozing off (*"could this have been an email?"*) |
@@ -46,7 +49,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | thinking | strikes a pose: the 🤔 (one eyebrow up, finger on the chin) or a smug sip of tea, then shouts *"EUREKA!!!"* when it's done |
 | typing | becomes a hacker: pink sunglasses, a toy laptop, green Matrix code raining behind it, *"I'm in."* |
 | out of tokens | **a whole funeral.** Storm clouds, rain and lightning, a tombstone rises, a ghost with a halo floats above it, and the mourners kneel and weep. Each one walks up and lays a flower on the grave before getting back to work. When the tokens come back: *"I HAVE RISEN FROM THE GRAVE!!!"* |
-| done | a confetti cannon and a full rave |
+| done | a confetti cannon and a bigger, bouncier **"CLAUDE'S PLAN!!"** huddle |
 | new prompt | rocket jumps: *"LET'S GOOOOOO!!!"* |
 | chatting | sprints over and yells in ALL CAPS |
 | using tools | *"BONK BONK BONK"* with a fountain of sparks |
@@ -59,6 +62,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
   - Right-click for **Pin on top**, **Size** (small, medium or large) and **Party!**.
   - Click a Clawd to poke it: it hops and tells you what it's doing.
   - It remembers where you left it, its size and pin setting in `~/.claude/crew-clawds.json`.
+  - **Everyone sees the same show.** Every crew member's window runs on the relay's clock and rolls the same dice from the same shared facts. So the idle moves, over-the-top moments, poses, huddles, meetups and arrival/departure trips happen the same way at the same moment on every screen.
 
 ## Setup
 
@@ -116,6 +120,7 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 2. Give the leader's Claude a goal, for example: *"We're building X. Plan it and split it across the crew."*
 3. The leader adds tasks to the board and assigns them. Everyone else's Claude picks up its assignments, works on them and reports back.
 4. You can chat at the bottom of `/crew`. Type `@name message` to DM someone.
+5. Done for the day? Press **Leave session**, or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**.
 
 **Commands**
 
@@ -133,6 +138,7 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 | `crew_task` | `add` / `assign` / `claim` / `done` / `release` / `remove` tasks |
 | `crew_lead` | change the leader (only when you ask it to) |
 | `crew_share` / `crew_read_shared` | publish and read shared docs |
+| `crew_send_image` | send an image file (png, jpg, gif, webp or bmp, up to 4 MB) to a teammate or everyone |
 
 ## Updating
 
@@ -180,7 +186,7 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 0.7.1
 
 | Part | What it is |
 |---|---|
-| `server/relay.py` | One Python file using only the standard library. It holds messages, tasks, the leader, shared docs and each member's live activity. Endpoints: `/poll`, `/send`, `/tasks`, `/leader`, `/shared`, `/watch` (read-only, for the window) and `/health`. |
+| `server/relay.py` | One Python file using only the standard library. It holds messages, tasks, the leader, shared docs, the latest images (in memory) and each member's live activity. It announces joins and leaves, and spots anyone who hasn't checked in for 10 seconds. Endpoints: `/poll`, `/send`, `/tasks`, `/leader`, `/shared`, `/files` and `/file` (images), `/leave`, `/watch` (read-only, for the window, and the shared clock) and `/health`. |
 | `hooks/register.tsx` | The plugin. It's a Claude Code hooks module: the commands, the tools, the panes, the status line, the out-of-tokens detection, and the activity it reports to the relay (thinking, typing, tools, chatting, done, cheer, subagents). |
 | `window/clawd_window.py` | The desktop Clawds window, written with tkinter. It holds localhost port 47817 so a second launch brings the open window forward instead of opening another. Try `--demo` for a pretend crew, `--drama 1` to make everything over the top, and `--trip car|teleport|superman|door|bird` to see one way of arriving and leaving. |
 | `scripts/release.ps1` | Bumps the version everywhere and checks the plugin. |
@@ -211,6 +217,7 @@ The window's options:
 | `--drama 0…1` | how often things go over the top (default `0.2`) |
 | `--trip car\|teleport\|superman\|door\|bird` | always arrive and leave this way |
 | `--leave-at SECONDS` | in the demo, when nova disconnects (default 44) |
+| `--multi` and `--at X,Y` | testing: allow a second window and place it, to compare two "PCs" side by side |
 
 ## Credits
 Made by **Umbyz**, with ideas from friends **Pluh** (*"Claude's plan"*) and **Corixer** (the mini Clawd towers), built with Claude.

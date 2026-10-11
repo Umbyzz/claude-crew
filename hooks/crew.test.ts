@@ -262,3 +262,116 @@ test('Check for updates, then Install update pulls the new version through the c
   expect(lines).toContain('C:\\bin\\claude.exe plugin update crew@claude-crew')
   LATEST = '0.3.0'
 })
+
+// -- the crew session: joining, leaving, asking after a restart
+
+function startSession(on: any, $: any) {
+  mock.clock(on)
+  on('tool.register', async () => ({ value: undefined }) as any)
+  on('command.register', async () => ({ value: undefined }) as any)
+  on('session.start', async (_$: unknown, e: any) => e)
+  return $.session.start({ source: 'startup', cwd: '/tmp' } as any)
+}
+
+test('Leave session tells the relay at once; Join session brings us back', { options: OPTIONS }, async ($, on) => {
+  const seen = fakeRelay(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'leave' })
+  await settle()
+  expect(seen.some(s => s.url.endsWith('/leave'))).toBe(true)
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_send', text: 'hi' } as any)
+  expect(String(r.result)).toContain('not in the crew session')
+  expect(await ui.find({ key: 'join' })).toBeDefined()
+  const before = seen.length
+  await ui.press({ key: 'join' })
+  await settle()
+  expect(seen.slice(before).some(s => s.url.includes('/poll'))).toBe(true)
+  await ui.unmount()
+})
+
+test('reopening Claude after being in a crew asks before rejoining', { options: OPTIONS }, async ($, on) => {
+  const seen: { url: string; init: any }[] = []
+  mock.store(on, { 'membership:http://relay.test:7777': 'joined' })
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  await startSession(on, $)
+  await settle()
+  expect(seen.some(s => s.url.includes('/poll'))).toBe(false) // not back in until they say so
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'rejoin' })).toBeDefined()
+  await ui.press({ key: 'rejoin' })
+  await settle()
+  expect(seen.some(s => s.url.includes('/poll'))).toBe(true)
+  expect(await ui.find({ key: 'rejoin' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('closing Claude says goodbye to the crew straight away', { options: OPTIONS }, async ($, on) => {
+  const seen = fakeRelay(on)
+  on('session.end', async () => ({ sessionId: 's' }) as any)
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's', resume: {} } as any)
+  const leave = seen.find(s => s.url.endsWith('/leave'))
+  expect(JSON.parse(leave?.init.body).why).toBe('closed their Claude')
+})
+
+test('a teammate leaving reaches the conversation, with what to do about their tasks', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async () => ({
+    value: {
+      status: 200,
+      ok: true,
+      headers: {},
+      text: JSON.stringify({
+        ...POLL,
+        messages: [{ id: 5, from: 'bob', to: 'all', kind: 'leave', text: 'bob closed their Claude. They were working on: #3 Write login tests.', at: 0 }],
+        cursor: 5,
+      }),
+    },
+  }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const rows = session.appended().map(r => JSON.stringify(r.message.content))
+  expect(rows.some(r => r.includes('bob closed their Claude') && r.includes('reassign'))).toBe(true)
+})
+
+test('images: crew_send_image uploads the file; an incoming one is saved for the Read tool', { options: OPTIONS }, async ($, on) => {
+  const seen: { url: string; init: any }[] = []
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  mock.env(on, { USERPROFILE: 'C:\\Users\\t' })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('fs.read', async () => ({ value: { base64: 'aGVsbG8=' } }) as any)
+  const ran: string[][] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push([...e.argv])
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  let pollCount = 0
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    if (e.url.endsWith('/files'))
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ id: 9, to: 'bob', name: 'shot.png', size: 5 }) } }
+    pollCount += 1
+    const incoming = { id: 6, from: 'bob', to: 'alice', kind: 'image', text: 'sent an image: ui.png', at: 0, file: 'abc123', name: 'ui.png', caption: 'new header' }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages: pollCount === 1 ? [incoming] : [], cursor: 6 }) } }
+  })
+
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_send_image', path: 'C:\\shots\\shot.png', to: 'bob' } as any)
+  expect(String(r.result)).toContain('Sent image')
+  const upload = seen.find(s => s.url.endsWith('/files'))
+  expect(JSON.parse(upload?.init.body)).toMatchObject({ name: 'shot.png', mime: 'image/png', data: 'aGVsbG8=', to: 'bob' })
+
+  const curl = ran.find(a => a[0] === 'curl.exe')
+  expect(curl?.join(' ')).toContain('/file?id=abc123')
+  expect(curl?.join(' ')).toContain('C:\\Users\\t\\.claude\\crew-inbox\\6-ui.png')
+  const rows = session.appended().map(row => JSON.stringify(row.message.content))
+  expect(rows.some(row => row.includes('crew-inbox') && row.includes('Read tool'))).toBe(true)
+})
