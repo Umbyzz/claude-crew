@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.8.6'
+const VERSION = '0.8.7'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1314,7 +1314,8 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'crew' }, async $ => {
-    if (!configured) await update($, settingsOpen, () => true)
+    // Settings opens by itself when there's something to do in it: first run, or you host and your relay is down.
+    if (!configured || (isHosting() && !(await relayVersionAt($, HOST_URL)))) await update($, settingsOpen, () => true)
     await $.ui.open({ id: PANE, title: 'Crew' })
     if (clawdsWithCrew) void popOut($)  // the Clawds window comes along (or to the front, if it's already open)
     return { text: configured ? 'Crew pane opened.' : 'Crew pane opened: fill in Settings to connect.' }
@@ -1571,13 +1572,14 @@ export const register: Register = (on, options) => {
               {s.connected ? `You're hosting${host.ip ? ` · friends join at http://${host.ip}:7777` : ''}` : "You're set up to host, but your relay isn't running"}
             </Text>
             {s.connected && !host.ip && <Text dimColor>No Radmin/Tailscale address found yet: connect your VPN, then press Host a crew again.</Text>}
-            {!s.connected && <Text dimColor>Press Start relay to open start-relay.bat, or join a friend's crew in Settings instead.</Text>}
+            {!s.connected && <Text dimColor>Press Start relay in Settings below to open start-relay.bat, or join a friend's crew there instead.</Text>}
             {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
-            <Box flexDirection="row">
-              {!s.connected && <Button key="start-relay" label="Start relay" variant="primary" onPress={() => startRelayPress($)} />}
-              <Button key="invite" label="Copy invite" variant={s.connected ? 'primary' : undefined} onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
-              <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
-            </Box>
+            {s.connected && (
+              <Box flexDirection="row">
+                <Button key="invite" label="Copy invite" variant="primary" onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
+                <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
+              </Box>
+            )}
           </Callout>
         )}
 
@@ -1587,8 +1589,17 @@ export const register: Register = (on, options) => {
             <Text bold>Connection</Text>
             <Box flexDirection="row">
               <Text>Host it yourself: </Text>
-              <Button key="host-settings" label={isHosting() ? 'Hosting ✓' : 'Host a crew'} variant={isHosting() ? undefined : 'primary'} onPress={() => hostPress($)} />
-              <Button key="start-relay-settings" label="Start relay" onPress={() => startRelayPress($)} />
+              {/* ✓ only once your relay actually answers; set up to host with the relay down, Start relay is the next step */}
+              {isHosting() && s.connected ? (
+                <Button key="host-settings" label="Hosting ✓" onPress={() => hostPress($)} />
+              ) : isHosting() ? (
+                <Button key="start-relay-settings" label="Start relay" variant="primary" onPress={() => startRelayPress($)} />
+              ) : (
+                <Box flexDirection="row">
+                  <Button key="host-settings" label="Host a crew" variant="primary" onPress={() => hostPress($)} />
+                  <Button key="start-relay-settings" label="Start relay" onPress={() => startRelayPress($)} />
+                </Box>
+              )}
             </Box>
             <Text dimColor>Or join a friend: paste their Relay URL and Crew key. Press Enter in a field to save it.</Text>
             {Input && (

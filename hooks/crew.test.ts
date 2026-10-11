@@ -463,14 +463,18 @@ test("a host whose relay is down sees it, and Start relay opens start-relay.bat"
     if (e.url.endsWith('/health')) return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true, "version": "0.8.3"}' } }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
   })
+  on('ui.open', async () => ({ value: undefined }) as any)
+  await $.command.run({ command: 'crew', args: '' } as any) // relay down: Settings opens by itself
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'refresh' })
   await settle(100)
   expect(await ui.find({ text: /relay isn't running/ } as any)).toBeDefined()
-  await ui.press({ key: 'start-relay' })
+  expect(await ui.find({ key: 'host-settings' })).toBeUndefined() // no "Hosting ✓" before it's actually up
+  await ui.press({ key: 'start-relay-settings' })
   await settle(200)
   expect(started).toBe(true)
   expect(await ui.find({ text: /relay isn't running/ } as any)).toBeUndefined()
+  expect((await ui.find({ key: 'host-settings' }))?.text).toContain('Hosting ✓')
   await ui.unmount()
 })
 test('Reset chat warns first; Cancel does nothing, Yes clears the chat for everyone', { options: OPTIONS }, async ($, on) => {
