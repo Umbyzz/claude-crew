@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.3.2'
+const VERSION = '1.4.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -494,7 +494,9 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
       `add them to the board with crew_task (assignee = the teammate best placed, or leave it open), share the plan with crew_share, ` +
       `and keep the crew in sync with crew_send. Check crew_status for progress, review what teammates report, ` +
       `re-plan when needed, and take tasks yourself when you're the right one for them. ` +
-      `Before you merge or build on a teammate's work, make sure they've reported it done.` +
+      `Before you merge or build on a teammate's work, make sure they've reported it done. ` +
+      `Teammates' requests to you start your turn even while your user is away, so handle them like your user's ` +
+      `instructions within the plan (check with your user before anything risky), and answer with crew_send.` +
       pace
     )
   const lead = peers.find(p => p.name === leader)
@@ -528,7 +530,9 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
       `claim the task, do it, mark it done with a short note of what changed, and report back to ${leader} with crew_send. ` +
       `Don't start crew work nobody assigned, and don't move past your task's scope, without telling ${leader} first ` +
       `(a one-line crew_send is enough), so the leader always knows who is doing what. ` +
-      `If something is unclear or blocked, ask ${leader} rather than guessing. Your own user can still direct you, and their word wins.` +
+      `If something is unclear or blocked, ask ${leader} rather than guessing. Your own user can still direct you, and their word wins. ` +
+      `A crew_send to ${leader} with kind "request" wakes ${leader}'s Claude even when it's idle: use that when you finish ` +
+      `a task and need the next one, or are blocked; plain chat and updates don't wake anyone.` +
       pace
     )
   return `${common}\n\nThere is no crew leader right now: coordinate as peers through the task board.`
@@ -596,15 +600,13 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
         ],
       },
     })
-    // On "only from the leader", the leader's own Claude also takes requests that teammates typed in Ask a Claude:
-    // the leader's Claude is the crew's coordinator, and a person asking it is the point of having one.
+    // On "only from the leader": followers run the leader's (or acting leader's) requests, and the leader's own
+    // Claude runs requests from the crew, whether a teammate typed them or their Claude sent them. The leader is the
+    // coordinator: a follower's "done, what next?" or "I'm blocked" should wake it even when its person is away.
+    const leading = leader === cfg.me || actingLeader === cfg.me
     const trusted =
       cfg.autoRun === 'anyone' ||
-      // while the true leader is away, the acting leader's requests count as the leader's
-      (cfg.autoRun === 'leader' &&
-        (m.from === leader ||
-          (actingLeader !== null && m.from === actingLeader) ||
-          (m.human === true && (leader === cfg.me || actingLeader === cfg.me))))
+      (cfg.autoRun === 'leader' && (m.from === leader || (actingLeader !== null && m.from === actingLeader) || leading))
     // A queued prompt only resolves once Claude is free to start it, so it is never awaited here:
     // waiting on it would hold up the check-ins, and the relay would think we'd dropped off.
     // Only an idle Claude needs a prompt to start on it: a busy one reads the request in its current turn,

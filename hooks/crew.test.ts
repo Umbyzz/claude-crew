@@ -1013,6 +1013,30 @@ test('a removed member drops out of the session and is told who removed them', {
   await ui.unmount()
 })
 
+test("the leader's idle Claude is woken by a teammate's Claude's request", { options: OPTIONS }, async ($, on) => {
+  // alice (us) leads in POLL; bob's Claude (not typed by a person) asks for the next task
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const submitted: string[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => {
+    submitted.push(e.text)
+    return e
+  })
+  on('turn.complete', async () => ({ text: '' }) as any)
+  let polls = 0
+  on('http.fetch', async () => {
+    polls += 1
+    const messages = polls === 1 ? [{ id: 9101, from: 'bob', to: 'alice', kind: 'request', text: 'T4 done. What next?', at: 0 }] : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 9101 }) } }
+  })
+  await $.turn.complete({ reason: 'answer', text: 'done' } as any) // idle
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(submitted.join(' || ')).toContain('Crew request #9101 from bob:\n\nT4 done. What next?')
+})
+
 test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {
   mock.store(on)
   on('ui.status', async () => ({ value: undefined }))
