@@ -1159,6 +1159,39 @@ test('Delete project asks twice, then wipes it on the relay and bins only its ow
   expect(seen[seen.length - 1].init.headers['X-Crew-Project']).toBe('main') // and we're back in main
 })
 
+test('a shared doc can be deleted after a confirm, and the double-click tip goes away with Got it', { options: OPTIONS }, async ($, on) => {
+  const seen: { url: string; init: any }[] = []
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    const body = e.url.includes('/shared?name=')
+      ? { name: 'old-plan', by: 'bob', at: 1000, content: 'stale' }
+      : e.url.endsWith('/shared')
+        ? { docs: [{ name: 'old-plan', by: 'bob', at: 1000, size: 5 }] }
+        : e.init?.method === 'POST'
+          ? { ok: true }
+          : { ...POLL, shared: ['old-plan'] } // alice (us) leads
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /needs a second click/ } as any)).toBeDefined()
+  await ui.press({ key: 'tip-ok' })
+  expect(await ui.find({ text: /needs a second click/ } as any)).toBeUndefined()
+  await ui.press({ key: 'tab-docs' })
+  await ui.press({ key: 'doc-old-plan' })
+  await settle()
+  await ui.press({ key: 'doc-delete' })
+  expect(await ui.find({ text: /Delete "old-plan" for the whole project\?/ } as any)).toBeDefined()
+  await ui.press({ key: 'doc-delete-yes' })
+  await settle()
+  await ui.unmount()
+  expect(JSON.parse(seen.find(s => s.url.endsWith('/shared/delete'))?.init.body)).toEqual({ name: 'old-plan' })
+})
+
 test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {
   mock.store(on)
   on('ui.status', async () => ({ value: undefined }))

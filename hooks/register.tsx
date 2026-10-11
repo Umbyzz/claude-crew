@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.5.3'
+const VERSION = '1.5.4'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -938,6 +938,33 @@ function syncDocs($: EngineInterface, names: string[], reshared = false) {
   void relay($, 'GET', '/shared')
     .then(data => update($, docList, () => ({ names: key, docs: Array.isArray(data.docs) ? (data.docs as DocMeta[]) : [] })))
     .catch(() => (docsKey = null)) // try again on the next check-in
+}
+
+const docDeleting = atom({ plugin: 'crew', key: 'docDeleting' } as const, '') // which doc's "delete?" is showing
+
+function askDeleteDoc($: EngineInterface, name: string) {
+  void update($, docDeleting, () => name)
+}
+
+async function deleteDoc($: EngineInterface, name: string) {
+  await update($, docDeleting, () => '')
+  try {
+    await relay($, 'POST', '/shared/delete', { name })
+    await update($, docOpen, d => (d.name === name ? { name: '', head: [], more: 0, error: '' } : d))
+    docsKey = null // the list changed: fetch who/when again
+    await poll($)
+    $.ui.toast(`crew: deleted the doc "${name}"`, { timeoutMs: 5000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+}
+
+// A one-time tip: the desktop app sometimes takes a pane button's first click as focus. Not ours to fix.
+const tipSeen = atom({ plugin: 'crew', key: 'tipSeen' } as const, false)
+
+function dismissTip($: EngineInterface) {
+  void update($, tipSeen, () => true)
+  void $.store.set('tip:doubleClick', true)
 }
 
 async function openDoc($: EngineInterface, name: string) {
@@ -2304,6 +2331,8 @@ export const register: Register = (on, options) => {
     const home = configured ? await projectsHome($) : ''
     const folderMode = await read($, folderModeAtom)
     const invite = await read($, inviteAtom)
+    const deletingDoc = await read($, docDeleting)
+    const showTip = configured && !(await read($, tipSeen)) && !(await $.store.get('tip:doubleClick'))
     const deleting = await read($, deleteStage)
     const menuOpen = await read($, projectMenu)
     const binnable = deleting.stage > 0 ? await deletableFolder($, deleting.name) : ''
@@ -2517,6 +2546,12 @@ export const register: Register = (on, options) => {
             {inSession && tabButton('docs', `📂 ${projectName}`, () => setTab($, 'docs'))}
             {inSession && tabButton('crew', `Crew (${online} online)`, () => setTab($, 'crew'))}
             {tabButton('settings', '⚙ Settings', () => toggleSettings($))}
+          </Box>
+        )}
+        {showTip && (
+          <Box flexDirection="row">
+            <Text dimColor>💡 Tip: in the desktop app a button sometimes needs a second click (the first can just focus the pane). </Text>
+            <Button key="tip-ok" label="Got it" dimColor onPress={() => dismissTip($)} />
           </Box>
         )}
         {configured && !inSession && current !== 'settings' && member === 'left' && (
@@ -2977,7 +3012,17 @@ export const register: Register = (on, options) => {
                     <Box flexDirection="row">
                       <Button key="doc-copy" label="Copy it all" onPress={() => copyDoc($, e.surface, d.name)} />
                       <Button key="doc-close" label="Close" dimColor onPress={() => openDocPress($, d.name)} />
+                      {(d.by === me || s.leader === me || isHosting()) && deletingDoc !== d.name && (
+                        <Button key="doc-delete" label="Delete…" dimColor onPress={() => askDeleteDoc($, d.name)} />
+                      )}
                     </Box>
+                    {deletingDoc === d.name && (
+                      <Box flexDirection="row">
+                        <Text bold>Delete "{d.name}" for the whole project? </Text>
+                        <Button key="doc-delete-yes" label="Yes, delete" onPress={() => void deleteDoc($, d.name)} />
+                        <Button key="doc-delete-no" label="Cancel" variant="primary" onPress={() => askDeleteDoc($, '')} />
+                      </Box>
+                    )}
                   </Callout>
                 )}
               </Box>

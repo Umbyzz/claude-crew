@@ -99,6 +99,8 @@ declare module 'claude-code' {
       invite: { from: string; project: string }
       deleteStage: { name: string; stage: number }
       projectMenu: string
+      docDeleting: string
+      tipSeen: boolean
     }
   }
 }

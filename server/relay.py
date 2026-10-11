@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.5.3"
+VERSION = "1.5.4"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -597,6 +597,19 @@ class Handler(BaseHTTPRequestHandler):
                 acting.pop(pr, None)  # a new true leader: any stand-in steps down without a handover
                 save()
                 return self.reply(200, {"leader": leader})
+            if path == "/shared/delete":  # its author, the project's leader, or the host removes a shared doc
+                pr = self.project
+                name = str(b.get("name", "")).strip()[:120]
+                doc = docs_of(pr).get(name)
+                if not doc:
+                    return self.reply(404, {"error": "no such doc in this project"})
+                host = self.client_address[0] in ("127.0.0.1", "::1")
+                if self.name not in (doc["by"], leader_of(pr)) and not host:
+                    return self.reply(403, {"error": "only its author, the project's leader or the host can delete a doc"})
+                state["shared"].pop(doc_key(pr, name), None)
+                post_message(self.name, "all", f"deleted the doc '{name}'", "update", pr)
+                save()
+                return self.reply(200, {"ok": True})
             if path == "/shared":
                 name = str(b.get("name", "")).strip()[:120]
                 content = str(b.get("content", ""))
