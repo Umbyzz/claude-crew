@@ -791,6 +791,31 @@ test('joining twice with nothing new briefs Claude only once', { options: OPTION
   expect(briefs.length).toBe(1)
 })
 
+test('with the leader offline, followers keep working instead of stalling', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const peers = [
+    { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: false },
+    { name: 'bob', online: false, lastSeen: 0, activity: 'idle', leader: true },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers, leader: 'bob' }) } }))
+  on('prompt.compose', async () => ({ sections: [] }) as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const composed: any = await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as any)
+  const role = composed.sections.find((s: any) => s.id === 'crew:role')
+  expect(role.text).toContain('bob leads the crew but is offline right now')
+  expect(role.text).toContain("Don't stall")
+})
+
+test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const tasks = [{ id: 2, title: 'Fix sprint', note: '', status: 'claimed', owner: 'bob', assignee: null, by: 'alice', at: 0, ownerAway: 14 }]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, tasks }) } }))
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(String(r.result)).toContain('T2 [claimed · bob (offline 14 min: anyone can claim it)] Fix sprint')
+})
+
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
   const seen: { url: string; init: any }[] = []
   mock.store(on)

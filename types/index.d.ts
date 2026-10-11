@@ -34,6 +34,7 @@ export type CrewTask = {
   assignee: string | null
   by: string
   at: number
+  ownerAway?: number // minutes the claiming owner has been offline (from 10 on); at 30 the relay reopens it
 }
 
 export type CrewSnapshot = {

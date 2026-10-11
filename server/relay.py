@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.9.4"
+VERSION = "0.9.5"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -58,6 +58,38 @@ def new_id():
     return i
 
 
+def new_task_id():
+    """Tasks count on their own (T1, T2 ...) instead of sharing message numbers. Older tasks keep theirs."""
+    taken = {t["id"] for t in state["tasks"]}
+    i = state.get("next_task", 1)
+    while i in taken:
+        i += 1
+    state["next_task"] = i + 1
+    return i
+
+
+STALE_MINUTES = 10  # a claim whose owner has been offline this long shows as stale
+RELEASE_MINUTES = 30  # ...and this long: it goes back on the board for someone else
+STARTED = time.time()
+
+
+def away_for(name, now):
+    """Seconds since this member last checked in (since the relay started, if never)."""
+    p = peers.get(name)
+    if p and is_online(p, now):
+        return 0
+    return now - (p["seen"] if p else STARTED)
+
+
+def task_view(t, now):
+    """A task as the plugins see it: with how long a claimed task's owner has been away."""
+    if t["status"] == "claimed" and t.get("owner"):
+        away = away_for(t["owner"], now)
+        if away >= STALE_MINUTES * 60:
+            return dict(t, ownerAway=int(away // 60))
+    return t
+
+
 def is_online(p, now):
     return not p.get("left") and now - p["seen"] < ONLINE_SECONDS
 
@@ -80,7 +112,7 @@ def open_tasks_of(name):
 def announce_leave(name, why):
     """Tell the crew someone is gone, and which tasks they were holding."""
     held = open_tasks_of(name)
-    tasks = "; ".join(f"#{t['id']} {t['title']}" for t in held)
+    tasks = "; ".join(f"T{t['id']} {t['title']}" for t in held)
     text = f"{name} {why}." + (f" They were working on: {tasks}." if held else "")
     post_message(name, "all", text, "leave")
     peers[name]["gone"] = True
@@ -92,6 +124,14 @@ def sweep():
     for name, p in peers.items():
         if not p.get("gone") and not p.get("left") and now - p["seen"] >= GONE_SECONDS:
             announce_leave(name, "lost connection (their Claude was closed or went offline)")
+            save()
+    # A claim nobody is working on any more goes back on the board.
+    for t in state["tasks"]:
+        if t["status"] == "claimed" and t.get("owner") and away_for(t["owner"], now) >= RELEASE_MINUTES * 60:
+            owner = t["owner"]
+            t.update(status="open", owner=None)
+            post_message(owner, "all", f"released task T{t['id']}: {owner} has been offline for "
+                                       f"{RELEASE_MINUTES}+ minutes, so it's open again: {t['title']}", "update")
             save()
 
 
@@ -225,8 +265,9 @@ class Handler(BaseHTTPRequestHandler):
                 since = int(q.get("since", ["0"])[0])
                 msgs = [m for m in state["messages"] if m["id"] > since
                         and (m["to"] in ("all", self.name) or m["from"] == self.name)]
+                now = time.time()
                 self.reply(200, {"messages": msgs[-200:], "peers": peer_list(),
-                                 "tasks": state["tasks"], "leader": state["leader"],
+                                 "tasks": [task_view(t, now) for t in state["tasks"]], "leader": state["leader"],
                                  "shared": sorted(state["shared"].keys()),
                                  "cursor": state["next_id"] - 1, "chatEpoch": state.get("chat_epoch", 0),
                                  "version": VERSION})
@@ -341,7 +382,7 @@ class Handler(BaseHTTPRequestHandler):
         t["assignee"] = assignee
         if assignee and assignee != self.name:  # assigning yourself needs no "you've got a task" request
             post_message(self.name, assignee,
-                         f"Task #{t['id']} is assigned to you: {t['title']}"
+                         f"Task T{t['id']} is assigned to you: {t['title']}"
                          + (f"\n\n{t['note']}" if t["note"] else "")
                          + "\n\nClaim it with crew_task, do it, then mark it done with a short note.",
                          "request")
@@ -354,19 +395,24 @@ class Handler(BaseHTTPRequestHandler):
             title = str(b.get("title", "")).strip()[:500]
             if not title:
                 return self.reply(400, {"error": "missing title"})
-            t = {"id": new_id(), "title": title, "note": str(b.get("note", ""))[:5000],
+            t = {"id": new_task_id(), "title": title, "note": str(b.get("note", ""))[:5000],
                  "status": "open", "owner": None, "assignee": None,
                  "by": self.name, "at": int(time.time())}
             tasks.append(t)
-            post_message(self.name, "all", f"added task #{t['id']}: {title}", "update")
+            post_message(self.name, "all", f"added task T{t['id']}: {title}", "update")
             self.assign(t, assignee)
             save()
             return self.reply(200, t)
-        t = next((t for t in tasks if t["id"] == b.get("id")), None)
+        try:  # 3, "3" and "T3" all mean task T3
+            wanted = int(str(b.get("id", "")).strip().lstrip("Tt#"))
+        except ValueError:
+            return self.reply(400, {"error": "id must be a task number, like 3 or T3"})
+        t = next((t for t in tasks if t["id"] == wanted), None)
         if t is None:
             return self.reply(404, {"error": "no such task"})
         if action == "claim":
-            if t["status"] == "claimed" and t["owner"] not in (None, self.name):
+            stale = t.get("owner") and away_for(t["owner"], time.time()) >= STALE_MINUTES * 60
+            if t["status"] == "claimed" and t["owner"] not in (None, self.name) and not stale:
                 return self.reply(409, {"error": f"already claimed by {t['owner']}"})
             t.update(owner=self.name, status="claimed")
         elif action == "done":
@@ -387,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
         if b.get("note") and action != "assign":
             t["note"] = str(b["note"])[:5000]
         who = f" to {assignee}" if action == "assign" else ""
-        post_message(self.name, "all", f"{action} task #{t['id']}{who}: {t['title']}", "update")
+        post_message(self.name, "all", f"{action} task T{t['id']}{who}: {t['title']}", "update")
         save()
         self.reply(200, t)
 

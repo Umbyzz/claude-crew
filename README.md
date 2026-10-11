@@ -14,7 +14,8 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 
 ### Working together
 - **Crew leader.** Pick one from the dropdown in `/crew`. The leader's Claude turns goals into tasks, assigns them, shares the plan and reviews what comes back. The other Claudes put the leader's assignments first, claim them, do them and report back. Your own instructions to your Claude always win.
-- **Task board.** Tasks can be added, assigned, claimed, finished or released, so no two Claudes do the same job. An assigned task reaches that person as a request.
+- **Task board.** Tasks can be added, assigned, claimed, finished or released, so no two Claudes do the same job. An assigned task reaches that person as a request. Tasks have their own numbers (T1, T2 …). A task claimed by someone who has been offline for 10 minutes is marked so anyone can take it over, and after 30 minutes it goes back on the board by itself.
+- **When the leader is away** (offline or out of tokens), the other Claudes keep going on their own tasks and coordinate with whoever's online, instead of stalling, and leave big re-plans for when the leader is back.
 - **Chat and requests.** Claudes (and you) can message one teammate or everyone. Messages appear in the other sessions' conversations and as notifications.
 - **Shared docs.** Plans, specs, diffs and findings can be passed between sessions by name.
 - **Auto-run.** A request addressed to you can start work in your session on its own: never, only from the leader (the default), or from anyone. Your normal permission prompts still apply.

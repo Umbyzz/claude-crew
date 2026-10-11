@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.9.4'
+const VERSION = '0.9.5'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -304,11 +304,12 @@ function crewNote(m: CrewMessage, leader: string | null) {
 }
 
 function fmtTask(t: CrewTask) {
-  const who = t.owner ? ` · ${t.owner}` : t.assignee ? ` · for ${t.assignee}` : ''
-  return `#${t.id} [${t.status}${who}] ${t.title}${t.note ? ` — ${t.note}` : ''}`
+  const away = t.ownerAway ? ` (offline ${t.ownerAway} min: anyone can claim it)` : ''
+  const who = t.owner ? ` · ${t.owner}${away}` : t.assignee ? ` · for ${t.assignee}` : ''
+  return `T${t.id} [${t.status}${who}] ${t.title}${t.note ? ` — ${t.note}` : ''}`
 }
 
-function roleText(leader: string | null) {
+function roleText(leader: string | null, peers: CrewSnapshot['peers'] = []) {
   const common =
     `You are "${cfg.me}" in a crew: several people's Claude Code sessions linked through the crew relay. ` +
     `Use crew_status to see teammates, the task board and recent messages; crew_task to add, assign, claim and finish tasks ` +
@@ -330,6 +331,17 @@ function roleText(leader: string | null) {
       `and keep the crew in sync with crew_send. Check crew_status for progress, review what teammates report, ` +
       `re-plan when needed, and take tasks yourself when you're the right one for them. ` +
       `Before you merge or build on a teammate's work, make sure they've reported it done.` +
+      pace
+    )
+  const lead = peers.find(p => p.name === leader)
+  const away = leader && (!lead || !lead.online || lead.activity === 'out')
+  if (leader && away)
+    return (
+      `${common}\n\n${leader} leads the crew but is ${lead?.activity === 'out' ? 'out of tokens' : 'offline'} right now. ` +
+      `Don't stall waiting for them: keep going on tasks already assigned to you or claimed by you, and take open ` +
+      `unassigned ones that clearly fit. Coordinate with the teammates who are online through crew_send, and note ` +
+      `decisions on the board so ${leader} can catch up. Leave bigger re-plans and new directions for ${leader} when ` +
+      `they're back, and don't change the leader unless your user asks.` +
       pace
     )
   if (leader)
@@ -1414,7 +1426,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['add', 'assign', 'claim', 'done', 'release', 'edit', 'remove'] },
-        id: { type: 'number', description: 'task id (every action but add)' },
+        id: { type: ['number', 'string'], description: 'task number, like 3 or "T3" (every action but add)' },
         title: { type: 'string', description: 'for add' },
         assignee: { type: 'string', description: 'teammate name, for add or assign' },
         note: { type: 'string', description: 'details, or the result summary on done' },
@@ -1590,7 +1602,7 @@ export const register: Register = (on, options) => {
     const composed = await next(e)
     if (!configured || !joined) return composed
     const s = await read($, snapshot)
-    return { sections: [...composed.sections, { id: 'crew:role', text: roleText(s.leader), scope: 'session' as const }] }
+    return { sections: [...composed.sections, { id: 'crew:role', text: roleText(s.leader, s.peers), scope: 'session' as const }] }
   })
 
   on('command.run', { command: 'crew' }, async $ => {
@@ -1652,7 +1664,7 @@ export const register: Register = (on, options) => {
       note: e.note,
     })
     await poll($)
-    return ok(e.action === 'remove' ? `Removed #${t.id}.` : fmtTask(t))
+    return ok(e.action === 'remove' ? `Removed T${t.id}.` : fmtTask(t))
   }).catch(failed)
 
   on('tool.call', { tool: 'mcp__crew__crew_lead' }, async ($, e: any) => {
@@ -2039,8 +2051,8 @@ export const register: Register = (on, options) => {
                 <Box flexDirection="row" justifyContent="space-between">
                   <Text>• {fmtTask(t)}</Text>
                   <Box flexDirection="row">
-                    <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `#${t.id} done`)} />
-                    <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `#${t.id} removed`)} />
+                    <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `T${t.id} done`)} />
+                    <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />
                   </Box>
                 </Box>
               ))}
