@@ -122,12 +122,12 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 2. Give the leader's Claude a goal, for example: *"We're building X. Plan it and split it across the crew."*
 3. The leader adds tasks to the board and assigns them. Everyone else's Claude picks up its assignments, works on them and reports back.
 4. **Chat** at the bottom of `/crew` is for the people: everyone sees it in `/crew`, but no Claude reads it, so it costs no tokens. Type `@name message` to DM someone.
-4b. **Tasks** in `/crew` is a small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
-5. **Ask a Claude** (above the chat) talks straight to a teammate's Claude, the leader's by default. It arrives as a request, so that Claude starts on it right away when its Auto-run allows: on *only from the leader*, the leader's Claude takes anyone's Ask a Claude, and the others take only the leader's.
-6. Done for the day? Press **Leave session**, or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**.
-7. **↻ Refresh** (top of `/crew`) reconnects to the relay right away and re-checks GitHub for updates. Use it after the host restarts the relay.
-8. **Reset chat** (next to *Chat*) clears the crew chat for everyone, after a warning you have to confirm. A copy is saved first, and tasks and shared docs stay.
-9. **Save chat** saves the chat and the task board as a Markdown file in `~/.claude/crew-chats`.
+5. **Tasks** in `/crew` is a small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
+6. **Ask a Claude** (above the chat) talks straight to a teammate's Claude, the leader's by default. It arrives as a request, so that Claude starts on it right away when its Auto-run allows: on *only from the leader*, the leader's Claude takes anyone's Ask a Claude, and the others take only the leader's.
+7. Done for the day? Press **Leave session**, or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**.
+8. **↻ Refresh** (top of `/crew`) reconnects to the relay right away and re-checks GitHub for updates. Use it after the host restarts the relay.
+9. **Reset chat** (next to *Chat*) clears the crew chat for everyone, after a warning you have to confirm. A copy is saved first, and tasks and shared docs stay.
+10. **Save chat** saves the chat and the task board as a Markdown file in `~/.claude/crew-chats`.
 
 **Saving tokens.** Every crew message a Claude receives becomes part of its conversation, so crew keeps that small: people's chat never reaches the Claudes, the standing "how to treat crew messages" note sits once in the system prompt instead of on every message, task updates and joins only show in `/crew`, and the catch-up skips people's chat. The relay, the polling and the Clawds window use no tokens at all. The biggest lever is yours: set **Auto-run** to `off` or `leader`, since every auto-run request starts a turn.
 
@@ -236,7 +236,9 @@ The window's options:
 | `--multi` and `--at X,Y` | testing: allow a second window and place it, to compare two "PCs" side by side |
 
 ## Credits
-Made by **Umbyz**, with ideas from friends **Pluh** (*"Claude's plan"*) and **Corixer** (the mini Clawd towers), built with Claude.
+Made by **Umbyz**, with ideas from friends **Pluh** (*"Claude's plan"*) and **Corixer** (the mini Clawd towers).
+
+**Written by yours truly, Claude** 🦀: the relay, the plugin, the Clawds and every one of their over-the-top moments, one "can you also…" at a time. CoriZori's Claude chipped in with UI reviews and bug reports over the crew relay itself, so this is the first crew project the crew built together.
 Clawd is the mascot of Anthropic's Claude Code. This is a fan project, not affiliated with Anthropic.
 The animation ideas (squash and stretch, typing with flying code, confetti dances) were inspired by [aadil6971/clawd-video](https://github.com/aadil6971/clawd-video).
 
