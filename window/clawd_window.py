@@ -114,17 +114,34 @@ def crew_config():
 class Feed:
     """Polls the relay in the background; the UI reads .snapshot."""
 
-    def __init__(self, relay, key, name, demo):
+    def __init__(self, relay, key, name, demo, reread=None):
         self.relay, self.key, self.name, self.demo = (relay or "").rstrip("/"), key, name, demo
+        self.reread = reread  # returns (relay, key, name) from the plugin's settings, or None when given on the command line
         self.snapshot = None
         self.error = ""
         self.lock = threading.Lock()
-        if demo:
-            self.fake = DemoCrew()
+        self.fake = DemoCrew()
         threading.Thread(target=self.loop, daemon=True).start()
 
+    def follow_settings(self):
+        """Pick up /crew settings saved after the window opened: the demo crew makes way for the real one."""
+        relay, key, name = self.reread()
+        relay = (relay or "").rstrip("/")
+        if (relay, key, name) != (self.relay, self.key, self.name):
+            with self.lock:
+                self.relay, self.key, self.name = relay, key, name
+                self.demo = not (relay and key)
+                self.snapshot, self.error = None, ""
+
     def loop(self):
+        last_read = time.time()
         while True:
+            if self.reread and time.time() - last_read > 5:
+                last_read = time.time()
+                try:
+                    self.follow_settings()
+                except Exception:  # noqa: BLE001 - a half-written settings file: try again next time
+                    pass
             try:
                 data = self.fake.tick() if self.demo else self.fetch()
                 with self.lock:
@@ -1737,7 +1754,11 @@ class App:
         self.prefs = load_json(PREFS, {})
         self.size = self.prefs.get("size", "medium")
         self.pinned = self.prefs.get("pinned", True)
-        self.feed = Feed(self.relay, key, self.me, args.demo or not (self.relay and key))
+        def reread():
+            c = crew_config()
+            return c.get("relayUrl", ""), c.get("key", ""), c.get("name", "")
+        given = args.relay or args.key or args.name or args.demo  # set on the command line: stick to it
+        self.feed = Feed(self.relay, key, self.me, args.demo or not (self.relay and key), None if given else reread)
         self.demo = args.demo or not (self.relay and key)
 
         self.root = tk.Tk()
@@ -1759,7 +1780,7 @@ class App:
         self.menu.add_cascade(label="Size", menu=sizes)
         self.menu.add_command(label="Party!", command=self.party)
         # Closes itself a minute after your Claude leaves the crew, unless you tick this
-        self.seen_me, self.away_since = False, None
+        self.seen_me, self.away_since, self.err_since = False, None, None
         self.keep_var = tk.BooleanVar(value=False)
         self.menu.add_checkbutton(label="Keep open after I leave", variable=self.keep_var)
         self.menu.add_separator()
@@ -1873,12 +1894,22 @@ class App:
         dt = now - self.last
         self.last = now
         snap, err = self.feed.read()
+        self.relay, self.me, self.demo = self.feed.relay, self.feed.name, self.feed.demo  # settings can change
+        if err and not self.demo:
+            # The relay is unreachable: we can't know what anyone is doing, so nobody stays frozen mid-"thinking".
+            self.err_since = self.err_since or now
+            if snap and now - self.err_since > 5:
+                snap = dict(snap, peers=[dict(p, online=False) for p in snap.get("peers", [])])
+        else:
+            self.err_since = None
         self.world.sync(snap, self.me)
         self.world.step(dt)
         if self.closing_in(snap, err, now) == 0:
             return self.quit()
         self.draw(snap, err, clock())
-        self.root.after(int(1000 / FPS), self.tick)
+        # Full speed while anything moves; a few frames a second when the stage is empty or the relay is down.
+        quiet = (err and not self.demo) or not any(not c.gone for c in self.world.clawds.values())
+        self.root.after(int(1000 / (4 if quiet else FPS)), self.tick)
 
     def closing_in(self, snap, err, now):
         """Once your own Claude has left the crew (or the relay is gone) for a while, the show's over: the
@@ -1918,6 +1949,8 @@ class App:
                 self.painter.particle(pt)
         for c in clawds:
             label = c.name.strip()
+            if label and self.me and c.name == self.me:
+                label += " (you)"
             if label and not c.gone and not (c.hidden and c.trip):
                 word = STATUS_WORDS.get(c.activity, "")
                 if funeral and funeral["name"] == c.name:

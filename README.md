@@ -60,6 +60,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
   - Drag it anywhere.
   - Click **◉ pinned** on the stage to toggle always-on-top, and **✕** to close it.
   - Right-click for **Pin on top**, **Size** (small, medium or large), **Party!** and **Keep open after I leave**.
+  - Your own Clawd is labelled **(you)**. The window follows your `/crew` settings as you change them (the demo crew makes way for yours a few seconds after setup), and when the relay can't be reached everyone shows as offline instead of frozen mid-thought. When nothing's on stage it drops to a few frames a second to spare your CPU.
   - When your own Claude leaves the crew (or the relay goes away), the Clawds make their exits and the window closes itself a minute later, with a countdown on the stage. Tick **Keep open after I leave** to watch the crew without being in it.
   - Click a Clawd to poke it: it hops and tells you what it's doing.
   - It remembers where you left it, its size and pin setting in `~/.claude/crew-clawds.json`.
