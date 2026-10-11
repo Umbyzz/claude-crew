@@ -786,7 +786,8 @@ test('crew_wait waits on the relay and returns the reply', { options: OPTIONS },
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
   })
   const r: any = await $.tool.call({ tool: 'mcp__crew__crew_wait', from: 'bob', timeout_s: 30 } as any)
-  expect(seen.some(s => s.url.includes('/wait?') && s.url.includes('from=bob') && s.url.includes('timeout=30'))).toBe(true)
+  // waits in rounds of at most 25s: a plugin's web request gives up at 30s
+  expect(seen.some(s => s.url.includes('/wait?') && s.url.includes('from=bob') && s.url.includes('timeout=25'))).toBe(true)
   expect(String(r.result)).toContain('pong')
   expect(String(r.result)).toContain('UTC')
 })

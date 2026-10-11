@@ -1459,8 +1459,15 @@ export const register: Register = (on, options) => {
     const timeout = Math.max(1, Math.min(90, Number(e.timeout_s) || 60))
     const from = typeof e.from === 'string' && e.from ? `&from=${encodeURIComponent(e.from)}` : ''
     lastTalk = Date.now()
-    const r = await relay($, 'GET', `/wait?since=${s.cursor}${from}&timeout=${timeout}`)
-    const got: CrewMessage[] = r.messages ?? []
+    // A plugin's web request gives up after 30s, so wait in rounds of up to 25s until the time asked for is used up.
+    const until = Date.now() + timeout * 1000
+    let got: CrewMessage[] = []
+    while (!got.length) {
+      const left = Math.ceil((until - Date.now()) / 1000)
+      if (left <= 0) break
+      const r = await relay($, 'GET', `/wait?since=${s.cursor}${from}&timeout=${Math.min(25, left)}`)
+      got = r.messages ?? []
+    }
     poll($).catch(() => {}) // the usual delivery picks them up too
     if (!got.length) return ok(`No reply${e.from ? ` from ${e.from}` : ''} within ${timeout}s.`)
     return ok(got.map(m => `#${m.id} [sent ${stamp(m.at)}] ${line(m)}`).join('\n'))
