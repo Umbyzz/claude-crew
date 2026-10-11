@@ -69,7 +69,9 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 ### 1. One person hosts the relay
 The host needs Python 3.8 or newer, and nothing else.
 
-On Windows, double-click **`server/start-relay.bat`**. The first time, it creates a random key in `server/crew_key.txt`, then prints the key and your IP addresses. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow the relay on **private** networks.
+**Easiest: host from Claude.** Install the plugin (step 3), type your name in `/crew` → **Settings** (press Enter), then press **Host a crew**. The relay starts in the background, with no window to keep open, and your plugin connects to it. Press **Copy invite** to get a ready-to-send message with your address, the key and the install steps. **Stop hosting** shuts the relay down. The relay's key and data live in `~/.claude/crew-relay`.
+
+**Or the classic way:** double-click **`server/start-relay.bat`**. The first time, it creates a random key in `server/crew_key.txt`, then prints the key and your IP addresses. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow the relay on **private** networks.
 
 On another OS, run:
 
@@ -121,6 +123,8 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 3. The leader adds tasks to the board and assigns them. Everyone else's Claude picks up its assignments, works on them and reports back.
 4. You can chat at the bottom of `/crew`. Type `@name message` to DM someone.
 5. Done for the day? Press **Leave session**, or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**.
+6. **↻ Refresh** (top of `/crew`) reconnects to the relay right away and re-checks GitHub for updates. Use it after the host restarts the relay.
+7. **Reset chat** (next to *Chat*) clears the crew chat for everyone, after a warning you have to confirm. Tasks and shared docs stay.
 
 **Commands**
 

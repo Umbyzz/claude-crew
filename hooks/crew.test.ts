@@ -401,3 +401,73 @@ test('Refresh reconnects right away, and explains a relay that is down', { optio
   expect(await ui.find({ text: /Is it running\?/ } as any)).toBeUndefined()
   await ui.unmount()
 })
+
+test('Host a crew starts a relay in the background and points this plugin at it', { options: { ...OPTIONS, relayUrl: '', key: '' } }, async ($, on) => {
+  mock.store(on)
+  mock.env(on, { USERPROFILE: 'C:\\Users\\t' })
+  on('clock.sleep', async () => ({ value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('fs.write', async () => ({ value: undefined }) as any)
+  let started = false
+  const ran: string[][] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push([...e.argv])
+    if (e.argv.some((a: string) => a.endsWith('relay.py'))) started = true
+    const stdout = e.argv[0] === 'ipconfig' ? '   IPv4 Address. . . : 192.168.1.5\r\n   IPv4 Address. . . : 26.12.34.56\r\n' : ''
+    return { value: { exitCode: 0, stdout, stderr: '' } }
+  })
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.endsWith('/health')) {
+      if (!started) return { deny: 'ECONNREFUSED: Unable to connect' } as any
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true, "version": "0.7.8"}' } }
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  const sets: any[] = []
+  on('config.set', async (_$: unknown, e: any) => {
+    sets.push(e)
+    return { value: e.value } as any
+  })
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'host' })
+  await settle(200)
+  await ui.unmount()
+  const launch = ran.find(a => a.some(x => x.endsWith('relay.py')))?.join(' ') ?? ''
+  expect(launch).toContain('--key-file C:\\Users\\t\\.claude\\crew-relay\\key.txt')
+  expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://127.0.0.1:7777')
+  expect(String(sets.find(s => s.key === 'crew.key')?.value)).toMatch(/^[0-9a-f]{36}$/)
+})
+
+test('Reset chat warns first; Cancel does nothing, Yes clears the chat for everyone', { options: OPTIONS }, async ($, on) => {
+  let epoch = 0
+  const posted: string[] = []
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posted.push(e.url)
+      if (e.url.endsWith('/reset')) epoch += 1
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true}' } }
+    }
+    const messages = epoch === 0 ? [{ id: 2, from: 'bob', to: 'all', kind: 'chat', text: 'old stuff', at: 0 }] : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, chatEpoch: epoch, cursor: 2 }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /old stuff/ } as any)).toBeDefined()
+
+  await ui.press({ key: 'reset-chat' })
+  expect(await ui.find({ text: /Reset the chat for everyone\?/ } as any)).toBeDefined()
+  await ui.press({ key: 'reset-no' })
+  expect(posted.some(u => u.endsWith('/reset'))).toBe(false)
+  expect(await ui.find({ key: 'reset-yes' })).toBeUndefined()
+
+  await ui.press({ key: 'reset-chat' })
+  await ui.press({ key: 'reset-yes' })
+  await settle(100)
+  expect(posted.some(u => u.endsWith('/reset'))).toBe(true)
+  expect(await ui.find({ text: /old stuff/ } as any)).toBeUndefined()
+  await ui.unmount()
+})

@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.7.7"
+VERSION = "0.7.8"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -29,7 +29,8 @@ ACTIVITIES = ("idle", "thinking", "typing", "working", "chatting", "done", "chee
 KINDS = ("chat", "request", "update", "out", "back", "join", "leave", "image")
 
 lock = threading.Lock()
-state = {"next_id": 1, "messages": [], "tasks": [], "shared": {}, "leader": None}
+state = {"next_id": 1, "messages": [], "tasks": [], "shared": {}, "leader": None,
+         "chat_epoch": 0}  # bumped by "Reset chat": every plugin then empties its chat
 # name -> {"seen", "activity", "since", "subagents", "chatTo", "joinedAt", "left", "gone"}, memory only
 peers = {}
 files = {}  # id -> {"id", "name", "mime", "data" (bytes), "by", "at"}, memory only
@@ -197,7 +198,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"messages": msgs[-200:], "peers": peer_list(),
                                  "tasks": state["tasks"], "leader": state["leader"],
                                  "shared": sorted(state["shared"].keys()),
-                                 "cursor": state["next_id"] - 1, "version": VERSION})
+                                 "cursor": state["next_id"] - 1, "chatEpoch": state.get("chat_epoch", 0),
+                                 "version": VERSION})
             elif url.path == "/shared":
                 name = q.get("name", [""])[0]
                 if name:
@@ -212,13 +214,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        # leaving must not count as a check-in, or it would announce a re-join
-        if not self.authed(presence=path != "/leave"):
+        # leaving (or stopping the relay) must not count as a check-in, or it would announce a re-join
+        if not self.authed(presence=path not in ("/leave", "/shutdown")):
             return
         try:
             b = self.body(limit=MAX_FILE * 2 if path == "/files" else MAX_SHARED * 2)
         except (ValueError, json.JSONDecodeError) as err:
             return self.reply(400, {"error": str(err)})
+        if path == "/shutdown":  # "Stop hosting" in /crew: only from this PC, with the key
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self.reply(403, {"error": "only the host's own PC can stop the relay"})
+            self.reply(200, {"ok": True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         with lock:
             if path == "/leave":  # a clean goodbye: everyone hears it at once
                 p = peers.get(self.name)
@@ -227,6 +235,12 @@ class Handler(BaseHTTPRequestHandler):
                     announce_leave(self.name, str(b.get("why") or "left the crew session")[:80])
                     save()
                 return self.reply(200, {"ok": True})
+            if path == "/reset":  # "Reset chat": wipe the chat for everyone (tasks and docs stay)
+                state["messages"] = []
+                state["chat_epoch"] = state.get("chat_epoch", 0) + 1
+                post_message(self.name, "all", f"{self.name} cleared the crew chat", "update")
+                save()
+                return self.reply(200, {"ok": True, "chatEpoch": state["chat_epoch"]})
             if path == "/files":
                 try:
                     data = base64.b64decode(str(b.get("data", "")), validate=True)

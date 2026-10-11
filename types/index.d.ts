@@ -45,10 +45,17 @@ export type CrewSnapshot = {
   peers: CrewPeer[]
   tasks: CrewTask[]
   shared: string[]
+  chatEpoch?: number // the relay's chat-reset count: when it changes, the chat starts over
 }
 
 declare module 'claude-code' {
   interface PluginState {
-    crew: { snapshot: CrewSnapshot; settingsOpen: boolean; membership: '' | 'joined' | 'left' | 'ask' }
+    crew: {
+      snapshot: CrewSnapshot
+      settingsOpen: boolean
+      membership: '' | 'joined' | 'left' | 'ask'
+      host: { ip: string; key: string }
+      confirmReset: boolean
+    }
   }
 }

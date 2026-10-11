@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.7.7'
+const VERSION = '0.7.8'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -30,6 +30,10 @@ const settingsOpen = atom({ plugin: 'crew', key: 'settingsOpen' } as const, fals
 const membership = atom({ plugin: 'crew', key: 'membership' } as const, '' as Membership)
 type Membership = '' | 'joined' | 'left' | 'ask'
 let joined = true // mirrors membership === 'joined' for the hot paths; session.start sets it properly
+// Hosting from inside Claude: the relay runs in the background on this PC, reached locally on HOST_URL.
+const HOST_URL = 'http://127.0.0.1:7777'
+const hostInfo = atom({ plugin: 'crew', key: 'host' } as const, { ip: '', key: '' })
+const confirmReset = atom({ plugin: 'crew', key: 'confirmReset' } as const, false) // the "are you sure?" box
 let lastTalk = 0 // when a crew message last came or went: we check in faster for a while after
 const IMAGE_TYPES: Record<string, string> = {
   png: 'image/png',
@@ -355,6 +359,7 @@ async function pollOnce($: EngineInterface) {
     if (stored >= 0 || prev.cursor > 0) await deliver($, msgs, leader)
     const cursor = Math.max(since, Number(data.cursor) || 0)
     await $.store.set(`cursor:${cfg.base}`, cursor)
+    const epoch = Number(data.chatEpoch ?? 0)
     await update($, snapshot, s => ({
       connected: true,
       error: '',
@@ -362,7 +367,9 @@ async function pollOnce($: EngineInterface) {
       leader,
       latest: s.latest ?? null,
       relayVersion: data.version ?? null,
-      feed: [...s.feed, ...msgs.filter(m => !s.feed.some(f => f.id === m.id))].slice(-100),
+      chatEpoch: epoch,
+      // someone pressed Reset chat (the relay's chat epoch moved on): start this chat over too
+      feed: (s.chatEpoch === epoch ? [...s.feed, ...msgs.filter(m => !s.feed.some(f => f.id === m.id))] : msgs).slice(-100),
       peers: data.peers ?? [],
       tasks: data.tasks ?? [],
       shared: data.shared ?? [],
@@ -550,6 +557,166 @@ function popOutPress($: EngineInterface) {
   void popOut($).then(text => $.ui.toast(`crew: ${text}`, { timeoutMs: 8000 }))
 }
 
+// -- hosting from /crew: no server window to open, the relay runs in the background on this PC
+
+function isHosting() {
+  return /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(cfg.base)
+}
+
+async function crewDir($: EngineInterface) {
+  const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '.'
+  return `${home}\\.claude\\crew-relay`
+}
+
+// The address friends use: the Radmin (26.x) or Tailscale (100.x) one if there is one, else the LAN one.
+async function lanAddress($: EngineInterface) {
+  try {
+    const r = await $.process.run(['ipconfig'], { timeoutMs: 15000 })
+    const ips = [...r.stdout.matchAll(/IPv4[^:]*:\s*([\d.]+)/g)].map(m => m[1])
+    return ips.find(ip => ip.startsWith('26.')) || ips.find(ip => ip.startsWith('100.')) || ips.find(ip => !ip.startsWith('127.')) || ''
+  } catch {
+    return ''
+  }
+}
+
+async function relayVersionAt($: EngineInterface, url: string): Promise<string | null> {
+  try {
+    const r = await $.http.fetch(`${url}/health`)
+    return r.ok ? String(JSON.parse(r.text).version ?? '?') : null
+  } catch {
+    return null
+  }
+}
+
+function newKey() {
+  const bytes = new Uint8Array(18)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+}
+
+async function readKey($: EngineInterface, path: string) {
+  try {
+    return String(await $.fs.read(path)).trim()
+  } catch {
+    return ''
+  }
+}
+
+async function hostCrew($: EngineInterface) {
+  if (!cfg.me) {
+    $.ui.toast('crew: save Your name first (type it and press Enter), then press Host a crew', { timeoutMs: 8000 })
+    return
+  }
+  const dir = await crewDir($)
+  let key = cfg.key
+  if (await relayVersionAt($, HOST_URL)) {
+    // A relay is already running here (start-relay.bat, or an earlier Host): use it, and its key if we lack one.
+    key = key || (await readKey($, `${dir}\\key.txt`)) || (await readKey($, `${$.plugin.root}\\server\\crew_key.txt`))
+    if (!key) {
+      $.ui.toast("crew: a relay is already running on this PC, but I don't know its key. Paste it into Crew key.", { timeoutMs: 10000 })
+      return
+    }
+  } else {
+    $.ui.toast('crew: starting your relay…', { timeoutMs: 4000 })
+    key = key || newKey()
+    await $.process.run(['cmd', '/c', `if not exist "${dir}" mkdir "${dir}"`], { timeoutMs: 10000 })
+    await $.fs.write(`${dir}\\key.txt`, `${key}\n`)
+    const script = `${$.plugin.root}\\server\\relay.py`
+    const relayArgs = ['--key-file', `${dir}\\key.txt`, '--data', `${dir}\\crew_state.json`]
+    for (const py of ['pythonw', 'pyw', 'python']) {
+      try {
+        const r = await $.process.run(['cmd', '/c', 'start', '""', '/min', py, script, ...relayArgs], { timeoutMs: 10000 })
+        if (r.exitCode === 0) break
+      } catch {
+        // try the next Python launcher
+      }
+    }
+    let up = false
+    for (let i = 0; i < 12 && !up; i++) {
+      await $.clock.sleep(500)
+      up = (await relayVersionAt($, HOST_URL)) !== null
+    }
+    if (!up) {
+      $.ui.toast("crew: couldn't start the relay. Is Python installed? (python.org)", { timeoutMs: 10000 })
+      return
+    }
+  }
+  await update($, hostInfo, () => ({ ip: '', key }))
+  const ip = await lanAddress($)
+  await update($, hostInfo, () => ({ ip, key }))
+  $.ui.toast(`crew: you're hosting! Press Copy invite and send it to your friends.`, { timeoutMs: 8000 })
+  // Point this plugin at its own relay. Each saved setting reloads the plugin, which then reconnects.
+  if (cfg.key !== key) await $.config.set({ key: 'crew.key', value: key })
+  if (cfg.base !== HOST_URL) await $.config.set({ key: 'crew.relayUrl', value: HOST_URL })
+}
+
+// Hosting already (say after a restart): find the address to put in the invite.
+async function refreshHostInfo($: EngineInterface) {
+  const ip = await lanAddress($)
+  await update($, hostInfo, h => ({ ip, key: h.key || cfg.key }))
+}
+
+function hostPress($: EngineInterface) {
+  void hostCrew($).catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`, { timeoutMs: 8000 }))
+}
+
+async function stopHosting($: EngineInterface) {
+  try {
+    await $.http.fetch(`${HOST_URL}/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Crew-Key': cfg.key, 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    $.ui.toast('crew: the relay is stopped. Everyone is disconnected until someone hosts again.', { timeoutMs: 8000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+  poll($).catch(() => {})
+}
+
+function stopHostingPress($: EngineInterface) {
+  void stopHosting($)
+}
+
+function invite(ip: string, key: string) {
+  return (
+    `Join my Claude crew!\n` +
+    `1. Install (once): claude plugin marketplace add Umbyzz/claude-crew, then claude plugin install crew@claude-crew, then restart Claude\n` +
+    `2. Be on the same Radmin VPN / Tailscale network as me\n` +
+    `3. In Claude: /crew > Settings, and save (press Enter in each field):\n` +
+    `   Relay URL: http://${ip || '<my IP>'}:7777\n` +
+    `   Crew key: ${key}`
+  )
+}
+
+function copyInvite($: EngineInterface, surface: any, ip: string, key: string) {
+  const text = invite(ip, key)
+  void $.ui
+    .copy({ text, surface })
+    .then(r => $.ui.toast(r.isCopied ? 'crew: invite copied! Paste it to your friends.' : `crew: send your friends this:\n${text}`, { timeoutMs: 10000 }))
+}
+
+// -- Reset chat: first a warning, then the relay wipes the chat for everyone
+
+function askReset($: EngineInterface, show: boolean) {
+  void update($, confirmReset, () => show)
+}
+
+async function resetChat($: EngineInterface) {
+  await update($, confirmReset, () => false)
+  try {
+    await relay($, 'POST', '/reset', {})
+    await poll($)
+    $.ui.toast('crew: the chat is cleared for everyone', { timeoutMs: 5000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+}
+
+function resetChatPress($: EngineInterface) {
+  void resetChat($)
+}
+
 // Turns network errors into what to actually do about them.
 function explain(msg: string) {
   if (/ECONNREFUSED|Unable to connect/i.test(msg))
@@ -716,6 +883,7 @@ export const register: Register = (on, options) => {
     }
     $.clock.every(pollMs, () => tick($))
     $.clock.every(1000, () => fastTick($))
+    if (isHosting()) void refreshHostInfo($)
     return next(e)
   })
 
@@ -883,6 +1051,8 @@ export const register: Register = (on, options) => {
     const s = await read($, snapshot)
     const showSettings = (await read($, settingsOpen)) || !configured
     const member = (await read($, membership)) || (configured ? 'joined' : '')
+    const host = await read($, hostInfo)
+    const confirming = await read($, confirmReset)
     const open = s.tasks.filter(t => t.status !== 'done')
     const names = [...new Set([...s.peers.map(p => p.name), ...(me ? [me] : [])])].sort()
     const room = Math.max(3, (e.viewport?.rows ?? 30) - (showSettings ? 24 : 14) - Math.min(open.length, 6))
@@ -907,6 +1077,18 @@ export const register: Register = (on, options) => {
             <Button key="settings" label={showSettings ? 'Hide settings' : 'Settings'} onPress={() => toggleSettings($)} />
           </Box>
         </Box>
+        {configured && isHosting() && (
+          <Box flexDirection="column" borderStyle="round" paddingX={1}>
+            <Text bold>
+              You're hosting the crew{host.ip ? ` · friends use http://${host.ip}:7777` : ''}
+            </Text>
+            {!host.ip && <Text dimColor>No Radmin/Tailscale/LAN address found yet: connect to your VPN, then press Host a crew again.</Text>}
+            <Box flexDirection="row">
+              <Button key="invite" label="Copy invite" variant="primary" onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
+              <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
+            </Box>
+          </Box>
+        )}
         {configured && member === 'ask' && (
           <Box flexDirection="column" borderStyle="round" paddingX={1}>
             <Text bold>Welcome back! You were in a crew session ({base}).</Text>
@@ -938,6 +1120,11 @@ export const register: Register = (on, options) => {
         {showSettings && (
           <Box flexDirection="column" borderStyle="round" paddingX={1}>
             <Text bold>Settings</Text>
+            <Box flexDirection="row">
+              <Text>Wanna host? </Text>
+              <Button key="host" label={isHosting() ? 'Hosting ✓' : 'Host a crew'} variant={isHosting() ? undefined : 'primary'} onPress={() => hostPress($)} />
+              <Text dimColor>  Wanna join? Paste the host's Relay URL and Crew key below.</Text>
+            </Box>
             <Text dimColor>Each field saves when you press Enter in it.</Text>
             <Text dimColor>
               Saved: relay URL {base ? '✓' : '✗'} · name {me ? '✓' : '✗'} · key {key ? '✓' : '✗'}
@@ -1037,7 +1224,23 @@ export const register: Register = (on, options) => {
             {open.slice(-6).map(t => (
               <Text>{fmtTask(t)}</Text>
             ))}
-            <Text bold>Chat</Text>
+            <Box flexDirection="row" justifyContent="space-between">
+              <Text bold>Chat</Text>
+              {joined && !confirming && <Button key="reset-chat" label="Reset chat" dimColor onPress={() => askReset($, true)} />}
+            </Box>
+            {confirming && (
+              <Box flexDirection="column" borderStyle="round" paddingX={1}>
+                <Text bold>⚠ Reset the chat for everyone?</Text>
+                <Text dimColor>
+                  This wipes the chat history on the relay and in every teammate's /crew. It can't be undone. Tasks and shared
+                  docs stay, and messages your Claudes already received stay in their conversations.
+                </Text>
+                <Box flexDirection="row">
+                  <Button key="reset-yes" label="Yes, clear it" onPress={() => resetChatPress($)} />
+                  <Button key="reset-no" label="Cancel" variant="primary" autoFocus onPress={() => askReset($, false)} />
+                </Box>
+              </Box>
+            )}
             {s.feed.length === 0 && <Text dimColor>No messages yet.</Text>}
             {s.feed.slice(-room).map(m => (
               <Text dimColor={m.kind === 'update'}>{line(m)}</Text>
