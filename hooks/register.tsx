@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.6.0'
+const VERSION = '1.6.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -3142,14 +3142,16 @@ export const register: Register = (on, options) => {
             ))}
             {rulesLines.length > 8 && <Text dimColor>…{rulesLines.length - 8} more (the {RULES_DOC} doc below has them all)</Text>}
             {Input && (
-              <Input
-                key="add-rule"
-                placeholder="Add a rule, then Enter"
-                submitLabel="add"
-                value={draft['add-rule'] ?? ''}
-                onInput={(v: string) => setDraft($, 'add-rule', v)}
-                onSubmit={(v: string) => submitted($, 'add-rule', () => addRule($, v))}
-              />
+              <Box marginTop={1} width="100%">
+                <Input
+                  key="add-rule"
+                  placeholder="Add a rule for every Claude in this project, like 'Sonnet does the UI', then Enter"
+                  submitLabel="add"
+                  value={draft['add-rule'] ?? ''}
+                  onInput={(v: string) => setDraft($, 'add-rule', v)}
+                  onSubmit={(v: string) => submitted($, 'add-rule', () => addRule($, v))}
+                />
+              </Box>
             )}
           </Card>
 
