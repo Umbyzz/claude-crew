@@ -1037,6 +1037,32 @@ test("the leader's idle Claude is woken by a teammate's Claude's request", { opt
   expect(submitted.join(' || ')).toContain('Crew request #9101 from bob:\n\nT4 done. What next?')
 })
 
+test('the Crew tab shows who is on which version, and nudges whoever is behind', { options: OPTIONS }, async ($, on) => {
+  const seen: { url: string; init: any }[] = []
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const peers = [
+    { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true, version: '9.9.9' },
+    { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false, version: '0.1.0' },
+  ]
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers }) } }
+  })
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(String(r.result)).toContain('bob: idle · crew 0.1.0 ⬆ update')
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  expect(await ui.find({ text: /v0\.1\.0 ⬆ update/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /bob \(0\.1\.0\) is behind/ } as any)).toBeDefined()
+  await ui.press({ key: 'nudge-bob' })
+  await settle()
+  await ui.unmount()
+  const body = JSON.parse(seen.find(s => s.url.endsWith('/send'))?.init.body)
+  expect(body).toMatchObject({ to: 'bob', kind: 'chat', human: true, notify: true })
+})
+
 test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {
   mock.store(on)
   on('ui.status', async () => ({ value: undefined }))

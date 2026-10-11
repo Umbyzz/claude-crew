@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.4.0'
+const VERSION = '1.4.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -286,6 +286,26 @@ function openInExplorer($: EngineInterface, path: string) {
 
 function folderPress($: EngineInterface, action: () => Promise<void>) {
   void action().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`, { timeoutMs: 6000 }))
+}
+
+// -- versions: who's on which crew version, and a nudge for whoever is behind
+
+// ✓ same as yours, ⬆ behind yours (they should update), ↑ ahead of yours (you should)
+function versionMark(v: string) {
+  return v === VERSION ? ' ✓' : newer(VERSION, v) ? ' ⬆ update' : ' ↑ newer than yours'
+}
+
+// A pinned reminder for that person (not their Claude: people's chat costs no tokens).
+function nudgeUpdate($: EngineInterface, name: string, theirs: string) {
+  void relay($, 'POST', '/send', {
+    to: name,
+    kind: 'chat',
+    human: true,
+    notify: true,
+    text: `You're on crew ${theirs}, the crew is on ${VERSION}: open /crew → ⚙ Settings → Install update, then restart Claude.`,
+  })
+    .then(() => $.ui.toast(`crew: nudged ${name} to update`, { timeoutMs: 4000 }))
+    .catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
 
 // -- kick: the leader (or the host) removes someone from the crew session, after a confirm in /crew
@@ -1975,7 +1995,8 @@ export const register: Register = (on, options) => {
     if (!s.connected) return ok(`Not connected to the relay: ${s.error || 'not set up'}`)
     const n = Math.max(1, Math.min(100, Number(e.messages) || 20))
     const peer = (p: CrewSnapshot['peers'][number]) =>
-      `${p.name}${p.leader ? ' (leader)' : ''}${p.acting ? ' (acting leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}`
+      `${p.name}${p.leader ? ' (leader)' : ''}${p.acting ? ' (acting leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}` +
+      (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '')
     const openTasks = s.tasks.filter(t => t.status !== 'done')
     const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
     const onlineNow = s.peers.filter(p => p.online).length
@@ -2724,12 +2745,31 @@ export const register: Register = (on, options) => {
                     {p.name === me ? ' (you)' : ''}
                     {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                     {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
+                    {p.version ? `  · v${p.version}${versionMark(p.version)}` : ''}
                   </Text>
-                  {canKick && p.name !== me && p.online && kicking === '' && (
-                    <Button key={`kick-${p.name}`} label="Remove" dimColor onPress={() => askKick($, p.name)} />
-                  )}
+                  <Box flexDirection="row">
+                    {p.name !== me && p.online && p.version && newer(VERSION, p.version) && (
+                      <Button key={`nudge-${p.name}`} label="Nudge" dimColor onPress={() => nudgeUpdate($, p.name, p.version ?? '')} />
+                    )}
+                    {canKick && p.name !== me && p.online && kicking === '' && (
+                      <Button key={`kick-${p.name}`} label="Remove" dimColor onPress={() => askKick($, p.name)} />
+                    )}
+                  </Box>
                 </Box>
               ))}
+              {(() => {
+                const known = s.peers.filter(p => p.online && p.version)
+                const behind = known.filter(p => newer(VERSION, p.version ?? ''))
+                if (!known.length) return null
+                return behind.length ? (
+                  <Text dimColor>
+                    {behind.map(p => `${p.name} (${p.version})`).join(', ')} {behind.length === 1 ? 'is' : 'are'} behind your v{VERSION}:
+                    Nudge pins a reminder in their /crew to press Install update.
+                  </Text>
+                ) : (
+                  <Text dimColor>Everyone online is on v{VERSION} or newer ✓</Text>
+                )
+              })()}
             </Card>
             {isHosting() && s.connected && (
               <Card title="Invite friends">
