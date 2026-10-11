@@ -223,6 +223,7 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 1.0.1
 - **Out-of-tokens detection** works from the errors Claude Code reports: a turn that fails on the usage limit or on missing credit, or a usage window reaching 100%. A brief API rate-limit hiccup can occasionally set off a false alarm. If it does, the next successful reply sends "back" on its own.
 - **The pop-out commands are Windows-only** (they use `start`). On other systems, run `python window/clawd_window.py` or `python window/crew_log.py` yourself.
 - **The windows need Python** (with its built-in tkinter) on each person's PC. The relay needs Python only on the host's PC.
+- **In a brand-new desktop chat, `/crew` may be missing from the slash menu at first.** Type `/crew` in full and press Enter: it works, and from then on the menu lists it. (The app builds a new chat's menu before plugins add their commands.)
 - **Buttons in `/crew` sometimes need a double-click** in the desktop app. It's being looked into; a second click always works.
 
 ## Safety and privacy

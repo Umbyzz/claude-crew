@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.3.1'
+const VERSION = '1.3.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1803,6 +1803,13 @@ export const register: Register = (on, options) => {
     await attempt('/crew', () => $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' }))
     await attempt('/clawds', () => $.command.register({ name: 'clawds', description: 'Open the Clawds window: your crew as little pixel friends (uses no tokens)' }))
     await attempt('/crewlog', () => $.command.register({ name: 'crewlog', description: "Open the crew log window: every crew message live, the Claudes' requests and replies too (uses no tokens)" }))
+    // A new desktop chat builds its slash menu before this hook runs: ask for the command list to be read again,
+    // so /crew can show up without typing it once in full (if the surface listens; typing it always works).
+    try {
+      $.ui.invalidate('command.describe')
+    } catch {
+      // nothing to refresh on this surface
+    }
     for (const tool of TOOLS) await attempt(tool.name, () => $.tool.register(tool))
     if (problems.length) {
       $.ui.toast(`crew: couldn't set up ${problems.length} part(s): ${problems.join(' · ')}`.slice(0, 400), { timeoutMs: 20000 })
