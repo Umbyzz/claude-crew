@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.2.0'
+const VERSION = '1.3.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -263,6 +263,25 @@ function openInExplorer($: EngineInterface, path: string) {
 
 function folderPress($: EngineInterface, action: () => Promise<void>) {
   void action().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`, { timeoutMs: 6000 }))
+}
+
+// -- kick: the leader (or the host) removes someone from the crew session, after a confirm in /crew
+
+const kickPending = atom({ plugin: 'crew', key: 'kickPending' } as const, '') // whose removal awaits a yes
+
+function askKick($: EngineInterface, name: string) {
+  void update($, kickPending, () => name)
+}
+
+async function kick($: EngineInterface, name: string) {
+  await update($, kickPending, () => '')
+  try {
+    await relay($, 'POST', '/kick', { name })
+    $.ui.toast(`crew: removed ${name} from the crew session`, { timeoutMs: 5000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+  await poll($).catch(() => {})
 }
 
 function switchProjectPress($: EngineInterface, name: string) {
@@ -639,7 +658,19 @@ async function pollOnce($: EngineInterface) {
     const role = leader === cfg.me ? ' (leader)' : ''
     $.ui.status(`crew: ${cfg.me}${role} · ${online} teammate${online === 1 ? '' : 's'} online`)
   } catch (err) {
-    const msg = explain(err instanceof Error ? err.message : String(err))
+    const raw = err instanceof Error ? err.message : String(err)
+    // Removed by the leader or host: leave (no rejoining on our own), and say so. Join session brings you back.
+    const removed = /relay 403: (you were removed from the crew session by .+)$/.exec(raw)
+    if (removed) {
+      joined = false
+      await update($, membership, () => 'left' as Membership)
+      await $.store.set(`membership:${cfg.base}`, 'left')
+      await update($, snapshot, s => ({ ...s, connected: false, error: '' }))
+      $.ui.status('crew: not in the crew session (/crew to join)')
+      $.ui.toast(`crew: ${removed[1]}. Press Join session in /crew to come back.`, { timeoutMs: 12000 })
+      return
+    }
+    const msg = explain(raw)
     failures += 1
     // Back off while the relay is unreachable: skip 1, 2, 4 ... up to 10 ticks between tries.
     skip = Math.min(10, 2 ** Math.min(failures - 1, 4))
@@ -2057,6 +2088,8 @@ export const register: Register = (on, options) => {
     const meta = await read($, docList)
     const peek = await read($, docOpen)
     const folder = await read($, folderView)
+    const kicking = await read($, kickPending)
+    const canKick = s.leader === me || isHosting() // the relay checks this too
     const docs: DocMeta[] = s.shared
       .map(n => meta.docs.find(d => d.name === n) ?? { name: n, by: '', at: 0, size: 0 })
       .sort((a, b) => b.at - a.at)
@@ -2613,15 +2646,33 @@ export const register: Register = (on, options) => {
                 />
               )}
               {s.peers.length === 0 && <Text dimColor>Nobody here yet.</Text>}
+              {kicking !== '' && (
+                <Callout>
+                  <Text bold>Remove {kicking} from the crew session?</Text>
+                  <Text dimColor>
+                    Their Claude stops getting crew messages, and they're out until they press Join session (a forgotten
+                    extra chat just drops out). Their tasks stay on the board.
+                  </Text>
+                  <Box flexDirection="row">
+                    <Button key="kick-yes" label={`Yes, remove ${kicking}`} onPress={() => void kick($, kicking)} />
+                    <Button key="kick-no" label="Cancel" variant="primary" onPress={() => askKick($, '')} />
+                  </Box>
+                </Callout>
+              )}
               {s.peers.map(p => (
-                <Text dimColor={!p.online}>
-                  {p.online ? '●' : '○'} {p.name}
-                  {p.leader ? ' ★' : ''}
-                  {p.acting ? ' ☆ acting leader' : ''}
-                  {p.name === me ? ' (you)' : ''}
-                  {activityWord(p) ? `  · ${activityWord(p)}` : ''}
-                  {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
-                </Text>
+                <Box flexDirection="row" justifyContent="space-between">
+                  <Text dimColor={!p.online}>
+                    {p.online ? '●' : '○'} {p.name}
+                    {p.leader ? ' ★' : ''}
+                    {p.acting ? ' ☆ acting leader' : ''}
+                    {p.name === me ? ' (you)' : ''}
+                    {activityWord(p) ? `  · ${activityWord(p)}` : ''}
+                    {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
+                  </Text>
+                  {canKick && p.name !== me && p.online && kicking === '' && (
+                    <Button key={`kick-${p.name}`} label="Remove" dimColor onPress={() => askKick($, p.name)} />
+                  )}
+                </Box>
               ))}
             </Card>
             {isHosting() && s.connected && (

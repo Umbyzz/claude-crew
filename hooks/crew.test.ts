@@ -957,6 +957,41 @@ test("the Project tab shows the project's folder, opens it, lists and makes subf
   expect(lines.some(l => l.includes("New-Item -ItemType Directory -Force -Path 'C:\\Games\\Lava\\levels'"))).toBe(true)
 })
 
+test('the leader can remove someone after a confirm', { options: OPTIONS }, async ($, on) => {
+  const seen = fakeRelay(on) // alice leads in POLL
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  expect(await ui.find({ key: 'kick-alice' })).toBeUndefined() // not yourself
+  await ui.press({ key: 'kick-bob' })
+  expect(await ui.find({ text: /Remove bob from the crew session\?/ } as any)).toBeDefined()
+  await ui.press({ key: 'kick-no' })
+  expect(seen.some(s => s.url.endsWith('/kick'))).toBe(false)
+  await ui.press({ key: 'kick-bob' })
+  await ui.press({ key: 'kick-yes' })
+  await settle()
+  await ui.unmount()
+  expect(JSON.parse(seen.find(s => s.url.endsWith('/kick'))?.init.body)).toEqual({ name: 'bob' })
+})
+
+test('a removed member drops out of the session and is told who removed them', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$: unknown, e: any) => {
+    toasts.push(e.text ?? e.message ?? JSON.stringify(e))
+    return { value: undefined }
+  })
+  on('http.fetch', async () => ({ value: { status: 403, ok: false, headers: {}, text: '{"error": "you were removed from the crew session by bob", "kicked": true}' } }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(toasts.join(' ')).toContain('removed from the crew session by bob')
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'join' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {
   mock.store(on)
   on('ui.status', async () => ({ value: undefined }))

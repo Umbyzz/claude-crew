@@ -46,6 +46,26 @@ def roll(*parts):
 
 
 ONE_WINDOW_PORT = 47817  # a localhost port the open window holds, so a second launch can find it
+_held = []  # keeps the single-instance mutex alive for as long as the window runs
+
+
+def one_instance(name):
+    """True if no other copy of this window is running. On Windows a named mutex decides, which (unlike a port)
+    can't be won by two launches at the same moment; elsewhere the port check alone does."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        handle = k32.CreateMutexW(None, False, f"Local\\{name}")
+        if k32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        _held.append(handle)
+    except Exception:  # noqa: BLE001 - no mutex available: fall back on the port
+        pass
+    return True
+
+
 CLOSE_AFTER = 60  # seconds after your own Claude leaves (or the relay goes away) before the window closes
 
 
@@ -2042,6 +2062,10 @@ def main():
     if not args.multi:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            if not one_instance("CrewClawdsWindow"):
+                raise OSError("already open")
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows: no second process may share the port
+                server.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             server.bind(("127.0.0.1", ONE_WINDOW_PORT))
             server.listen(4)
         except OSError:

@@ -90,6 +90,7 @@ declare module 'claude-code' {
       chatView: 'all' | 'people'
       project: string
       folder: { path: string; chosen: boolean; dirs: string[]; error: string; note: string }
+      kickPending: string
     }
   }
 }

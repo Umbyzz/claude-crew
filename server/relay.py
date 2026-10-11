@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -41,6 +41,10 @@ args = None
 # without its Claude (no tokens). Memory only, dropped after a minute.
 pings = {}
 PING_SECONDS = 60
+# Kick: name -> {"by", "until"}. For a minute the kicked plugin's check-ins are refused, so it notices and leaves
+# (it then stays out until that person presses Join session). Also clears out a forgotten second chat.
+kicked = {}
+KICK_SECONDS = 60
 
 
 def save():
@@ -323,6 +327,11 @@ class Handler(BaseHTTPRequestHandler):
             return False
         self.name = name
         self.project = project_of(self.headers)
+        k = kicked.get(name)
+        if k and time.time() < k["until"]:
+            # removed by the leader or host: this plugin drops out instead of quietly checking back in
+            self.reply(403, {"error": f"you were removed from the crew session by {k['by']}", "kicked": True})
+            return False
         if presence:
             with lock:
                 touch(name, self.headers)
@@ -456,6 +465,20 @@ class Handler(BaseHTTPRequestHandler):
                     p["left"] = True
                     announce_leave(self.name, str(b.get("why") or "left the crew session")[:80])
                     save()
+                return self.reply(200, {"ok": True})
+            if path == "/kick":  # the leader (or the host, from their own PC) removes someone from the session
+                who = str(b.get("name") or "").strip()[:40]
+                host = self.client_address[0] in ("127.0.0.1", "::1")
+                if self.name != leader_of(self.project) and not host:
+                    return self.reply(403, {"error": "only the leader or the host can remove someone"})
+                if not who or who == self.name:
+                    return self.reply(400, {"error": "name a teammate to remove (not yourself)"})
+                kicked[who] = {"by": self.name, "until": time.time() + KICK_SECONDS}
+                p = peers.get(who)
+                if p and not p.get("left"):
+                    p["left"] = True
+                    announce_leave(who, f"was removed from the crew session by {self.name}")
+                save()
                 return self.reply(200, {"ok": True})
             if path == "/reset":  # "Reset chat": wipe this project's chat for everyone (tasks and docs stay)
                 pr = self.project

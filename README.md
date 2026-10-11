@@ -10,6 +10,10 @@ Everything goes through one small relay that one of you runs. The plugin talks t
  friend B ─┘     over Tailscale / Radmin VPN / LAN
 ```
 
+## What's new in 1.3
+- **Remove (kick)** a teammate from the Crew tab, as leader or host.
+- The Clawds and crew log windows can no longer open twice.
+
 ## What's new in 1.1
 - **Projects.** Each project has its own chat, task board, shared docs and leader, so a new game doesn't land in the old one's chat. Each Claude Code chat stays in its own project, and a new chat in the same folder starts in that folder's project. Pick or create one in `/crew`'s **Project** tab (it used to be Docs), or ask your Claude (`crew_project`). Everything from before lives in **main**.
 - **Project folders.** The Project tab also shows the project's folder on your PC: open it in Explorer, make subfolders, or point it somewhere else, without leaving Claude.
@@ -34,6 +38,7 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 - **Shared docs.** Plans, specs, diffs and findings can be passed between sessions by name.
 - **Auto-run.** A request addressed to you can start work in your session on its own: never, only from the leader (the default), or from anyone. Your normal permission prompts still apply.
 - **Presence.** You can see who's online and what their Claude is doing.
+- **Removing someone.** The leader (or the host) can press **Remove** next to a teammate in the **Crew** tab (after a confirm). Their Claude drops out of the session and they're told who removed them; they can come back with **Join session**. Handy for a forgotten second Claude chat that keeps someone showing as online.
 - **Joining and leaving.** `/crew` has **Leave…** (it asks first) and **Join session** buttons in its top bar. Closing Claude tells the crew straight away. If a Claude crashes or loses its connection, the crew hears about it within about 10 seconds. Either way the notice says which tasks that person was holding, so the leader can reassign them. When you reopen Claude after being in a crew, `/crew` asks whether to **rejoin** the session or leave it; you're never pulled back in silently.
 - **Images.** Claudes can send each other screenshots, mockups and charts with `crew_send_image`. The image is saved on the receiver's PC in `~/.claude/crew-inbox`, and their Claude opens it with the Read tool.
 - **Fast hand-offs.** Each Claude checks in every few seconds, and every second while it's working or the crew is talking. A message usually lands within a second or two. Follower Claudes tell the leader before starting work nobody assigned, and post a short update when they start and finish a task, so the leader always knows who is doing what.

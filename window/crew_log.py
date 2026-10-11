@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import socket
+import sys
 import threading
 import time
 import tkinter as tk
@@ -29,6 +30,25 @@ ORANGE, AMBER, BLUE = "#D97757", "#E3B23C", "#6A9BCC"
 NAME_COLORS = ["#D97757", "#6A9BCC", "#788C5D", "#C46686", "#E3B23C", "#8E7CC3"]
 EVENTS = ("join", "leave", "update", "out", "back")
 FILTERS = (("all", "Everything"), ("claudes", "Claudes"), ("people", "People"))
+
+
+_held = []  # keeps the single-instance mutex alive for as long as the window runs
+
+
+def one_instance(name):
+    """True if no other copy of this window is running (a named mutex on Windows; elsewhere the port decides)."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        handle = k32.CreateMutexW(None, False, f"Local\\{name}")
+        if k32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        _held.append(handle)
+    except Exception:  # noqa: BLE001
+        pass
+    return True
 
 
 def load_json(path, default):
@@ -296,6 +316,10 @@ def main():
     args = p.parse_args()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        if not one_instance("CrewLogWindow"):
+            raise OSError("already open")
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows: no second process may share the port
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         server.bind(("127.0.0.1", ONE_WINDOW_PORT))
         server.listen(4)
     except OSError:
