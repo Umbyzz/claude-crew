@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.8.7'
+const VERSION = '0.8.8'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -814,8 +814,11 @@ async function readKey($: EngineInterface, path: string) {
 // (crew_key.txt) and data (crew_state.json) next to it, so it's the same relay with the same chat and tasks
 // every time. Returns true once the relay answers.
 async function startRelay($: EngineInterface): Promise<boolean> {
-  if (await relayVersionAt($, HOST_URL)) return true
-  setHostNote($, 'Starting your relay (a "Crew relay" window opens: keep it open while you host)…')
+  setHostNote($, 'Starting your relay (a "Crew relay" window opens: keep it open while you host)…') // feedback first
+  if (await relayVersionAt($, HOST_URL)) {
+    setHostNote($, '')
+    return true
+  }
   // Start-Process opens the .bat in its own console, fully detached, and returns at once. (cmd's `start`
   // lets the window inherit our output pipes, so the run never finishes and its timeout kills the relay.)
   const server = `${$.plugin.root.replace(/\//g, '\\')}\\server`
@@ -912,17 +915,21 @@ function hostPress($: EngineInterface) {
 }
 
 async function stopHosting($: EngineInterface) {
+  setHostNote($, 'Stopping your relay…') // shown at once, so one click visibly does something
   try {
     await $.http.fetch(`${HOST_URL}/shutdown`, {
       method: 'POST',
       headers: { 'X-Crew-Key': cfg.key, 'Content-Type': 'application/json' },
       body: '{}',
     })
+    // The relay answers before it stops: wait until it's really gone, so /crew flips to "not running" right away.
+    for (let i = 0; i < 10 && (await relayVersionAt($, HOST_URL)); i++) await $.clock.sleep(300)
     $.ui.toast('crew: the relay is stopped. Everyone is disconnected until someone hosts again.', { timeoutMs: 8000 })
   } catch (err) {
     $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
   }
-  poll($).catch(() => {})
+  setHostNote($, '')
+  await poll($).catch(() => {})
 }
 
 function stopHostingPress($: EngineInterface) {
@@ -1573,7 +1580,7 @@ export const register: Register = (on, options) => {
             </Text>
             {s.connected && !host.ip && <Text dimColor>No Radmin/Tailscale address found yet: connect your VPN, then press Host a crew again.</Text>}
             {!s.connected && <Text dimColor>Press Start relay in Settings below to open start-relay.bat, or join a friend's crew there instead.</Text>}
-            {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
+            {hostMsg !== '' && !showSettings && <Text dimColor>{hostMsg}</Text>}
             {s.connected && (
               <Box flexDirection="row">
                 <Button key="invite" label="Copy invite" variant="primary" onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
@@ -1601,6 +1608,7 @@ export const register: Register = (on, options) => {
                 </Box>
               )}
             </Box>
+            {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
             <Text dimColor>Or join a friend: paste their Relay URL and Crew key. Press Enter in a field to save it.</Text>
             {Input && (
               <Input key="opt-relayUrl" label="Relay URL " value={base} placeholder="http://26.x.x.x:7777" submitLabel="save" onSubmit={(v: string) => setOption($, 'relayUrl', v)} />

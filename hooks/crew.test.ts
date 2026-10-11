@@ -477,6 +477,33 @@ test("a host whose relay is down sees it, and Start relay opens start-relay.bat"
   expect((await ui.find({ key: 'host-settings' }))?.text).toContain('Hosting ✓')
   await ui.unmount()
 })
+test('one press of Stop hosting stops the relay and /crew shows it straight away', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
+  mock.store(on)
+  on('clock.sleep', async () => ({ value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  let up = true
+  let afterStop = 0 // like the real relay: it answers /shutdown first, and is gone a couple of checks later
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.endsWith('/shutdown')) {
+      afterStop = 1
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true}' } }
+    }
+    if (afterStop && afterStop++ > 2) up = false
+    if (!up) return { deny: 'ECONNREFUSED: Unable to connect' } as any
+    if (e.url.endsWith('/health')) return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true, "version": "0.8.8"}' } }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'refresh' })
+  await settle(100)
+  expect(await ui.find({ key: 'stop-host' })).toBeDefined()
+  await ui.press({ key: 'stop-host' })
+  await settle(200)
+  expect(await ui.find({ text: /relay isn't running/ } as any)).toBeDefined()
+  expect(await ui.find({ key: 'stop-host' })).toBeUndefined()
+  await ui.unmount()
+})
 test('Reset chat warns first; Cancel does nothing, Yes clears the chat for everyone', { options: OPTIONS }, async ($, on) => {
   let epoch = 0
   const posted: string[] = []
