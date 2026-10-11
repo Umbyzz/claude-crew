@@ -1,0 +1,50 @@
+{
+  "name": "crew",
+  "version": "0.2.0",
+  "description": "Link Claude Code sessions across machines: a leader, shared chat, task board and docs through a small relay.",
+  "author": { "name": "Umbyz" },
+  "license": "MIT",
+  "keywords": ["collaboration", "multi-session", "team", "relay"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "relayUrl": {
+      "type": "string",
+      "title": "Relay URL",
+      "description": "The relay's address, e.g. http://26.12.34.56:7777 (Radmin VPN) or http://100.x.y.z:7777 (Tailscale)",
+      "default": ""
+    },
+    "name": {
+      "type": "string",
+      "title": "Your name",
+      "description": "How teammates see you (unique in the crew)",
+      "default": ""
+    },
+    "key": {
+      "type": "string",
+      "title": "Crew key",
+      "description": "The shared secret the relay was started with",
+      "default": ""
+    },
+    "autoRun": {
+      "type": "string",
+      "title": "Auto-run requests",
+      "description": "Start a turn when a request addressed to you arrives: never, only from the crew leader, or from anyone. Tool permission prompts still apply.",
+      "options": ["off", "leader", "anyone"],
+      "default": "leader"
+    },
+    "toasts": {
+      "type": "string",
+      "title": "Notifications",
+      "description": "Which crew messages pop up as toasts",
+      "options": ["all", "direct", "off"],
+      "default": "all"
+    },
+    "pollSeconds": {
+      "type": "string",
+      "title": "Refresh every (seconds)",
+      "description": "How often to check the relay",
+      "options": ["2", "3", "5", "10"],
+      "default": "3"
+    }
+  }
+}

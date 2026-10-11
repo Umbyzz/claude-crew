@@ -1,0 +1,12 @@
+{
+  "name": "claude-crew",
+  "owner": { "name": "Umbyzz" },
+  "metadata": { "description": "Plugins for linking Claude Code sessions into a crew" },
+  "plugins": [
+    {
+      "name": "crew",
+      "source": "./",
+      "description": "Link Claude Code sessions across machines: a leader, shared chat, task board and docs through a small relay."
+    }
+  ]
+}

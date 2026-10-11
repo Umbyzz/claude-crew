@@ -1,0 +1,10 @@
+# relay runtime files: never commit the key or the crew's messages
+server/crew_state.json
+server/crew_key.txt
+crew_state.json
+crew_key.txt
+
+# written by Claude Code when it loads the mod
+.claude-plugin/types/
+
+__pycache__/
