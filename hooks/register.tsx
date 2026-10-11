@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.8.5'
+const VERSION = '0.8.6'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -494,6 +494,33 @@ function ask($: EngineInterface, target: string, value: string) {
     .catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
 
+// The pane's two building blocks, made once per surface's Box/Text (see the ui.render hook).
+const blockCache = new Map<any, { Section: any; Callout: any }>()
+function blocksFor(Box: any, Text: any) {
+  let made = blockCache.get(Box)
+  if (!made) blockCache.set(Box, (made = makeBlocks(Box, Text)))
+  return made
+}
+function makeBlocks(Box: any, Text: any) {
+  // A titled block: one bold heading, then its content, with a blank line above.
+  const Section = ({ title, right, children }: any) => (
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row" justifyContent="space-between">
+        <Text bold>{title}</Text>
+        {right}
+      </Box>
+      {children}
+    </Box>
+  )
+  // A notice that wants attention: framed, with its buttons underneath.
+  const Callout = ({ children }: any) => (
+    <Box flexDirection="column" borderStyle="round" paddingX={1} marginTop={1}>
+      {children}
+    </Box>
+  )
+  return { Section, Callout }
+}
+
 function setAskTo($: EngineInterface, name: string) {
   void update($, askTo, () => name)
 }
@@ -509,6 +536,8 @@ function setLeader($: EngineInterface, name: string) {
 }
 
 function setOption($: EngineInterface, field: string, value: string) {
+  // Still setting up: Settings comes up open once you're in, so you can check it all before closing it.
+  if (!cfg.configured) void update($, settingsOpen, () => true)
   void $.config
     .set({ key: `crew.${field}`, value: value.trim() })
     .then(r => $.ui.toast(r.deny ? `crew: ${r.deny}` : `crew: saved ${field}`))
@@ -836,6 +865,7 @@ async function hostCrew($: EngineInterface) {
   const ip = await lanAddress($)
   await update($, hostInfo, () => ({ ip, key }))
   setHostNote($, '')
+  await update($, settingsOpen, () => true) // shown once you're in; close it when you've had a look
   // Straight into the session: mark us joined, then point the plugin at its own relay.
   await update($, membership, () => 'joined' as Membership)
   await $.store.set(`membership:${HOST_URL}`, 'joined')
@@ -1409,22 +1439,9 @@ export const register: Register = (on, options) => {
     const activityWord = (p: CrewSnapshot['peers'][number]) =>
       !p.online ? 'offline' : p.activity === 'out' ? 'out of tokens' : p.activity === 'idle' ? '' : p.activity
 
-    // A titled block: one bold heading, then its content, with a blank line above.
-    const Section = ({ title, right, children }: any) => (
-      <Box flexDirection="column" marginTop={1}>
-        <Box flexDirection="row" justifyContent="space-between">
-          <Text bold>{title}</Text>
-          {right}
-        </Box>
-        {children}
-      </Box>
-    )
-    // A notice that wants attention: framed, with its buttons underneath.
-    const Callout = ({ children }: any) => (
-      <Box flexDirection="column" borderStyle="round" paddingX={1} marginTop={1}>
-        {children}
-      </Box>
-    )
+    // Made once and reused: a component defined fresh on every draw counts as a new kind of element, so
+    // everything inside it was rebuilt on each redraw, and a click could land on a Button already replaced.
+    const { Section, Callout } = blocksFor(Box, Text)
 
     return (
       <Box flexDirection="column">
@@ -1688,10 +1705,13 @@ export const register: Register = (on, options) => {
               {open.length > 6 && <Text dimColor>…and {open.length - 6} more (crew_status shows them all)</Text>}
             </Section>
 
-            {others.length > 0 && (
-              <Section title="Ask a Claude">
-                <Text dimColor>Talk straight to a teammate's Claude. It starts on it right away if their Auto-run allows it.</Text>
-                {Select && (
+            <Section title="Ask a Claude">
+                <Text dimColor>
+                  {others.length
+                    ? "Talk straight to a teammate's Claude. It starts on it right away if their Auto-run allows it."
+                    : "Talk straight to a teammate's Claude: it shows up here as soon as someone else joins."}
+                </Text>
+                {others.length > 0 && Select && (
                   <Select
                     key="ask-to"
                     label="To "
@@ -1700,7 +1720,7 @@ export const register: Register = (on, options) => {
                     onSelect={(v: string) => setAskTo($, v)}
                   />
                 )}
-                {Input && (
+                {others.length > 0 && Input && (
                   <Input
                     key="ask"
                     placeholder={askTarget ? `Ask ${askTarget}'s Claude…` : 'Pick whose Claude to ask'}
@@ -1709,7 +1729,6 @@ export const register: Register = (on, options) => {
                   />
                 )}
               </Section>
-            )}
 
             <Section
               title="Chat"
