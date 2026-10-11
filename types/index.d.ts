@@ -31,6 +31,8 @@ export type CrewSnapshot = {
   error: string
   cursor: number
   leader: string | null
+  latest: string | null
+  relayVersion: string | null
   feed: CrewMessage[]
   peers: CrewPeer[]
   tasks: CrewTask[]

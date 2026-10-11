@@ -19,7 +19,9 @@ function fakeRelay(on: any, seen: { url: string; init: any }[] = []) {
   on('ui.status', async () => ({ value: undefined }))
   on('http.fetch', async (_$: unknown, e: any) => {
     seen.push({ url: e.url, init: e.init })
-    const body = e.url.includes('/send')
+    const body = e.url.includes('raw.githubusercontent.com')
+      ? { version: LATEST }
+      : e.url.includes('/send')
       ? { id: 7, from: 'alice', to: 'bob', kind: 'request', text: 'review auth', at: 0 }
       : e.url.includes('/leader')
         ? { leader: JSON.parse(e.init.body).name || null }
@@ -28,6 +30,8 @@ function fakeRelay(on: any, seen: { url: string; init: any }[] = []) {
   })
   return seen
 }
+
+let LATEST = '0.3.0'
 
 const PANE = { component: 'Pane', requestId: 'crew', props: { bodyColumns: 80 }, viewport: { columns: 100, rows: 40 } } as any
 
@@ -97,4 +101,38 @@ test('without settings the pane opens on the settings block', async ($, on) => {
   expect(await ui.find({ key: 'opt-key' })).toBeDefined()
   expect(await ui.find({ key: 'leader' })).toBeUndefined()
   await ui.unmount()
+})
+
+test('a newer version on GitHub shows the update banner, the current one does not', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  LATEST = '0.3.0'
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'crew', surface, ...PANE })
+    expect(await ui.find({ key: 'update' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('the update check toasts and the pane offers the commands', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  LATEST = '9.9.9'
+  const toasts: string[] = []
+  on('ui.toast', async (_$: unknown, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  mock.clock(on)
+  on('tool.register', async () => ({ value: undefined }) as any)
+  on('command.register', async () => ({ value: undefined }) as any)
+  on('session.start', async (_$: unknown, e: any) => e)
+  await $.session.start({ source: 'startup', cwd: '/tmp' } as any)
+  // the update check runs in the background; let it land
+  await new Promise(r => setTimeout(r, 100))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'update' })).toBeDefined()
+  await ui.unmount()
+  expect(toasts.some(t => t.includes('9.9.9'))).toBe(true)
+  LATEST = '0.3.0'
 })

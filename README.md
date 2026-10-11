@@ -66,6 +66,27 @@ Run `/crew` and fill in the **Settings** block. Each field saves when you press 
 
 **Test connection** checks that the relay is reachable. After that, choose a leader from the dropdown and give the leader's Claude a goal.
 
+## Updating
+
+**Teammates.** The `/crew` pane shows **Update available** when a newer version is on GitHub. Its **Copy update commands** button copies these two commands; run them, then restart Claude:
+
+```bash
+claude plugin marketplace update claude-crew
+```
+
+```bash
+claude plugin update crew@claude-crew
+```
+
+The host only needs to update the relay when `server/relay.py` changed. To do that, pull the repo and restart `start-relay.bat`. The pane says when the relay and the plugin versions don't match.
+
+**Publishing a new version (maintainer).** After changing the code, run:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/release.ps1 0.3.1
+```
+
+The script bumps the version in `plugin.json`, `register.tsx` and `relay.py`, then validates and tests the plugin. Commit and push in GitHub Desktop. Teammates see the update notice within six hours, or the next time they start Claude.
 ## Safety
 
 - A teammate's message reaches your Claude marked as a collaborator's message, not yours. Your own instructions always win.

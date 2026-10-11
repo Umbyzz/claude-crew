@@ -4,12 +4,20 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
+// Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
+const VERSION = '0.3.0'
+const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
+const UPDATE_COMMANDS =
+  'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
+const SIX_HOURS = 6 * 60 * 60 * 1000
 
 const EMPTY: CrewSnapshot = {
   connected: false,
   error: '',
   cursor: 0,
   leader: null,
+  latest: null,
+  relayVersion: null,
   feed: [],
   peers: [],
   tasks: [],
@@ -136,6 +144,8 @@ async function poll($: EngineInterface) {
       error: '',
       cursor,
       leader,
+      latest: s.latest ?? null,
+      relayVersion: data.version ?? null,
       feed: [...s.feed, ...msgs.filter(m => !s.feed.some(f => f.id === m.id))].slice(-100),
       peers: data.peers ?? [],
       tasks: data.tasks ?? [],
@@ -191,6 +201,37 @@ function testConnection($: EngineInterface, base: string) {
     .fetch(`${base}/health`)
     .then(r => $.ui.toast(r.ok ? `crew: relay reachable (${r.text.slice(0, 60)})` : `crew: relay answered ${r.status}`))
     .catch(err => $.ui.toast(`crew: can't reach ${base}: ${err instanceof Error ? err.message : err}`))
+}
+
+// True when version a is newer than b (plain x.y.z).
+function newer(a: string | null | undefined, b: string) {
+  if (!a) return false
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0)
+  }
+  return false
+}
+
+async function checkUpdate($: EngineInterface) {
+  try {
+    const res = await $.http.fetch(LATEST_URL)
+    if (!res.ok) return
+    const latest = String(JSON.parse(res.text).version ?? '')
+    const before = await read($, snapshot)
+    await update($, snapshot, s => ({ ...s, latest }))
+    if (newer(latest, VERSION) && before.latest !== latest)
+      $.ui.toast(`crew ${latest} is out (you have ${VERSION}). Open /crew to update.`, { timeoutMs: 10000 })
+  } catch {
+    // Offline or GitHub unreachable: try again on the next check.
+  }
+}
+
+function copyUpdate($: EngineInterface, surface: any) {
+  void $.ui
+    .copy({ text: UPDATE_COMMANDS, surface })
+    .then(r => $.ui.toast(r.isCopied ? 'crew: update commands copied; run them in a terminal' : `crew: run these in a terminal:\n${UPDATE_COMMANDS}`, { timeoutMs: 12000 }))
 }
 
 function toggleSettings($: EngineInterface) {
@@ -288,6 +329,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     for (const tool of TOOLS) await $.tool.register(tool)
     await $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' })
+    void checkUpdate($)
+    $.clock.every(SIX_HOURS, () => void checkUpdate($))
     if (!configured) {
       $.ui.status('crew: not set up (/crew → Settings)')
     } else {
@@ -335,7 +378,9 @@ export const register: Register = (on, options) => {
       `${p.name}${p.leader ? ' (leader)' : ''}: ${p.online ? p.activity : 'offline'}`
     return ok(
       [
-        `You are "${me}". Leader: ${s.leader ?? 'none'}.`,
+        `You are "${me}". Leader: ${s.leader ?? 'none'}. Plugin ${VERSION}` +
+          (newer(s.latest, VERSION) ? ` (update ${s.latest} available)` : '') +
+          `, relay ${s.relayVersion ?? 'unknown'}.`,
         `Crew: ${s.peers.map(peer).join(', ') || 'nobody yet'}`,
         `Tasks:\n${s.tasks.map(fmtTask).join('\n') || '(none)'}`,
         `Shared docs: ${s.shared.join(', ') || '(none)'}`,
@@ -393,6 +438,19 @@ export const register: Register = (on, options) => {
           <Button key="settings" label={showSettings ? 'Hide settings' : 'Settings'} onPress={() => toggleSettings($)} />
         </Box>
         {s.error !== '' && <Text dimColor>{s.error}</Text>}
+        {newer(s.latest, VERSION) && (
+          <Box flexDirection="row" justifyContent="space-between">
+            <Text bold>
+              Update available: {VERSION} → {s.latest}
+            </Text>
+            <Button key="update" label="Copy update commands" onPress={() => copyUpdate($, e.surface)} />
+          </Box>
+        )}
+        {s.relayVersion && s.relayVersion !== VERSION && (
+          <Text dimColor>
+            Relay is {s.relayVersion}, plugin is {VERSION}: {newer(VERSION, s.relayVersion) ? 'the host should update the relay' : 'update this plugin'}.
+          </Text>
+        )}
 
         {showSettings && (
           <Box flexDirection="column" borderStyle="round" paddingX={1}>
