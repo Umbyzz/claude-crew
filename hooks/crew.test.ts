@@ -516,6 +516,38 @@ test('one press of Stop hosting stops the relay and /crew shows it straight away
   expect(await ui.find({ key: 'stop-host' })).toBeUndefined()
   await ui.unmount()
 })
+test('a host still running an old relay gets Restart relay, which stops it and starts the new one', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
+  mock.store(on)
+  on('clock.sleep', async () => ({ value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  let running: string | null = '0.0.1' // the old relay
+  const posted: string[] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    if (e.argv.some((a: string) => a.includes('start-relay.bat'))) running = '99.0.0'
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posted.push(e.url)
+      if (e.url.endsWith('/shutdown')) running = null
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true}' } }
+    }
+    if (!running) return { deny: 'ECONNREFUSED: Unable to connect' } as any
+    if (e.url.endsWith('/health')) return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, version: running }) } }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, version: running }) } }
+  })
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'refresh' })
+  await settle(100)
+  expect(await ui.find({ key: 'restart-relay' })).toBeDefined()
+  await ui.press({ key: 'restart-relay' })
+  await settle(300)
+  expect(posted.some(u => u.endsWith('/shutdown'))).toBe(true)
+  expect(running).toBe('99.0.0') // the new version's start-relay.bat ran
+  expect(await ui.find({ key: 'restart-relay' })).toBeUndefined()
+  await ui.unmount()
+})
 test('Reset chat warns first; Cancel does nothing, Yes clears the chat for everyone', { options: OPTIONS }, async ($, on) => {
   let epoch = 0
   const posted: string[] = []

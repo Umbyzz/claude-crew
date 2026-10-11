@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.9.6'
+const VERSION = '0.9.7'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1231,6 +1231,30 @@ function stopHostingPress($: EngineInterface) {
   void stopHosting($)
 }
 
+// After an update the old relay keeps running (Start relay sees it answering and leaves it be):
+// stop it, then start the new version's start-relay.bat. Same key and chat, since both live in ~/.claude/crew-relay.
+async function restartRelay($: EngineInterface) {
+  setHostNote($, 'Restarting your relay with the new version…')
+  try {
+    await $.http.fetch(`${HOST_URL}/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Crew-Key': cfg.key, 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+  } catch {
+    // already down: just start it
+  }
+  for (let i = 0; i < 20 && (await relayVersionAt($, HOST_URL)); i++) await $.clock.sleep(300)
+  if (await startRelay($)) {
+    await refresh($).catch(() => {})
+    $.ui.toast(`crew: relay restarted (now ${(await relayVersionAt($, HOST_URL)) ?? '?'})`, { timeoutMs: 6000 })
+  }
+}
+
+function restartRelayPress($: EngineInterface) {
+  void restartRelay($)
+}
+
 function invite(ip: string, key: string) {
   return (
     `Join my Claude crew!\n` +
@@ -1839,6 +1863,9 @@ export const register: Register = (on, options) => {
           </Box>
           <Box flexDirection="row">
             {configured && <Button key="refresh" label="↻ Refresh" onPress={() => refreshPress($)} />}
+            {/* hosting, right in the top bar: start your relay when it's down, or become the host */}
+            {configured && isHosting() && !s.connected && <Button key="start-relay-top" label="▶ Start relay" variant="primary" onPress={() => startRelayPress($)} />}
+            {configured && !isHosting() && <Button key="host-top" label="Host" onPress={() => hostPress($)} />}
             <Button key="clawds" label="Clawds" onPress={() => popOutPress($)} />
             {inSession && !leaving && <Button key="leave" label="Leave…" onPress={() => askLeave($, true)} />}
             {configured && member === 'left' && <Button key="join" label="Join session" variant="primary" onPress={() => joinPress($)} />}
@@ -1948,9 +1975,13 @@ export const register: Register = (on, options) => {
           </Callout>
         )}
         {inSession && s.relayVersion && s.relayVersion !== VERSION && (
-          <Text dimColor>
-            Relay {s.relayVersion} ≠ plugin {VERSION}: {newer(VERSION, s.relayVersion) ? 'the host should restart the relay with the new version' : 'update this plugin'}.
-          </Text>
+          <Box flexDirection="row">
+            <Text dimColor>
+              Relay {s.relayVersion} ≠ plugin {VERSION}:{' '}
+              {newer(VERSION, s.relayVersion) ? (isHosting() ? "you're still running the old relay " : 'the host should restart the relay with the new version') : 'update this plugin'}
+            </Text>
+            {isHosting() && newer(VERSION, s.relayVersion) && <Button key="restart-relay" label="Restart relay" variant="primary" onPress={() => restartRelayPress($)} />}
+          </Box>
         )}
         {configured && isHosting() && (
           <Callout>
