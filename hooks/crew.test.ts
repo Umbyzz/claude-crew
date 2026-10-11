@@ -1118,6 +1118,45 @@ test('Use a different folder… opens the Windows folder picker and uses what yo
   await ui.unmount()
 })
 
+test('Delete project asks twice, then wipes it on the relay and bins only its own folder', { options: { ...OPTIONS, name: 'alice' } }, async ($, on) => {
+  const seen: { url: string; init: any }[] = []
+  mock.store(on)
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const ran: string[] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push(e.argv.join(' '))
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, leader: 'alice' }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  expect(await ui.find({ key: 'delete-project' })).toBeUndefined() // never main
+  await ui.press({ key: 'new-project-open' })
+  await ui.press({ key: 'home-paste' })
+  await ui.input({ key: 'projects-home', text: 'C:\\Crew' })
+  await settle()
+  await ui.input({ key: 'new-project', text: 'doomed' })
+  await settle()
+  await ui.press({ key: 'delete-project' })
+  expect(await ui.find({ text: /You sure\?/ } as any)).toBeDefined()
+  await ui.press({ key: 'delete-sure' })
+  expect(await ui.find({ text: /VERY sure\?\?/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /Crew\\doomed, with everything in it, goes to your Recycle Bin/ } as any)).toBeDefined()
+  expect(seen.some(s => s.url.endsWith('/project/delete'))).toBe(false) // nothing happens before the second yes
+  await ui.press({ key: 'delete-very-sure' })
+  await settle(200)
+  await ui.unmount()
+  expect(JSON.parse(seen.find(s => s.url.endsWith('/project/delete'))?.init.body)).toEqual({ name: 'doomed' })
+  expect(ran.some(l => l.includes("SendToRecycleBin") && l.includes("'C:\\Crew\\doomed'"))).toBe(true)
+  expect(seen[seen.length - 1].init.headers['X-Crew-Project']).toBe('main') // and we're back in main
+})
+
 test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {
   mock.store(on)
   on('ui.status', async () => ({ value: undefined }))

@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.5.0'
+const VERSION = '1.5.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -344,6 +344,50 @@ function answerInvite($: EngineInterface, accept: boolean) {
   })().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
 
+// -- delete a project: two confirms; the relay forgets it for everyone, and its folder goes to the Recycle Bin
+// (only the project's own folder inside the projects home: never a folder that holds anything else)
+
+const deleteStage = atom({ plugin: 'crew', key: 'deleteStage' } as const, 0) // 0 nothing, 1 "sure?", 2 "VERY sure??"
+
+function setDeleteStage($: EngineInterface, stage: number) {
+  void update($, deleteStage, () => stage)
+}
+
+// The project's folder, if it's one crew made for it inside the projects home (so safe to bin), else ''.
+async function deletableFolder($: EngineInterface) {
+  const home = await projectsHome($)
+  const { path, chosen } = await projectFolder($)
+  if (!home || !chosen || !path) return ''
+  const inside = path.toLowerCase().startsWith(home.toLowerCase() + '\\') && path.length > home.length + 1
+  return inside ? path : ''
+}
+
+async function recycleFolder($: EngineInterface, path: string) {
+  return ran($, ['powershell', '-NoProfile', '-Command',
+    `Add-Type -AssemblyName Microsoft.VisualBasic; ` +
+    `[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(${psPath(path)}, 'OnlyErrorDialogs', 'SendToRecycleBin')`], 120000)
+}
+
+async function deleteProject($: EngineInterface) {
+  setDeleteStage($, 0)
+  const name = projectName
+  if (name === 'main') return
+  const folder = await deletableFolder($)
+  await relay($, 'POST', '/project/delete', { name })
+  let note = ''
+  if (folder) {
+    const r = await recycleFolder($, folder)
+    note = r.ok ? ` Its folder ${shortPath(folder)} is in the Recycle Bin.` : ` Couldn't bin its folder: ${r.out.slice(0, 120)}`
+  }
+  await $.store.set(`folder:${cfg.base}:${name}`, '')
+  await switchProject($, 'main')
+  $.ui.toast(`crew: deleted the project "${name}".${note}`, { timeoutMs: 12000 })
+}
+
+function deleteProjectPress($: EngineInterface) {
+  void deleteProject($).catch(err => $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
+}
+
 function copyPath($: EngineInterface, surface: any, path: string) {
   void $.ui
     .copy({ text: path, surface })
@@ -673,6 +717,13 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
       await update($, pins, list => [...list, { id: m.id, from: m.from, text: m.text, at: m.at }].slice(-3))
     } else if (cfg.toasts === 'all' || (cfg.toasts === 'direct' && important))
       $.ui.toast(toast.slice(0, 300), { timeoutMs: m.kind === 'out' || m.kind === 'leave' ? 10000 : 6000 })
+    if (m.kind === 'deleted') {
+      if (m.deleted === projectName && m.from !== cfg.me) {
+        void switchProject($, 'main').catch(() => {})
+        $.ui.toast(`crew: ${m.from} deleted the project "${m.deleted}", so you're back in main.`, { timeoutMs: 10000 })
+      }
+      continue
+    }
     if (m.kind === 'invite') {
       if (m.invite && m.invite !== projectName) await update($, inviteAtom, () => ({ from: m.from, project: m.invite ?? '' }))
       continue
@@ -933,7 +984,7 @@ function receipt(m: CrewMessage, s: CrewSnapshot, me: string) {
   return `read by ${readers.join(', ')} (${to.length - readers.length} not yet)`
 }
 
-const SYSTEM_KINDS = new Set<CrewMessage['kind']>(['join', 'leave', 'update', 'out', 'back'])
+const SYSTEM_KINDS = new Set<CrewMessage['kind']>(['join', 'leave', 'update', 'out', 'back', 'invite', 'deleted'])
 const GROUP_GAP = 5 * 60 // seconds: a pause this long starts a new bubble, even from the same sender
 
 type ChatItem =
@@ -947,7 +998,8 @@ function hhmm(at: number) {
 }
 
 function eventText(m: CrewMessage) {
-  return m.kind === 'update' ? `${m.from} ${m.text}` : m.text // joins, leaves and out/back already name who
+  // joins, leaves and out/back already name who; updates, invites and deletions say what someone did
+  return m.kind === 'update' || m.kind === 'invite' || m.kind === 'deleted' ? `${m.from} ${m.text}` : m.text
 }
 
 function bubbleText(m: CrewMessage) {
@@ -1657,7 +1709,7 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
   const data = await relay($, 'GET', '/poll?since=0')
   const tasks: CrewTask[] = (data.tasks ?? []).filter((t: CrewTask) => t.status !== 'done')
   // people's /crew chat stays out of the briefing too, like it stays out of live delivery
-  const all: CrewMessage[] = (data.messages ?? []).filter((m: CrewMessage) => m.kind !== 'join' && m.kind !== 'leave' && m.kind !== 'invite' && !(m.human && m.kind === 'chat'))
+  const all: CrewMessage[] = (data.messages ?? []).filter((m: CrewMessage) => !['join', 'leave', 'invite', 'deleted'].includes(m.kind) && !(m.human && m.kind === 'chat'))
   // Back after a break: only what happened since we last looked. First time here: the recent history.
   const fresh = lastSeen > 0 ? all.filter(m => m.id > lastSeen) : all
   const msgs = fresh.slice(-30)
@@ -2243,6 +2295,8 @@ export const register: Register = (on, options) => {
     const home = configured ? await projectsHome($) : ''
     const folderMode = await read($, folderModeAtom)
     const invite = await read($, inviteAtom)
+    const deleting = await read($, deleteStage)
+    const binnable = deleting > 0 ? await deletableFolder($) : ''
     const elsewhere = s.peers.filter(p => p.online && p.name !== me && (p.project ?? 'main') !== projectName).map(p => p.name)
     const projectNames = [...new Set(['main', projectName, ...(s.projects ?? []).map(p => p.name)])]
     const here = s.peers.filter(p => p.online && (p.project ?? 'main') === projectName).map(p => p.name)
@@ -2814,6 +2868,40 @@ export const register: Register = (on, options) => {
                   </Box>
                 )}
               </Box>
+
+              {/* -- delete: its leader or the host, never main, and only after two confirms */}
+              {projectName !== 'main' && (s.leader === me || isHosting()) && deleting === 0 && (
+                <Box flexDirection="row" justifyContent="flex-end" marginTop={1}>
+                  <Button key="delete-project" label="Delete project…" dimColor onPress={() => setDeleteStage($, 1)} />
+                </Box>
+              )}
+              {deleting === 1 && (
+                <Callout>
+                  <Text bold>Delete "{projectName}"? You sure?</Text>
+                  <Text dimColor>This wipes its chat, tasks, docs and leader on the relay, for the whole crew. Everyone in it goes back to main.</Text>
+                  <Box flexDirection="row">
+                    <Button key="delete-sure" label="Yes, I'm sure…" onPress={() => setDeleteStage($, 2)} />
+                    <Button key="delete-cancel" label="Cancel" variant="primary" onPress={() => setDeleteStage($, 0)} />
+                  </Box>
+                </Callout>
+              )}
+              {deleting === 2 && (
+                <Callout>
+                  <Text bold color="error">VERY sure?? This can't be undone on the relay.</Text>
+                  {binnable ? (
+                    <Text>Its folder {shortPath(binnable)}, with everything in it, goes to your Recycle Bin (only on this PC; restore it from there if you change your mind).</Text>
+                  ) : (
+                    <Text dimColor>
+                      {folder.path ? `Your folder ${shortPath(folder.path)} is left alone: only a folder crew made for this project inside your projects home gets binned.` : 'There is no project folder on this PC to remove.'}
+                    </Text>
+                  )}
+                  <Text dimColor>Teammates' copies on their own PCs stay where they are.</Text>
+                  <Box flexDirection="row">
+                    <Button key="delete-very-sure" label={`Delete "${projectName}" for good`} onPress={() => deleteProjectPress($)} />
+                    <Button key="delete-cancel-2" label="No, keep it" variant="primary" onPress={() => setDeleteStage($, 0)} />
+                  </Box>
+                </Callout>
+              )}
             </Card>
 
           <Card title={`Shared docs${docs.length ? ` (${docs.length})` : ''}`}>

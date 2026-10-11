@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -79,7 +79,7 @@ def project_of(headers_or_value):
     return name or MAIN
 
 
-CREW_WIDE = ("join", "leave", "out", "back", "invite")  # about a person (or asking people over): every project shows them
+CREW_WIDE = ("join", "leave", "out", "back", "invite", "deleted")  # about a person (or asking people over): every project shows them
 
 
 def in_project(m, project):
@@ -123,6 +123,7 @@ def projects_list(now):
         | {v.get("project", MAIN) for v in state["shared"].values()} \
         | {m["project"] for m in state["messages"] if m.get("project")} \
         | {p.get("project", MAIN) for p in peers.values()}
+    names -= set(state.get("deleted", {}))
     out = []
     for n in sorted(names, key=lambda x: (x != MAIN, x.lower())):
         out.append({"name": n, "leader": leader_of(n),
@@ -286,6 +287,7 @@ def post_message(sender, to, text, kind, project=None, **extra):
            "text": text[:MAX_TEXT], "at": round(time.time(), 3), **extra}
     if kind not in CREW_WIDE:
         msg["project"] = project or MAIN
+        state.get("deleted", {}).pop(msg["project"], None)
     state["messages"].append(msg)
     del state["messages"][:-MAX_MESSAGES]
     arrived.notify_all()  # callers hold the lock, so anyone in /wait wakes up
@@ -465,6 +467,23 @@ class Handler(BaseHTTPRequestHandler):
                     p["left"] = True
                     announce_leave(self.name, str(b.get("why") or "left the crew session")[:80])
                     save()
+                return self.reply(200, {"ok": True})
+            if path == "/project/delete":  # its leader (or the host) wipes a project: chat, tasks, docs, leader
+                pr = project_of(b.get("name"))
+                host = self.client_address[0] in ("127.0.0.1", "::1")
+                if pr == MAIN:
+                    return self.reply(400, {"error": "main can't be deleted"})
+                if self.name != leader_of(pr) and not host:
+                    return self.reply(403, {"error": f"only the leader of {pr} or the host can delete it"})
+                state["messages"] = [m for m in state["messages"] if m.get("project") != pr]
+                state["tasks"] = [t for t in state["tasks"] if t.get("project", MAIN) != pr]
+                state["shared"] = {k: v for k, v in state["shared"].items() if v.get("project", MAIN) != pr}
+                state.setdefault("leaders", {}).pop(pr, None)
+                state.setdefault("epochs", {}).pop(pr, None)
+                acting.pop(pr, None)
+                state.setdefault("deleted", {})[pr] = {"by": self.name, "at": time.time()}
+                post_message(self.name, "all", f'deleted the project "{pr}"', "deleted", deleted=pr)
+                save()
                 return self.reply(200, {"ok": True})
             if path == "/kick":  # the leader (or the host, from their own PC) removes someone from the session
                 who = str(b.get("name") or "").strip()[:40]

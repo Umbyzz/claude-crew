@@ -2,7 +2,8 @@ export type CrewMessage = {
   id: number
   from: string
   to: string
-  kind: 'chat' | 'request' | 'update' | 'out' | 'back' | 'join' | 'leave' | 'image' | 'invite'
+  kind: 'chat' | 'request' | 'update' | 'out' | 'back' | 'join' | 'leave' | 'image' | 'invite' | 'deleted'
+  deleted?: string // kind 'deleted': the project that was deleted
   invite?: string // kind 'invite': the project the sender asks people into
   text: string
   at: number
@@ -95,6 +96,7 @@ declare module 'claude-code' {
       kickPending: string
       folderMode: '' | 'new' | 'home' | 'sub' | 'change'
       invite: { from: string; project: string }
+      deleteStage: number
     }
   }
 }
