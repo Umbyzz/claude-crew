@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.8.3'
+const VERSION = '0.8.4'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -569,7 +569,9 @@ async function findClaude($: EngineInterface): Promise<string[] | null> {
     // not on PATH
   }
   try {
-    const r = await $.process.run(['cmd', '/c', 'dir /s /b "%APPDATA%\\Claude\\claude-code\\claude.exe"'], { timeoutMs: 20000 })
+    // where /r takes the folder as its own argument, so there are no nested quotes for cmd to mangle
+    const appData = (await $.env.get('APPDATA')) || `${(await $.env.get('USERPROFILE')) || ''}\\AppData\\Roaming`
+    const r = await $.process.run(['where', '/r', `${appData}\\Claude\\claude-code`, 'claude.exe'], { timeoutMs: 20000 })
     const versionOf = (p: string) => p.match(/claude-code\\(\d+\.\d+\.\d+)/)?.[1] ?? '0.0.0'
     const found = r.stdout
       .split(/\r?\n/)
