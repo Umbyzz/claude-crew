@@ -59,7 +59,8 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 **The Clawds window** is a small frameless window that stays on top of your desktop while everyone works. It pops out on its own when you open `/crew`. You can switch that off in Settings, and bring the window back any time with `/clawds`, the **Clawds** button in `/crew`, or by double-clicking `window/Clawds.bat`. Only one window ever runs: opening it again brings the existing one to the front.
   - Drag it anywhere.
   - Click **◉ pinned** on the stage to toggle always-on-top, and **✕** to close it.
-  - Right-click for **Pin on top**, **Size** (small, medium or large) and **Party!**.
+  - Right-click for **Pin on top**, **Size** (small, medium or large), **Party!** and **Keep open after I leave**.
+  - When your own Claude leaves the crew (or the relay goes away), the Clawds make their exits and the window closes itself a minute later, with a countdown on the stage. Tick **Keep open after I leave** to watch the crew without being in it.
   - Click a Clawd to poke it: it hops and tells you what it's doing.
   - It remembers where you left it, its size and pin setting in `~/.claude/crew-clawds.json`.
   - **Everyone sees the same show.** Every crew member's window runs on the relay's clock and rolls the same dice from the same shared facts. So the idle moves, over-the-top moments, poses, huddles, meetups and arrival/departure trips happen the same way at the same moment on every screen.

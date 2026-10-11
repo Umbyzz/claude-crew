@@ -46,6 +46,21 @@ def roll(*parts):
 
 
 ONE_WINDOW_PORT = 47817  # a localhost port the open window holds, so a second launch can find it
+CLOSE_AFTER = 60  # seconds after your own Claude leaves (or the relay goes away) before the window closes
+
+
+def friendly(err):
+    """The relay's error, in words instead of a Python traceback line."""
+    e = err.lower()
+    if "10061" in e or "refused" in e or "no connection could be made" in e:
+        return "relay offline, waiting for it to come back"
+    if "timed out" in e or "10060" in e:
+        return "relay not answering"
+    if "401" in e:
+        return "wrong crew key (check /crew Settings)"
+    if "getaddrinfo" in e or "11001" in e:
+        return "can't find the relay's address"
+    return err
 DRAMA = 0.2  # the chance that anything a Clawd does is the WAY over-the-top version
 TRIPS = ("car", "teleport", "superman", "door", "bird")  # ways to arrive and leave
 FORCE_TRIP = None  # --trip picks one, for trying them out
@@ -1743,6 +1758,10 @@ class App:
             sizes.add_command(label=s.capitalize(), command=lambda s=s: self.resize(s))
         self.menu.add_cascade(label="Size", menu=sizes)
         self.menu.add_command(label="Party!", command=self.party)
+        # Closes itself a minute after your Claude leaves the crew, unless you tick this
+        self.seen_me, self.away_since = False, None
+        self.keep_var = tk.BooleanVar(value=False)
+        self.menu.add_checkbutton(label="Keep open after I leave", variable=self.keep_var)
         self.menu.add_separator()
         self.menu.add_command(label="Close the Clawds", command=self.quit)
         self.canvas.bind("<ButtonPress-1>", self.press)
@@ -1856,8 +1875,26 @@ class App:
         snap, err = self.feed.read()
         self.world.sync(snap, self.me)
         self.world.step(dt)
+        if self.closing_in(snap, err, now) == 0:
+            return self.quit()
         self.draw(snap, err, clock())
         self.root.after(int(1000 / FPS), self.tick)
+
+    def closing_in(self, snap, err, now):
+        """Once your own Claude has left the crew (or the relay is gone) for a while, the show's over: the
+        Clawds get CLOSE_AFTER seconds to make their exits, then the window closes. Seconds left, or None."""
+        if self.demo or self.keep_var.get():
+            return None
+        me = next((x for x in (snap or {}).get("peers", []) if x.get("name") == self.me), None)
+        here = not err and me is not None and me.get("online")
+        if here:
+            self.seen_me, self.away_since = True, None
+            return None
+        if not self.seen_me:
+            return None  # your Claude hasn't been here yet (say, the relay is still starting): nothing to end
+        if self.away_since is None:
+            self.away_since = now
+        return max(0, int(CLOSE_AFTER - (now - self.away_since)))
 
     def draw(self, snap, err, now):
         cv, p = self.canvas, self.px
@@ -1896,9 +1933,12 @@ class App:
         if self.demo:
             info = "demo crew · set up /crew to see your own"
         elif err:
-            info = f"○ {host} · {err}"
+            info = f"○ {host} · {friendly(err)}"
         else:
             info = f"● {host} · leader {leader} · {online} online"
+        left = self.closing_in(snap, err, time.time())
+        if left is not None:
+            info += f" · closing in {left}s (right-click to keep it)"
         cv.create_text(p * 2.5, (self.rows - 2.6) * p, text=info, anchor="w", fill=DIM,
                        font=("Segoe UI", max(6, int(p * 1.35))))
         cv.create_text(w - p * 11, (self.rows - 2.6) * p, text="◉ pinned" if self.pinned else "○ pin",
