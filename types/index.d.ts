@@ -30,6 +30,7 @@ export type CrewPeer = {
   acting?: boolean // standing in for the leader while they're away
   project?: string // the crew project their Claude is working in
   version?: string | null // their crew plugin version, as their last check-in said
+  model?: string | null // the model their Claude runs (the leader splits work by it)
 }
 
 export type CrewTask = {

@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.5.5'
+const VERSION = '1.6.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -87,6 +87,7 @@ type Config = {
   configured: boolean
 }
 let cfg: Config = { base: '', me: '', key: '', autoRun: 'leader', toasts: 'all', pollMs: 3000, configured: false }
+let modelName = '' // this session's model, as /model shows it: the leader's Claude splits work by the crew's models
 let inflight: Promise<void> | null = null
 let delivering: Promise<void> = Promise.resolve() // crew messages being handed to Claude, one batch after another
 let skipDelivery = false // while (re)joining: the backlog goes into one catch-up instead of one message each
@@ -141,6 +142,7 @@ async function relay($: EngineInterface, method: 'GET' | 'POST', path: string, b
       'X-Crew-Subagents': String(subagents),
       'X-Crew-Chat-To': chatUntil > Date.now() ? chatTo : '',
       'X-Crew-Version': VERSION,
+      'X-Crew-Model': modelName,
       'X-Crew-Project': projectName,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -692,13 +694,121 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
   return `${common}\n\nThere is no crew leader right now: coordinate as peers through the task board.`
 }
 
+async function refreshModel($: EngineInterface) {
+  try {
+    modelName = String(await $.session.model()).slice(0, 60)
+  } catch {}
+}
+
+// "claude-opus-5-5" reads as "Opus 5.5"; anything else as it is.
+function modelLabel(m: string) {
+  const x = /(opus|sonnet|haiku|fable)[- ]?(\d+)(?:[-.](\d+))?/i.exec(m)
+  return x ? `${x[1][0].toUpperCase()}${x[1].slice(1).toLowerCase()} ${x[2]}${x[3] ? `.${x[3]}` : ''}` : m.slice(0, 30)
+}
+
+// The project's house rules: a shared doc the crew writes, which every Claude in the project follows.
+const RULES_DOC = 'crew-rules'
+let rules = { project: '', text: '', checked: 0 }
+
+async function syncRules($: EngineInterface, names: string[], changed: boolean) {
+  if (!names.includes(RULES_DOC)) {
+    rules = { project: projectName, text: '', checked: 0 }
+    return
+  }
+  if (!changed && rules.project === projectName && Date.now() - rules.checked < 60000) return
+  const asked = projectName
+  rules = { ...rules, checked: Date.now() }
+  const d = await relay($, 'GET', `/shared?name=${encodeURIComponent(RULES_DOC)}`)
+  if (projectName === asked) rules = { project: asked, text: String(d.content ?? '').trim().slice(0, 2000), checked: Date.now() }
+}
+
+async function addRule($: EngineInterface, value: string) {
+  const text = value.trim()
+  if (!text) return
+  try {
+    let current = ''
+    try {
+      current = String((await relay($, 'GET', `/shared?name=${encodeURIComponent(RULES_DOC)}`)).content ?? '').trim()
+    } catch {} // no rules yet
+    const content = `${current ? `${current}\n` : ''}- ${text}`
+    await relay($, 'POST', '/shared', { name: RULES_DOC, content })
+    rules = { project: projectName, text: content.slice(0, 2000), checked: Date.now() }
+    docsKey = null
+    await poll($)
+    $.ui.toast('crew: rule added. Every Claude in this project follows it from its next turn.', { timeoutMs: 6000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+}
+
+// What every Claude's instructions get on top of its role: who runs which model, and the project's house rules.
+function crewExtras(s: CrewSnapshot) {
+  let text = ''
+  const team = s.peers.filter(p => p.online || p.name === cfg.me)
+  if (team.length > 1 && team.some(p => p.model)) {
+    const leading = s.leader === cfg.me || s.acting === cfg.me
+    text +=
+      `\n\nThe crew's models right now: ${team.map(p => `${p.name === cfg.me ? 'you' : p.name} (${p.model ? modelLabel(p.model) : 'unknown'})`).join(', ')}. ` +
+      (leading
+        ? `Play to strengths: before splitting a bigger goal, propose who takes what in one crew_send and let teammates say ` +
+          `if another split suits them better (their person's wishes win). Rule of thumb: the most capable models (like Opus) ` +
+          `take the heavy or tricky coding, architecture and reviews; quicker ones (like Sonnet) take ideas, design, UI and ` +
+          `straightforward building; the lightest (like Haiku) take small, well-defined chores, tests and docs. Take your own share by the same rule.`
+        : `The leader splits work by these. If a task would clearly fit another teammate's model (or yours) better, say so in one line.`)
+  }
+  text +=
+    rules.text && rules.project === projectName
+      ? `\n\nHouse rules for this crew project (the "${RULES_DOC}" shared doc, written by the crew). Follow them over the defaults above; your own user still wins:\n${rules.text}`
+      : `\n\n(House rules for the crew go in a shared doc named "${RULES_DOC}", one "- rule" per line; none set yet.)`
+  return text
+}
+
+// The loop brake: Claudes waking each other can ping-pong for hours while their people are away. Past LOOP_LIMIT
+// Claude-sent requests starting turns here within LOOP_WINDOW, nobody having typed, they stop starting turns (they
+// still land in the conversation) until this Claude's person types something.
+const LOOP_LIMIT = 8
+const LOOP_WINDOW = 10 * 60 * 1000
+let wakes: number[] = []
+let braked = false
+const autoPrompts = new Set<string>() // prompts the plugin started, to tell them from typed ones
+
+function autoSubmit($: EngineInterface, p: { text: string }) {
+  autoPrompts.add(p.text)
+  return $.prompt.submit(p)
+}
+
+async function loopBrake($: EngineInterface, m: CrewMessage) {
+  if (m.human) return false // a person asking is never a loop
+  const now = Date.now()
+  wakes = wakes.filter(t => now - t < LOOP_WINDOW)
+  if (wakes.length < LOOP_LIMIT) {
+    wakes.push(now)
+    return false
+  }
+  if (!braked) {
+    braked = true
+    const text =
+      `Paused crew auto-run: ${LOOP_LIMIT} requests from other Claudes started turns here within ${LOOP_WINDOW / 60000} minutes ` +
+      `with nobody typing. Type anything in this chat to resume.`
+    $.ui.toast(`crew: ${text}`, { timeoutMs: 15000 })
+    await update($, pins, list => [...list, { id: m.id, from: 'crew', text, at: now / 1000 }].slice(-3))
+    void relay($, 'POST', '/send', {
+      to: m.from,
+      kind: 'update',
+      text:
+        `(auto) ${cfg.me}'s Claude paused auto-run (loop brake: a lot of back-and-forth with nobody at the keyboard). ` +
+        `Your request is in its conversation and gets picked up once ${cfg.me} is back, so there's no need to resend.`,
+    }).catch(() => {})
+  }
+  return true
+}
+
 async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string | null, actingLeader: string | null = null) {
   for (const m of msgs) {
     // We were acting leader and the true leader is back: this Claude briefs them, so nothing gets lost in between.
     // (Queued even mid-turn: it's its own job, so it runs once Claude is free, never twice.)
     if (m.from === cfg.me && m.kind === 'update' && m.handover && cfg.autoRun !== 'off') {
-      void $.prompt
-        .submit({
+      void autoSubmit($, {
           text:
             `${m.handover} is back, so you've handed leadership back. Send ${m.handover} a short handover with crew_send: ` +
             `what got done while they were away, decisions you made, open questions, and what's next. Keep it brief.`,
@@ -776,18 +886,16 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
     // waiting on it would hold up the check-ins, and the relay would think we'd dropped off.
     // Only an idle Claude needs a prompt to start on it: a busy one reads the request in its current turn,
     // and a queued prompt would then run it a second time once it goes idle.
-    if (direct && m.kind === 'request' && trusted && !working) {
+    if (direct && m.kind === 'request' && trusted && !working && !(await loopBrake($, m))) {
       queuedRequests.set(m.id, m.from)
-      void $.prompt
-        .submit({
+      void autoSubmit($, {
           text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : m.from === actingLeader ? ` (acting leader while ${leader} is away)` : ''}${m.human ? ', typed by them in /crew' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
         })
         .catch(() => {})
     }
     // The leader re-plans as soon as a teammate runs dry, even from idle; everyone else reacts on their next turn.
     if (m.kind === 'out' && leader === cfg.me && cfg.autoRun !== 'off') {
-      void $.prompt
-        .submit({
+      void autoSubmit($, {
           text: `${m.from} just ran out of tokens: ${m.text}\n\nFollow the crew note above: say the line, then re-plan their tasks for the crew.`,
         })
         .catch(() => {})
@@ -843,6 +951,7 @@ async function pollOnce($: EngineInterface) {
     }))
     // a doc shared again under the same name keeps the list the same, but who/when/size change
     syncDocs($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.startsWith('shared doc ')))
+    void syncRules($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.includes(`doc '${RULES_DOC}'`))).catch(() => {})
     failures = 0
     const online = (data.peers ?? []).filter((p: any) => p.online && p.name !== cfg.me).length
     const role = leader === cfg.me ? ' (leader)' : ''
@@ -2008,6 +2117,7 @@ export const register: Register = (on, options) => {
         problems.push(`${what}: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
+    void refreshModel($)
     await attempt('/crew', () => $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' }))
     await attempt('/clawds', () => $.command.register({ name: 'clawds', description: 'Open the Clawds window: your crew as little pixel friends (uses no tokens)' }))
     await attempt('/crewlog', () => $.command.register({ name: 'crewlog', description: "Open the crew log window: every crew message live, the Claudes' requests and replies too (uses no tokens)" }))
@@ -2074,6 +2184,7 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     working = true
+    void refreshModel($) // /model may have switched it
     phase = 'thinking'
     bump($)
     return next(e)
@@ -2095,6 +2206,10 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     // A queued crew request that Claude already answered in the meantime doesn't run again.
     const req = /^Crew request #(\d+) from /.exec(e.text)
+    if (!autoPrompts.delete(e.text)) {
+      wakes = [] // the person typed: the loop brake resets
+      braked = false
+    }
     if (req && answeredRequests.has(Number(req[1]))) {
       queuedRequests.delete(Number(req[1]))
       return { drop: `crew: skipped request #${req[1]}, it was already answered` }
@@ -2144,7 +2259,7 @@ export const register: Register = (on, options) => {
     const composed = await next(e)
     if (!configured || !joined) return composed
     const s = await read($, snapshot)
-    return { sections: [...composed.sections, { id: 'crew:role', text: roleText(s.leader, s.peers, s.acting ?? null), scope: 'session' as const }] }
+    return { sections: [...composed.sections, { id: 'crew:role', text: roleText(s.leader, s.peers, s.acting ?? null) + crewExtras(s), scope: 'session' as const }] }
   })
 
   on('command.run', { command: 'crew' }, async $ => {
@@ -2182,7 +2297,8 @@ export const register: Register = (on, options) => {
     const n = Math.max(1, Math.min(100, Number(e.messages) || 20))
     const peer = (p: CrewSnapshot['peers'][number]) =>
       `${p.name}${p.leader ? ' (leader)' : ''}${p.acting ? ' (acting leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}` +
-      (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '')
+      (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '') +
+      (p.model ? ` · ${modelLabel(p.model)}` : '')
     const openTasks = s.tasks.filter(t => t.status !== 'done')
     const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
     const onlineNow = s.peers.filter(p => p.online).length
@@ -2346,6 +2462,7 @@ export const register: Register = (on, options) => {
     const invite = await read($, inviteAtom)
     const deletingDoc = await read($, docDeleting)
     const draft = await read($, drafts)
+    const rulesLines = rules.project === projectName ? rules.text.split('\n').filter(l => l.trim()) : []
     const showTip = configured && !(await read($, tipSeen)) && !(await $.store.get('tip:doubleClick'))
     const deleting = await read($, deleteStage)
     const menuOpen = await read($, projectMenu)
@@ -3016,6 +3133,26 @@ export const register: Register = (on, options) => {
               })}
             </Card>
 
+          <Card title="House rules">
+            {rulesLines.length === 0 && (
+              <Text dimColor>None yet. Every Claude in this project follows these, like "Pluh does the art" or "ask before touching main".</Text>
+            )}
+            {rulesLines.slice(0, 8).map(l => (
+              <Text wrap="truncate-end">{l}</Text>
+            ))}
+            {rulesLines.length > 8 && <Text dimColor>…{rulesLines.length - 8} more (the {RULES_DOC} doc below has them all)</Text>}
+            {Input && (
+              <Input
+                key="add-rule"
+                placeholder="Add a rule, then Enter"
+                submitLabel="add"
+                value={draft['add-rule'] ?? ''}
+                onInput={(v: string) => setDraft($, 'add-rule', v)}
+                onSubmit={(v: string) => submitted($, 'add-rule', () => addRule($, v))}
+              />
+            )}
+          </Card>
+
           <Card title={`Shared docs${docs.length ? ` (${docs.length})` : ''}`}>
             {docs.length === 0 && <Text dimColor>None yet. Claudes share plans, findings and patches here with crew_share.</Text>}
             {docs.slice(0, Math.min(docRows, 5)).map(d => (
@@ -3098,6 +3235,7 @@ export const register: Register = (on, options) => {
                     {p.name === me ? ' (you)' : ''}
                     {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                     {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
+                    {p.model ? `  · ${modelLabel(p.model)}` : ''}
                     {p.version ? `  · v${p.version}${versionMark(p.version)}` : ''}
                   </Text>
                   <Box flexDirection="row">

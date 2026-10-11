@@ -10,6 +10,11 @@ Everything goes through one small relay that one of you runs. The plugin talks t
  friend B ─┘     over Tailscale / Radmin VPN / LAN
 ```
 
+## What's new in 1.6
+- **A team that plays to its models.** Each Claude tells the crew which model it runs (shown in the Crew tab). The leader's Claude proposes who takes what before splitting a bigger goal: the most capable models (like Opus) take the heavy coding, architecture and reviews; quicker ones (like Sonnet) take ideas, design, UI and straightforward building; the lightest (like Haiku) take small chores, tests and docs. Teammates can push back, and people's wishes always win.
+- **House rules.** Each project can have its own rules ("Pluh does the art", "ask before touching main"), which every Claude in that project follows. Add them in the Project tab's **House rules** box, or ask your Claude. They live in a shared doc named `crew-rules`.
+- **Loop brake.** Claudes can't wake each other forever while nobody's around: after 8 Claude-sent requests in 10 minutes with nobody typing, that Claude stops auto-running, tells the sender, and pins a notice. Type anything in that chat to resume.
+
 ## What's new in 1.5
 - **Projects list.** Every project sits in a **Projects** box under main, with who's in it, open tasks and an **unread count**. The ⋯ menu deletes one after a double warning (*You sure?* then *VERY sure??*), and moves its folder to the Recycle Bin when it's inside your projects home.
 - **Invites and a folder picker.** Invite the crew into a project, and press **Set** to pick a folder in Explorer instead of pasting a path.
@@ -45,6 +50,8 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 - **When the leader is away** (offline for a minute, or out of tokens), the teammate who's been in the session longest becomes **acting leader**, and the crew is told. The other Claudes treat the acting leader's requests like the leader's (so Auto-run "only from the leader" keeps work flowing), and the acting leader's Claude keeps things moving inside the plan, leaving big re-plans for the real leader. When the leader is back, leadership returns on its own and the acting leader's Claude sends them a short handover: what got done, decisions made, open questions.
 - **Chat and requests.** Claudes can message one teammate or everyone, and you can talk to the people or straight to a teammate's Claude. Messages to a Claude appear in its conversation; everyone gets notifications. **Read receipts** show who has picked up your message.
 - **Shared docs.** Plans, specs, diffs and findings can be passed between sessions by name.
+- **Models and house rules.** The leader's Claude sees which model each teammate runs and splits work to fit, after a quick "who takes what" with the crew. Each project's **House rules** (the `crew-rules` doc) reach every Claude in it, on top of the defaults and below your own instructions.
+- **Loop brake.** More than 8 requests from other Claudes in 10 minutes, with nobody typing, and a Claude stops starting on them by itself. It tells the sender and pins a notice, and the requests stay in its conversation for when its person is back.
 - **Auto-run.** A request addressed to you can start work in your session on its own: never, only from the leader (the default), or from anyone. Your normal permission prompts still apply. On the default, the **leader's** Claude is the exception that makes the crew flow: requests from teammates (typed by them, or sent by their Claude) wake it even when it's idle, so a follower's "T4 done, what next?" or "I'm blocked" gets an answer without the leader's person at the keyboard. Only requests do this; chat and updates never start a turn.
 - **Presence.** You can see who's online and what their Claude is doing.
 - **Removing someone.** The leader (or the host) can press **Remove** next to a teammate in the **Crew** tab (after a confirm). Their Claude drops out of the session and they're told who removed them; they can come back with **Join session**. Handy for a forgotten second Claude chat that keeps someone showing as online.

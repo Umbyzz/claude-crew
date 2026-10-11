@@ -1452,3 +1452,91 @@ test("the chat's People view shows only what people typed; Everything shows the 
   expect(await ui.find({ text: /added task T5/ } as any)).toBeDefined()
   await ui.unmount()
 })
+
+test("the leader plans around the crew's models, and every Claude gets the project's house rules", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const peers = [
+    { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true, model: 'claude-opus-5-5' },
+    { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false, model: 'claude-sonnet-5-5' },
+  ]
+  const posts: any[] = []
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posts.push(JSON.parse(e.init.body))
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true}' } }
+    }
+    const body = e.url.includes('/shared?name=crew-rules')
+      ? { name: 'crew-rules', by: 'bob', at: 1, content: '- bob does the art' }
+      : e.url.endsWith('/shared')
+        ? { docs: [] }
+        : { ...POLL, peers, shared: ['crew-rules'] } // alice (us) leads
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  on('prompt.compose', async () => ({ sections: [] }) as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const composed: any = await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as any)
+  const role = composed.sections.find((s: any) => s.id === 'crew:role').text
+  expect(role).toContain("The crew's models right now: you (Opus 5.5), bob (Sonnet 5.5)")
+  expect(role).toContain('Play to strengths')
+  expect(role).toContain('House rules for this crew project')
+  expect(role).toContain('- bob does the art')
+
+  // anyone adds a rule from the Project tab: it's appended to the doc
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  expect(await ui.find({ text: /- bob does the art/ } as any)).toBeDefined()
+  await ui.input({ key: 'add-rule', text: 'ask before touching main' })
+  await settle()
+  await ui.unmount()
+  expect(posts).toContainEqual({ name: 'crew-rules', content: '- bob does the art\n- ask before touching main' })
+})
+
+test('the loop brake stops Claudes waking each other forever, and the person typing resets it', { options: OPTIONS }, async ($, on) => {
+  // alice (us) leads, so every teammate request would start a turn
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  on('turn.complete', async () => ({ text: '' }) as any)
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const submitted: string[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => {
+    submitted.push(e.text)
+    return e
+  })
+  const sent: any[] = []
+  let polls = 0
+  let resumed = false
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      sent.push(JSON.parse(e.init.body))
+      return { value: { status: 200, ok: true, headers: {}, text: '{"id": 999, "to": "bob"}' } }
+    }
+    if (e.url.includes('/poll')) polls += 1
+    const messages = !e.url.includes('/poll')
+      ? []
+      : polls === 1
+        ? Array.from({ length: 10 }, (_, i) => ({ id: 9500 + i, from: 'bob', to: 'alice', kind: 'request', text: `ping ${i}`, at: 0 }))
+        : resumed
+          ? [{ id: 9600, from: 'bob', to: 'alice', kind: 'request', text: 'ping again', at: 0 }]
+          : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 9600 }) } }
+  })
+  await $.prompt.submit({ text: 'hi crew' } as any) // the person typed: a fresh start
+  await $.turn.complete({ reason: 'answer', text: 'done' } as any)
+  submitted.length = 0
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(submitted.filter(t => t.startsWith('Crew request #')).length).toBe(8)
+  expect(sent.some(b => b.to === 'bob' && b.kind === 'update' && b.text.includes('loop brake'))).toBe(true)
+  await $.prompt.submit({ text: 'ok, carry on' } as any) // the person is back
+  await settle()
+  await $.turn.complete({ reason: 'answer', text: 'done' } as any)
+  resumed = true
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(submitted.some(t => t.startsWith('Crew request #9600'))).toBe(true)
+  await $.prompt.submit({ text: 'reset for the next test' } as any)
+})
