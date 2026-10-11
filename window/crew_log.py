@@ -227,6 +227,8 @@ class App:
         t = self.text
         stamp = datetime.fromtimestamp(m.get("at", 0)).strftime("%H:%M:%S")
         t.insert("end", f"{stamp}  ", "time")
+        if m.get("project") and m["project"] != "main":  # the log shows every crew project, each one tagged
+            t.insert("end", f"[{m['project']}] ", "tag")
         if kind_of(m) == "event":
             who = f"{m['from']} " if m["kind"] == "update" else ""
             t.insert("end", f"{who}{m['text']}\n", "event")

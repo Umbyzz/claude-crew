@@ -904,6 +904,34 @@ test('while the leader is away, the acting leader is briefed as such and their r
   expect(String(r.result)).toContain('alice (acting leader)')
 })
 
+test('projects: switching moves this session, every request says which project, and crew_project lists them', { options: OPTIONS }, async ($, on) => {
+  const seen: { url: string; init: any }[] = []
+  mock.store(on)
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    const body = e.url.endsWith('/projects')
+      ? { projects: [{ name: 'main', leader: 'alice', openTasks: 1, docs: 0, here: ['alice'] }, { name: 'lava', leader: null, openTasks: 0, docs: 0, here: [] }] }
+      : { ...POLL, project: 'x' }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(seen[seen.length - 1].init.headers['X-Crew-Project']).toBe('main')
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  await ui.input({ key: 'new-project', text: 'floor is lava!' })
+  await settle()
+  expect(seen[seen.length - 1].init.headers['X-Crew-Project']).toBe('floor is lava') // cleaned up
+  expect(await ui.find({ text: /Project: floor is lava/ } as any)).toBeDefined()
+  await ui.unmount()
+  const listed: any = await $.tool.call({ tool: 'mcp__crew__crew_project' } as any)
+  expect(String(listed.result)).toContain('lava: leader none, 0 open tasks')
+  const back: any = await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any)
+  expect(String(back.result)).toContain('now in crew project "main"')
+})
+
 test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {
   mock.store(on)
   on('ui.status', async () => ({ value: undefined }))

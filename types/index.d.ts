@@ -14,6 +14,7 @@ export type CrewMessage = {
   notify?: boolean // flagged "for your human" by the sender
   human?: boolean // typed by a person in /crew rather than sent by their Claude
   handover?: string // an acting leader handing back: the true leader who's back
+  project?: string // which crew project it belongs to (none: crew-wide, like joins and leaves)
 }
 
 export type CrewPeer = {
@@ -25,6 +26,7 @@ export type CrewPeer = {
   chatTo?: string | null
   leader: boolean
   acting?: boolean // standing in for the leader while they're away
+  project?: string // the crew project their Claude is working in
 }
 
 export type CrewTask = {
@@ -53,6 +55,16 @@ export type CrewSnapshot = {
   shared: string[]
   chatEpoch?: number // the relay's chat-reset count: when it changes, the chat starts over
   reads?: Record<string, number> // read receipts: the newest message id each member's plugin has (relay 0.9.5+)
+  project?: string // the crew project this session is in ('main' unless switched)
+  projects?: CrewProject[] // every project on the relay (relay 1.1+)
+}
+
+export type CrewProject = {
+  name: string
+  leader: string | null
+  openTasks: number
+  docs: number
+  here: string[] // who's online in it right now
 }
 
 declare module 'claude-code' {
@@ -76,6 +88,7 @@ declare module 'claude-code' {
       docOpen: { name: string; head: string[]; more: number; error: string }
       tab: 'chat' | 'tasks' | 'docs' | 'crew'
       chatView: 'all' | 'people'
+      project: string
     }
   }
 }

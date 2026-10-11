@@ -10,6 +10,9 @@ Everything goes through one small relay that one of you runs. The plugin talks t
  friend B ─┘     over Tailscale / Radmin VPN / LAN
 ```
 
+## What's new in 1.1
+- **Projects.** Each project has its own chat, task board, shared docs and leader, so a new game doesn't land in the old one's chat. Each Claude Code chat stays in its own project, and a new chat in the same folder starts in that folder's project. Pick or create one in `/crew` → **Crew** tab → **Project**, or ask your Claude (`crew_project`). Everything from before lives in **main**.
+
 ## What's new in 1.0
 - **`/crew` in tabs:** Chat, Tasks, Docs, Crew and ⚙ Settings, one card at a time, with notices pinned above them.
 - **Messenger-style chat** with a **People / Everything** switch and a **To:** picker that talks to the people or straight to a teammate's Claude.
@@ -145,7 +148,9 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
   - **Save** writes the chat and task board to `~/.claude/crew-chats` as Markdown. **Reset** clears the chat for everyone, after a confirm (a copy is saved first; tasks and docs stay).
 - **Tasks** is a small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
 - **Docs** lists the plans, findings and patches the Claudes shared, newest first, with who shared them and when: press one for a peek at its first lines, or **Copy it all**.
-- **Crew** shows who's online and what their Claude is doing, the leader (★) and any acting leader (☆), and the leader picker.
+- **Crew** has the **Project** picker (switch, or type a name to start a new one), who's online and what their Claude is doing (and which project they're in, if it's not yours), the leader (★) and any acting leader (☆), and the leader picker.
+
+**Projects.** One crew, several projects: each has its own chat, tasks, shared docs and leader (and acting leader), while who's online stays crew-wide. The project belongs to the Claude Code chat: switch in one chat and the others stay where they are; reopen a chat and it's still in its project; start a new chat in the same folder and it picks up that folder's last project. Switching gives your Claude a catch-up on the project it moved into. The crew log window shows every project, tagged.
 - **⚙ Settings** has Connection, Preferences and Updates.
 
 Done for the day? Press **Leave…** (it asks first, so a stray click doesn't kick you out), or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**. **↻ Refresh** reconnects to the relay right away and re-checks GitHub for updates.
@@ -173,6 +178,7 @@ Done for the day? Press **Leave…** (it asks first, so a stray click doesn't ki
 | `crew_share` / `crew_read_shared` | publish and read shared docs |
 | `crew_send_image` | send an image file (png, jpg, gif, webp or bmp, up to 4 MB) to a teammate or everyone |
 | `crew_wait` | wait (up to 90 s) for a quick reply, from anyone or one teammate, without polling. For slow replies Claude ends its turn instead and the reply wakes it |
+| `crew_project` | list the crew's projects, or move this session into one (a new name starts it); only when you ask |
 | `crew_ping` | measure latency: relay round trips, and how fast a teammate's plugin echoes (their Claude isn't involved, no tokens) |
 
 `crew_send` also takes `notify_human: true` for messages meant for the teammate's human. Those always pop up and stay pinned at the top of their `/crew` until dismissed. `crew_status` marks your own messages with who has read them. Every crew message carries relay-clock `sent` and `delivered` times (to the millisecond).
@@ -230,7 +236,7 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 1.0.1
 
 | Part | What it is |
 |---|---|
-| `server/relay.py` | One Python file using only the standard library. It holds messages, tasks, the leader, shared docs, the latest images (in memory) and each member's live activity. It announces joins and leaves, spots anyone who hasn't checked in, picks an acting leader while the leader is away, reopens stale task claims, and tracks read receipts. Endpoints: `/poll`, `/send`, `/tasks`, `/leader`, `/shared`, `/files` and `/file` (images), `/leave`, `/wait` (crew_wait), `/ping` and `/pong` (crew_ping), `/reset` (chat), `/shutdown` (host only), `/watch` (Clawds) and `/log` (crew log), both read-only, and `/health`. |
+| `server/relay.py` | One Python file using only the standard library. It holds messages, tasks, the leader, shared docs, the latest images (in memory) and each member's live activity. It announces joins and leaves, spots anyone who hasn't checked in, picks an acting leader while the leader is away, reopens stale task claims, and tracks read receipts. Each request names its project in an `X-Crew-Project` header (none means `main`). Endpoints: `/poll`, `/projects`, `/send`, `/tasks`, `/leader`, `/shared`, `/files` and `/file` (images), `/leave`, `/wait` (crew_wait), `/ping` and `/pong` (crew_ping), `/reset` (chat), `/shutdown` (host only), `/watch` (Clawds) and `/log` (crew log), both read-only, and `/health`. |
 | `hooks/register.tsx` | The plugin. It's a Claude Code hooks module: the commands, the tools, the panes, the status line, the out-of-tokens detection, and the activity it reports to the relay (thinking, typing, tools, chatting, done, cheer, subagents). |
 | `window/clawd_window.py` | The desktop Clawds window, written with tkinter. It holds localhost port 47817 so a second launch brings the open window forward instead of opening another. Try `--demo` for a pretend crew, `--drama 1` to make everything over the top, and `--trip car|teleport|superman|door|bird` to see one way of arriving and leaving. |
 | `window/crew_log.py` | The crew log window (tkinter): every crew message live, filtered Everything / Claudes / People. Holds localhost port 47818. |

@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -62,6 +62,72 @@ def new_id():
     return i
 
 
+# -- projects: each has its own chat, task board, shared docs and leader. "main" is the original crew (stored
+# where it always was, so older relays' data and older plugins keep working). Who's online is crew-wide.
+
+MAIN = "main"
+
+
+def project_of(headers_or_value):
+    """The project a request is about (X-Crew-Project header), cleaned up; MAIN when none."""
+    raw = headers_or_value.get("X-Crew-Project") if hasattr(headers_or_value, "get") else headers_or_value
+    name = "".join(c for c in str(raw or "").strip() if c.isalnum() or c in " -_.")[:40].strip()
+    return name or MAIN
+
+
+CREW_WIDE = ("join", "leave", "out", "back")  # about a person, not a project: every project shows them
+
+
+def in_project(m, project):
+    """Whether a message belongs in this project's chat. Untagged ones are from before projects existed:
+    people coming and going stay crew-wide, the rest was main's chat."""
+    p = m.get("project")
+    if p:
+        return p == project
+    return m["kind"] in CREW_WIDE or project == MAIN
+
+
+def task_in(t, project):
+    return t.get("project", MAIN) == project
+
+
+def leader_of(project):
+    return state["leader"] if project == MAIN else state.setdefault("leaders", {}).get(project)
+
+
+def set_leader(project, name):
+    if project == MAIN:
+        state["leader"] = name
+    else:
+        state.setdefault("leaders", {})[project] = name
+
+
+def epoch_of(project):
+    return state.get("chat_epoch", 0) if project == MAIN else state.setdefault("epochs", {}).get(project, 0)
+
+
+def doc_key(project, name):
+    return name if project == MAIN else f"{project}::{name}"
+
+
+def docs_of(project):
+    return {v["name"]: v for k, v in state["shared"].items() if v.get("project", MAIN) == project}
+
+
+def projects_list(now):
+    names = {MAIN} | set(state.get("leaders", {})) | {t.get("project", MAIN) for t in state["tasks"]} \
+        | {v.get("project", MAIN) for v in state["shared"].values()} \
+        | {m["project"] for m in state["messages"] if m.get("project")} \
+        | {p.get("project", MAIN) for p in peers.values()}
+    out = []
+    for n in sorted(names, key=lambda x: (x != MAIN, x.lower())):
+        out.append({"name": n, "leader": leader_of(n),
+                    "openTasks": sum(1 for t in state["tasks"] if task_in(t, n) and t["status"] != "done"),
+                    "docs": len(docs_of(n)),
+                    "here": sorted(x for x, p in peers.items() if p.get("project", MAIN) == n and is_online(p, now))})
+    return out
+
+
 def new_task_id():
     """Tasks count on their own (T1, T2 ...) instead of sharing message numbers. Older tasks keep theirs."""
     taken = {t["id"] for t in state["tasks"]}
@@ -99,11 +165,11 @@ def is_online(p, now):
 
 
 LEADER_AWAY_SECONDS = 60  # the leader offline this long (or out of tokens): someone else acts as leader meanwhile
-acting = {"name": None}  # the acting leader while the true leader is away (memory only)
+acting = {}  # project -> the acting leader while that project's true leader is away (memory only)
 
 
-def leader_away(now):
-    leader = state["leader"]
+def leader_away(project, now):
+    leader = leader_of(project)
     if not leader:
         return False
     p = peers.get(leader)
@@ -113,35 +179,37 @@ def leader_away(now):
 
 
 def update_acting(now):
-    """While the true leader is away, the online member who has been in the session longest acts as leader
-    (and stays acting until they go too, or the leader is back). Tells the crew whenever that changes."""
-    leader, cur = state["leader"], acting["name"]
-    want = None
-    if leader_away(now):
-        ok = lambda n: n != leader and n in peers and is_online(peers[n], now) and peers[n]["activity"] != "out"
-        want = cur if cur and ok(cur) else next(
-            (n for n, _ in sorted(((n, p["joinedAt"]) for n, p in peers.items() if ok(n)), key=lambda x: (x[1], x[0]))),
-            None)
-    if want == cur:
-        return
-    acting["name"] = want
-    if want:
-        post_message(want, "all", f"is acting leader while {leader} is away. Requests from them count as the "
-                                  f"leader's until {leader} is back.", "update", leaderChange=True)
-    elif cur:
-        back = leader and not leader_away(now)
-        post_message(cur, "all", f"hands leadership back to {leader}" if back else "is no longer acting leader",
-                     "update", leaderChange=True, **({"handover": leader} if back else {}))
-    save()
+    """While a project's true leader is away, the online member who has been in the session longest acts as
+    leader (and stays acting until they go too, or the leader is back). Tells that project whenever it changes."""
+    for project in {MAIN} | set(state.get("leaders", {})) | set(acting):
+        leader, cur = leader_of(project), acting.get(project)
+        want = None
+        if leader_away(project, now):
+            ok = lambda n: n != leader and n in peers and is_online(peers[n], now) and peers[n]["activity"] != "out"
+            want = cur if cur and ok(cur) else next(
+                (n for n, _ in sorted(((n, p["joinedAt"]) for n, p in peers.items() if ok(n)),
+                                      key=lambda x: (x[1], x[0]))), None)
+        if want == cur:
+            continue
+        acting[project] = want
+        if want:
+            post_message(want, "all", f"is acting leader while {leader} is away. Requests from them count as the "
+                                      f"leader's until {leader} is back.", "update", project, leaderChange=True)
+        elif cur:
+            back = leader and not leader_away(project, now)
+            post_message(cur, "all", f"hands leadership back to {leader}" if back else "is no longer acting leader",
+                         "update", project, leaderChange=True, **({"handover": leader} if back else {}))
+        save()
 
 
-def peer_list():
+def peer_list(project=MAIN):
     now = time.time()
+    leader, stand_in = leader_of(project), acting.get(project)
     return [
         {"name": n, "online": is_online(p, now), "lastSeen": int(p["seen"]),
-         "activity": p["activity"], "leader": n == state["leader"], "acting": n == acting["name"], "since": p["since"],
+         "activity": p["activity"], "leader": n == leader, "acting": n == stand_in, "since": p["since"],
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
-         "version": p.get("version")}
+         "version": p.get("version"), "project": p.get("project", MAIN)}
         for n, p in sorted(peers.items())
     ]
 
@@ -173,7 +241,8 @@ def sweep():
             owner = t["owner"]
             t.update(status="open", owner=None)
             post_message(owner, "all", f"released task T{t['id']}: {owner} has been offline for "
-                                       f"{RELEASE_MINUTES}+ minutes, so it's open again: {t['title']}", "update")
+                                       f"{RELEASE_MINUTES}+ minutes, so it's open again: {t['title']}", "update",
+                         t.get("project", MAIN))
             save()
 
 
@@ -204,12 +273,15 @@ def touch(name, headers):
         pass
     p["chatTo"] = (headers.get("X-Crew-Chat-To") or "").strip()[:40] or None
     p["version"] = (headers.get("X-Crew-Version") or "").strip()[:20] or p.get("version")  # who needs to update
+    p["project"] = project_of(headers)  # which project this member's Claude is working in right now
 
 
-def post_message(sender, to, text, kind, **extra):
+def post_message(sender, to, text, kind, project=None, **extra):
     # "at" is the relay's clock to the millisecond: one clock for everyone, so delivery times can be compared.
     msg = {"id": new_id(), "from": sender, "to": to or "all", "kind": kind,
            "text": text[:MAX_TEXT], "at": round(time.time(), 3), **extra}
+    if kind not in CREW_WIDE:
+        msg["project"] = project or MAIN
     state["messages"].append(msg)
     del state["messages"][:-MAX_MESSAGES]
     arrived.notify_all()  # callers hold the lock, so anyone in /wait wakes up
@@ -250,6 +322,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {"error": "missing X-Crew-Name"})
             return False
         self.name = name
+        self.project = project_of(self.headers)
         if presence:
             with lock:
                 touch(name, self.headers)
@@ -286,7 +359,7 @@ class Handler(BaseHTTPRequestHandler):
                 def matches():
                     return [m for m in state["messages"] if m["id"] > since and m["from"] != self.name
                             and m["to"] in ("all", self.name) and m["kind"] not in ("update", "join")
-                            and (not only or m["from"] == only)]
+                            and in_project(m, self.project) and (not only or m["from"] == only)]
 
                 found = matches()
                 while not found and time.time() < deadline:
@@ -305,7 +378,8 @@ class Handler(BaseHTTPRequestHandler):
                 since = int(q.get("since", ["0"])[0])
                 msgs = [m for m in state["messages"] if m["id"] > since
                         and (m["to"] == "all" or (viewer and viewer in (m["to"], m["from"])))]
-                return self.reply(200, {"messages": msgs[-300:], "leader": state["leader"], "acting": acting["name"],
+                # every project's messages (each tagged with its project), so the log shows the whole crew
+                return self.reply(200, {"messages": msgs[-300:], "leader": state["leader"], "acting": acting.get(MAIN),
                                         "peers": peer_list(), "cursor": state["next_id"] - 1,
                                         "chatEpoch": state.get("chat_epoch", 0), "now": time.time(),
                                         "version": VERSION})
@@ -321,18 +395,22 @@ class Handler(BaseHTTPRequestHandler):
                            "text": m["text"][:80] if visible(m) else "", "at": m["at"]}
                           for m in state["messages"][-30:]
                           if m["kind"] in ("chat", "request", "out", "back", "join", "leave", "image")]
-                self.reply(200, {"peers": peer_list(), "leader": state["leader"], "acting": acting["name"], "recent": recent,
+                self.reply(200, {"peers": peer_list(), "leader": state["leader"], "acting": acting.get(MAIN), "recent": recent,
                                  "now": time.time(), "version": VERSION})
             elif url.path == "/poll":
                 since = int(q.get("since", ["0"])[0])
-                msgs = [m for m in state["messages"] if m["id"] > since
+                pr = self.project
+                msgs = [m for m in state["messages"] if m["id"] > since and in_project(m, pr)
                         and (m["to"] in ("all", self.name) or m["from"] == self.name)]
                 now = time.time()
-                self.reply(200, {"messages": msgs[-200:], "peers": peer_list(),
-                                 "tasks": [task_view(t, now) for t in state["tasks"]], "leader": state["leader"], "acting": acting["name"],
-                                 "shared": sorted(state["shared"].keys()),
-                                 "cursor": state["next_id"] - 1, "chatEpoch": state.get("chat_epoch", 0),
+                self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr), "project": pr,
+                                 "tasks": [task_view(t, now) for t in state["tasks"] if task_in(t, pr)],
+                                 "leader": leader_of(pr), "acting": acting.get(pr),
+                                 "shared": sorted(docs_of(pr).keys()), "projects": projects_list(now),
+                                 "cursor": state["next_id"] - 1, "chatEpoch": epoch_of(pr),
                                  "version": VERSION})
+            elif url.path == "/projects":
+                self.reply(200, {"projects": projects_list(time.time())})
             elif url.path == "/pong":
                 # crew_ping waits here for the echo (like /wait: held open, no polling, max 25s per call)
                 pg = pings.get(q.get("id", [""])[0])
@@ -345,13 +423,14 @@ class Handler(BaseHTTPRequestHandler):
                                  "answeredAt": pg["answeredAt"], "now": time.time()})
             elif url.path == "/shared":
                 name = q.get("name", [""])[0]
+                docs = docs_of(self.project)
                 if name:
-                    doc = state["shared"].get(name)
-                    self.reply(200 if doc else 404, doc or {"error": "no such doc"})
+                    doc = docs.get(name)
+                    self.reply(200 if doc else 404, doc or {"error": "no such doc in this project"})
                 else:
                     self.reply(200, {"docs": [
                         {"name": k, "by": v["by"], "at": v["at"], "size": len(v["content"])}
-                        for k, v in sorted(state["shared"].items())]})
+                        for k, v in sorted(docs.items())]})
             else:
                 self.reply(404, {"error": "not found"})
 
@@ -378,12 +457,16 @@ class Handler(BaseHTTPRequestHandler):
                     announce_leave(self.name, str(b.get("why") or "left the crew session")[:80])
                     save()
                 return self.reply(200, {"ok": True})
-            if path == "/reset":  # "Reset chat": wipe the chat for everyone (tasks and docs stay)
-                state["messages"] = []
-                state["chat_epoch"] = state.get("chat_epoch", 0) + 1
-                post_message(self.name, "all", f"{self.name} cleared the crew chat", "update")
+            if path == "/reset":  # "Reset chat": wipe this project's chat for everyone (tasks and docs stay)
+                pr = self.project
+                state["messages"] = [m for m in state["messages"] if not in_project(m, pr) or m["kind"] in CREW_WIDE]
+                if pr == MAIN:
+                    state["chat_epoch"] = state.get("chat_epoch", 0) + 1
+                else:
+                    state.setdefault("epochs", {})[pr] = epoch_of(pr) + 1
+                post_message(self.name, "all", f"{self.name} cleared the crew chat", "update", pr)
                 save()
-                return self.reply(200, {"ok": True, "chatEpoch": state["chat_epoch"]})
+                return self.reply(200, {"ok": True, "chatEpoch": epoch_of(pr)})
             if path == "/ping":  # crew_ping: ask a teammate's plugin to echo (it answers on its next check-in)
                 now = time.time()
                 for old in [i for i, pg in pings.items() if now - pg["at"] > PING_SECONDS]:
@@ -422,7 +505,7 @@ class Handler(BaseHTTPRequestHandler):
                 caption = str(b.get("caption") or "").strip()[:500]
                 msg = post_message(self.name, str(b.get("to") or "all")[:40],
                                    f"sent an image: {name}" + (f" ({caption})" if caption else ""), "image",
-                                   file=fid, name=name, mime=mime, size=len(data), caption=caption)
+                                   self.project, file=fid, name=name, mime=mime, size=len(data), caption=caption)
                 save()
                 return self.reply(200, msg)
             if path == "/send":
@@ -438,24 +521,25 @@ class Handler(BaseHTTPRequestHandler):
                 extra = {"notify": True} if b.get("notify") else {}  # "for your human": shown to them, not just their Claude
                 if b.get("human"):
                     extra["human"] = True  # typed by a person in /crew, not sent by their Claude
-                msg = post_message(self.name, str(b.get("to") or "all")[:40], text, kind, **extra)
+                msg = post_message(self.name, str(b.get("to") or "all")[:40], text, kind, self.project, **extra)
                 save()
                 return self.reply(200, msg)
             if path == "/tasks":
                 return self.tasks(b)
             if path == "/leader":
                 leader = str(b.get("name") or "").strip()[:40] or None
-                if leader == state["leader"]:
+                pr = self.project
+                if leader == leader_of(pr):
                     return self.reply(200, {"leader": leader})  # no change, no log line
-                state["leader"] = leader
+                set_leader(pr, leader)
                 text = f"made {leader} the crew leader" if leader else "cleared the crew leader"
                 last = state["messages"][-1] if state["messages"] else None
-                if last and last.get("leaderChange") and time.time() - last["at"] < 60:
+                if last and last.get("leaderChange") and in_project(last, pr) and time.time() - last["at"] < 60:
                     # back-to-back leader changes collapse into one line instead of a tug-of-war log
                     last.update(text=text, at=round(time.time(), 3), **{"from": self.name})
                 else:
-                    post_message(self.name, "all", text, "update", leaderChange=True)
-                acting["name"] = None  # a new true leader: any stand-in steps down without a handover
+                    post_message(self.name, "all", text, "update", pr, leaderChange=True)
+                acting.pop(pr, None)  # a new true leader: any stand-in steps down without a handover
                 save()
                 return self.reply(200, {"leader": leader})
             if path == "/shared":
@@ -465,9 +549,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(400, {"error": "missing name"})
                 if len(content) > MAX_SHARED:
                     return self.reply(413, {"error": f"content over {MAX_SHARED} chars"})
-                state["shared"][name] = {"name": name, "by": self.name,
-                                         "at": int(time.time()), "content": content}
-                post_message(self.name, "all", f"shared doc '{name}' ({len(content)} chars)", "update")
+                pr = self.project
+                state["shared"][doc_key(pr, name)] = {"name": name, "by": self.name, "project": pr,
+                                                      "at": int(time.time()), "content": content}
+                post_message(self.name, "all", f"shared doc '{name}' ({len(content)} chars)", "update", pr)
                 save()
                 return self.reply(200, {"ok": True, "name": name})
         self.reply(404, {"error": "not found"})
@@ -479,11 +564,12 @@ class Handler(BaseHTTPRequestHandler):
                          f"Task T{t['id']} is assigned to you: {t['title']}"
                          + (f"\n\n{t['note']}" if t["note"] else "")
                          + "\n\nClaim it with crew_task, do it, then mark it done with a short note.",
-                         "request")
+                         "request", t.get("project", MAIN))
 
     def tasks(self, b):
         action = b.get("action")
         tasks = state["tasks"]
+        pr = self.project
         assignee = str(b.get("assignee") or "").strip()[:40] or None
         if action == "add":
             title = str(b.get("title", "")).strip()[:500]
@@ -491,9 +577,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(400, {"error": "missing title"})
             t = {"id": new_task_id(), "title": title, "note": str(b.get("note", ""))[:5000],
                  "status": "open", "owner": None, "assignee": None,
-                 "by": self.name, "at": int(time.time())}
+                 "by": self.name, "at": int(time.time()), "project": pr}
             tasks.append(t)
-            post_message(self.name, "all", f"added task T{t['id']}: {title}", "update")
+            post_message(self.name, "all", f"added task T{t['id']}: {title}", "update", pr)
             self.assign(t, assignee)
             save()
             return self.reply(200, t)
@@ -501,9 +587,9 @@ class Handler(BaseHTTPRequestHandler):
             wanted = int(str(b.get("id", "")).strip().lstrip("Tt#"))
         except ValueError:
             return self.reply(400, {"error": "id must be a task number, like 3 or T3"})
-        t = next((t for t in tasks if t["id"] == wanted), None)
+        t = next((t for t in tasks if t["id"] == wanted and task_in(t, pr)), None)
         if t is None:
-            return self.reply(404, {"error": "no such task"})
+            return self.reply(404, {"error": f"no task T{wanted} in project {pr}"})
         if action == "claim":
             stale = t.get("owner") and away_for(t["owner"], time.time()) >= STALE_MINUTES * 60
             if t["status"] == "claimed" and t["owner"] not in (None, self.name) and not stale:
@@ -527,7 +613,7 @@ class Handler(BaseHTTPRequestHandler):
         if b.get("note") and action != "assign":
             t["note"] = str(b["note"])[:5000]
         who = f" to {assignee}" if action == "assign" else ""
-        post_message(self.name, "all", f"{action} task T{t['id']}{who}: {t['title']}", "update")
+        post_message(self.name, "all", f"{action} task T{t['id']}{who}: {t['title']}", "update", pr)
         save()
         self.reply(200, t)
 
