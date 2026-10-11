@@ -63,6 +63,7 @@ test('the leader gets leader instructions in the system prompt', { options: OPTI
 
   const role = composed.sections.find((s: any) => s.id === 'crew:role')
   expect(role.text).toContain('You are the crew LEADER')
+  expect(role.text).toContain("don't loop on crew_wait") // waiting on a teammate shouldn't burn tokens
 })
 
 test('the pane draws leader, crew, tasks and settings on terminal and desktop', { options: OPTIONS }, async ($, on) => {
@@ -286,6 +287,7 @@ test('Leave session tells the relay at once; Join session brings us back', { opt
   on('ui.toast', async () => ({ value: undefined }))
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'leave' })
+  await ui.press({ key: 'leave-yes' }) // Leave… asks first
   await settle()
   expect(seen.some(s => s.url.endsWith('/leave'))).toBe(true)
   const r: any = await $.tool.call({ tool: 'mcp__crew__crew_send', text: 'hi' } as any)
@@ -763,10 +765,12 @@ test('joining twice with nothing new briefs Claude only once', { options: OPTION
   on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages: [{ id: 7, from: 'bob', to: 'all', kind: 'update', text: 'added task #3', at: 0 }] }) } }))
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'leave' })
+  await ui.press({ key: 'leave-yes' })
   await settle()
   await ui.press({ key: 'join' })
   await settle()
   await ui.press({ key: 'leave' })
+  await ui.press({ key: 'leave-yes' })
   await settle()
   await ui.press({ key: 'join' })
   await settle()
@@ -809,5 +813,78 @@ test('a message flagged for your human is pinned in /crew until dismissed', { op
   expect(await ui.find({ text: /Pumpkin Panic/ } as any)).toBeDefined()
   await ui.press({ key: 'pin-69' })
   expect(await ui.find({ key: 'pin-69' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Leave… asks first, and only Yes leaves the crew session', { options: OPTIONS }, async ($, on) => {
+  const seen = fakeRelay(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'leave' })
+  expect(await ui.find({ key: 'leave-yes' })).toBeDefined()
+  await ui.press({ key: 'leave-no' })
+  await settle()
+  expect(await ui.find({ key: 'leave-yes' })).toBeUndefined()
+  expect(seen.some(s => s.url.endsWith('/leave'))).toBe(false)
+  await ui.press({ key: 'leave' })
+  await ui.press({ key: 'leave-yes' })
+  await settle()
+  expect(seen.some(s => s.url.endsWith('/leave'))).toBe(true)
+  expect(await ui.find({ key: 'join' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the chat groups messages into bubbles and folds runs of crew events', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const messages = [
+    { id: 2, from: 'bob', to: 'all', kind: 'chat', text: 'hello there', at: 1000, human: true },
+    { id: 3, from: 'bob', to: 'all', kind: 'chat', text: 'second line', at: 1010, human: true },
+    { id: 4, from: 'alice', to: 'all', kind: 'chat', text: 'hi bob', at: 1020, human: true },
+    { id: 5, from: 'bob', to: 'alice', kind: 'request', text: 'review auth', at: 1030 },
+    ...[6, 7, 8, 9, 10].map(id => ({ id, from: 'bob', to: 'all', kind: 'update', text: `added task #${id}`, at: 1040 })),
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 10 }) } }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'crew', surface, ...PANE })
+    expect(await ui.find({ text: /hello there/ } as any)).toBeDefined()
+    expect(await ui.find({ text: /second line/ } as any)).toBeDefined()
+    expect(await ui.find({ text: /bob · \d\d:\d\d/ } as any)).toBeDefined() // one header for bob's two lines
+    expect(await ui.find({ text: /bob's Claude · → you · request/ } as any)).toBeDefined()
+    expect(await ui.find({ text: /3 more updates/ } as any)).toBeDefined()
+    expect(await ui.find({ text: /bob added task #10/ } as any)).toBeDefined()
+    expect(await ui.find({ text: /bob added task #6/ } as any)).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('shared docs show who shared them, and open a peek', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => {
+    const body = e.url.includes('/shared?name=')
+      ? { name: 'plan', by: 'bob', at: 1000, content: 'line one\nline two' }
+      : e.url.endsWith('/shared')
+        ? { docs: [{ name: 'plan', by: 'bob', at: 1000, size: 17 }] }
+        : { ...POLL, shared: ['plan'] }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'doc-plan' })).toBeDefined()
+  expect(await ui.find({ text: /bob · \d\d:\d\d · 17 chars/ } as any)).toBeDefined()
+  await ui.press({ key: 'doc-plan' })
+  await settle()
+  expect(await ui.find({ text: /line two/ } as any)).toBeDefined()
+  expect(await ui.find({ key: 'doc-copy' })).toBeDefined()
+  await ui.press({ key: 'doc-close' })
+  await settle()
+  expect(await ui.find({ text: /line two/ } as any)).toBeUndefined()
   await ui.unmount()
 })

@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.9.2'
+const VERSION = '0.9.3'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -46,6 +46,12 @@ const joinMode = atom({ plugin: 'crew', key: 'joinMode' } as const, false) // fi
 const askTo = atom({ plugin: 'crew', key: 'askTo' } as const, '') // whose Claude "Ask a Claude" goes to ('' = the leader)
 const briefed = atom({ plugin: 'crew', key: 'briefed' } as const, 0) // newest message id (+1) this session's Claude was caught up to
 const confirmClear = atom({ plugin: 'crew', key: 'confirmClear' } as const, false) // "remove every open task?" awaiting a yes
+const confirmLeave = atom({ plugin: 'crew', key: 'confirmLeave' } as const, false) // "leave the crew session?" awaiting a yes
+// Shared docs for /crew: who shared each and when (the poll only carries names), and the one opened for a peek.
+type DocMeta = { name: string; by: string; at: number; size: number }
+const docList = atom({ plugin: 'crew', key: 'docList' } as const, { names: '', docs: [] as DocMeta[] })
+type DocPeek = { name: string; head: string[]; more: number; error: string }
+const docOpen = atom({ plugin: 'crew', key: 'docOpen' } as const, { name: '', head: [], more: 0, error: '' } as DocPeek)
 
 // Relay time (seconds) as "HH:MM:SS.mmm UTC", for the sent/delivered stamps on crew messages.
 function stamp(at: number) {
@@ -199,6 +205,15 @@ function leavePress($: EngineInterface) {
   void leaveSession($).then(() => $.ui.toast('crew: you left the crew session', { timeoutMs: 4000 }))
 }
 
+// Leave crew… asks first: it sat next to Join and Settings, and people pressed it just to close the pane.
+function askLeave($: EngineInterface, show: boolean) {
+  void update($, confirmLeave, () => show)
+}
+
+function leaveYesPress($: EngineInterface) {
+  void update($, confirmLeave, () => false).then(() => leavePress($))
+}
+
 // -- images: sent through the relay, saved into ~/.claude/crew-inbox for Claude's Read tool to open
 
 async function sendImage($: EngineInterface, path: string, to: string, caption: string) {
@@ -305,7 +320,10 @@ function roleText(leader: string | null) {
   const pace =
     `\n\nTeam rhythm: messages from the crew reach you between your steps (within a few seconds), so check them as they arrive. ` +
     `Keep the board honest: claim a task before you start it, post a short crew_send update when you start and when you finish, ` +
-    `and mark it done with a note of what changed. Use crew_send_image to show teammates a screenshot or picture.`
+    `and mark it done with a note of what changed. Use crew_send_image to show teammates a screenshot or picture.` +
+    `\n\nWaiting on a teammate costs tokens only if you keep checking. For a quick answer, one crew_wait is fine. ` +
+    `If their part takes longer, don't loop on crew_wait or crew_status: finish your turn, tell your user what you're ` +
+    `waiting for, and stop. Their reply arrives as a crew message (a request can even start your next turn on its own).`
   if (leader === cfg.me)
     return (
       `${common}\n\nYou are the crew LEADER. When the user gives you a goal, break it into concrete tasks, ` +
@@ -442,6 +460,8 @@ async function pollOnce($: EngineInterface) {
       tasks: data.tasks ?? [],
       shared: data.shared ?? [],
     }))
+    // a doc shared again under the same name keeps the list the same, but who/when/size change
+    syncDocs($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.startsWith('shared doc ')))
     failures = 0
     const online = (data.peers ?? []).filter((p: any) => p.online && p.name !== cfg.me).length
     const role = leader === cfg.me ? ' (leader)' : ''
@@ -506,6 +526,148 @@ function ask($: EngineInterface, target: string, value: string) {
     .then(() => poll($))
     .then(() => $.ui.toast(`crew: asked ${target}'s Claude`, { timeoutMs: 4000 }))
     .catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
+}
+
+// -- shared docs in /crew: the names come with every check-in; who shared each and when, only when that changes
+
+let docsKey: string | null = null // the doc names we last fetched details for (null: not yet, or after a reload)
+const docText = new Map<string, string>() // docs opened for a peek, so Copy needs no second fetch
+
+function syncDocs($: EngineInterface, names: string[], reshared = false) {
+  const key = names.join('\n')
+  if (key === docsKey && !reshared) return
+  docsKey = key
+  docText.clear()
+  if (!key) {
+    void update($, docList, () => ({ names: '', docs: [] as DocMeta[] }))
+    return
+  }
+  void relay($, 'GET', '/shared')
+    .then(data => update($, docList, () => ({ names: key, docs: Array.isArray(data.docs) ? (data.docs as DocMeta[]) : [] })))
+    .catch(() => (docsKey = null)) // try again on the next check-in
+}
+
+async function openDoc($: EngineInterface, name: string) {
+  if ((await read($, docOpen)).name === name) {
+    await update($, docOpen, () => ({ name: '', head: [], more: 0, error: '' }))
+    return
+  }
+  await update($, docOpen, () => ({ name, head: [], more: 0, error: '' }))
+  try {
+    const doc = await relay($, 'GET', `/shared?name=${encodeURIComponent(name)}`)
+    const content = String(doc.content ?? '')
+    docText.set(name, content)
+    const lines = content.split(/\r?\n/)
+    const head = lines.slice(0, 8).map(l => (l.length > 160 ? `${l.slice(0, 159)}…` : l))
+    await update($, docOpen, d => (d.name === name ? { name, head, more: Math.max(0, lines.length - 8), error: '' } : d))
+  } catch (err) {
+    const error = explain(err instanceof Error ? err.message : String(err))
+    await update($, docOpen, d => (d.name === name ? { ...d, error } : d))
+  }
+}
+
+function openDocPress($: EngineInterface, name: string) {
+  void openDoc($, name)
+}
+
+function copyDoc($: EngineInterface, surface: any, name: string) {
+  const copy = (text: string) =>
+    $.ui
+      .copy({ text, surface })
+      .then(r => $.ui.toast(r.isCopied ? `crew: copied "${name}" (${text.length} chars)` : `crew: couldn't copy it; your Claude can read it with crew_read_shared`, { timeoutMs: 5000 }))
+  const cached = docText.get(name)
+  if (cached !== undefined) {
+    void copy(cached)
+    return
+  }
+  void relay($, 'GET', `/shared?name=${encodeURIComponent(name)}`)
+    .then(doc => copy(String(doc.content ?? '')))
+    .catch(err => $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
+}
+
+// -- the chat, drawn like a messenger: your bubbles right, everyone else's left, crew events as dim centred lines
+
+const SYSTEM_KINDS = new Set<CrewMessage['kind']>(['join', 'leave', 'update', 'out', 'back'])
+const GROUP_GAP = 5 * 60 // seconds: a pause this long starts a new bubble, even from the same sender
+
+type ChatItem =
+  | { type: 'event'; id: number; text: string; at: number }
+  | { type: 'more'; id: number; count: number }
+  | { type: 'group'; id: number; mine: boolean; from: string; human: boolean; to: string; request: boolean; msgs: CrewMessage[] }
+
+function hhmm(at: number) {
+  const d = new Date(at * 1000)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function eventText(m: CrewMessage) {
+  return m.kind === 'update' ? `${m.from} ${m.text}` : m.text // joins, leaves and out/back already name who
+}
+
+function bubbleText(m: CrewMessage) {
+  const body = m.kind === 'image' ? `🖼 ${m.name ?? 'image'}${m.caption ? `: ${m.caption}` : ''}` : m.text
+  return m.notify ? `📣 ${body}` : body
+}
+
+// Back-to-back messages from one sender to the same place share a bubble; more than three crew events in a
+// row fold into "N more updates" plus the last two.
+function chatItems(feed: CrewMessage[], me: string): ChatItem[] {
+  const items: ChatItem[] = []
+  for (const m of feed) {
+    if (SYSTEM_KINDS.has(m.kind)) {
+      items.push({ type: 'event', id: m.id, text: eventText(m), at: m.at })
+      continue
+    }
+    const human = !!m.human
+    const request = m.kind === 'request'
+    const last = items[items.length - 1]
+    if (
+      last?.type === 'group' &&
+      last.from === m.from &&
+      last.human === human &&
+      last.to === m.to &&
+      last.request === request &&
+      m.at - last.msgs[last.msgs.length - 1].at < GROUP_GAP
+    )
+      last.msgs.push(m)
+    else items.push({ type: 'group', id: m.id, mine: m.from === me, from: m.from, human, to: m.to, request, msgs: [m] })
+  }
+  const folded: ChatItem[] = []
+  for (let i = 0; i < items.length; ) {
+    let j = i
+    while (j < items.length && items[j].type === 'event') j++
+    if (j - i > 3) {
+      folded.push({ type: 'more', id: items[i].id, count: j - i - 2 }, items[j - 2], items[j - 1])
+      i = j
+    } else folded.push(items[i++])
+  }
+  return folded
+}
+
+// The line above a bubble: who (a person, or their Claude), where it went, and when.
+function groupHeader(g: Extract<ChatItem, { type: 'group' }>, me: string) {
+  const who = g.mine ? (g.human ? '' : 'your Claude') : g.human ? g.from : `${g.from}'s Claude`
+  const to = g.to === 'all' ? '' : `→ ${g.to === me ? 'you' : g.to}`
+  return [who, to, g.request ? 'request' : '', hhmm(g.msgs[g.msgs.length - 1].at)].filter(Boolean).join(' · ')
+}
+
+// Roughly how many rows an item takes at this bubble width, so the newest messages that fit are the ones drawn.
+function itemRows(item: ChatItem, bubbleCols: number) {
+  if (item.type !== 'group') return 1
+  const inner = Math.max(10, bubbleCols - 4)
+  return 3 + item.msgs.reduce((n, m) => n + Math.max(1, Math.ceil(bubbleText(m).length / inner)), 0)
+}
+
+function fitChat(items: ChatItem[], rows: number, bubbleCols: number) {
+  let used = 0
+  let start = items.length
+  while (start > 0) {
+    const need = itemRows(items[start - 1], bubbleCols)
+    if (used + need > rows && start < items.length) break
+    used += need
+    start--
+  }
+  return items.slice(start)
 }
 
 // The pane's two building blocks, made once per surface's Box/Text (see the ui.render hook).
@@ -1170,7 +1332,9 @@ const TOOLS = [
     name: 'crew_wait',
     description:
       'Wait for a reply from the crew instead of polling or sleeping: returns as soon as a message for you arrives ' +
-      '(optionally only from one teammate), or after the timeout. Costs nothing while it waits.',
+      '(optionally only from one teammate), or after the timeout. Costs nothing while it waits. ' +
+      'For a quick back-and-forth only: if the reply could take minutes (a teammate is building something), ' +
+      "don't wait in a loop; end your turn and say what you're waiting for. Their message reaches you when it arrives.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
@@ -1510,7 +1674,17 @@ export const register: Register = (on, options) => {
     const online = s.peers.filter(p => p.online).length
     const inSession = configured && member === 'joined'
     const hasUpdate = newer(s.latest, VERSION)
-    const room = Math.max(3, (e.viewport?.rows ?? 30) - (showSettings ? 30 : 18) - Math.min(open.length, 6))
+    const leaving = inSession && (await read($, confirmLeave))
+    // Shared docs, newest first. Details arrive a moment after the names; until then, the names alone.
+    const meta = await read($, docList)
+    const peek = await read($, docOpen)
+    const docs: DocMeta[] = s.shared
+      .map(n => meta.docs.find(d => d.name === n) ?? { name: n, by: '', at: 0, size: 0 })
+      .sort((a, b) => b.at - a.at)
+    const docRows = docs.length ? Math.min(docs.length, 5) + 1 : 1
+    const room = Math.max(8, (e.viewport?.rows ?? 30) - (showSettings ? 30 : 18) - Math.min(open.length, 6) - docRows)
+    const bubbleCols = Math.floor((e.viewport?.columns ?? 80) * 0.65)
+    const chat = fitChat(chatItems(s.feed, me), room, bubbleCols)
     const activityWord = (p: CrewSnapshot['peers'][number]) =>
       !p.online ? 'offline' : p.activity === 'out' ? 'out of tokens' : p.activity === 'idle' ? '' : p.activity
 
@@ -1541,7 +1715,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row">
             {configured && <Button key="refresh" label="↻ Refresh" onPress={() => refreshPress($)} />}
             <Button key="clawds" label="Clawds" onPress={() => popOutPress($)} />
-            {inSession && <Button key="leave" label="Leave" onPress={() => leavePress($)} />}
+            {inSession && !leaving && <Button key="leave" label="Leave…" onPress={() => askLeave($, true)} />}
             {configured && member === 'left' && <Button key="join" label="Join session" variant="primary" onPress={() => joinPress($)} />}
             <Button key="settings" label={showSettings ? 'Close settings' : '⚙ Settings'} onPress={() => toggleSettings($)} />
           </Box>
@@ -1588,6 +1762,19 @@ export const register: Register = (on, options) => {
         )}
 
         {/* -- notices, only when they apply */}
+        {leaving && (
+          <Callout>
+            <Text bold>Leave the crew session?</Text>
+            <Text dimColor>
+              Your teammates see you leave, and your Claude stops getting crew messages until you press Join session.
+              Closing this pane doesn't leave: you stay in the crew.
+            </Text>
+            <Box flexDirection="row">
+              <Button key="leave-yes" label="Yes, leave" onPress={() => leaveYesPress($)} />
+              <Button key="leave-no" label="Stay" variant="primary" autoFocus onPress={() => askLeave($, false)} />
+            </Box>
+          </Callout>
+        )}
         {pinned.length > 0 && (
           <Callout>
             {pinned.map(p => (
@@ -1813,6 +2000,40 @@ export const register: Register = (on, options) => {
               )}
             </Section>
 
+            <Section title={`Shared docs${docs.length ? ` (${docs.length})` : ''}`}>
+              {docs.length === 0 && <Text dimColor>None yet. Claudes share plans, findings and patches here with crew_share.</Text>}
+              {docs.slice(0, 5).map(d => (
+                <Box flexDirection="column">
+                  <Box flexDirection="row">
+                    <Button key={`doc-${d.name}`} label={`${peek.name === d.name ? '▾' : '▸'} ${d.name}`} plain onPress={() => openDocPress($, d.name)} />
+                    {d.by !== '' && (
+                      <Text dimColor>
+                        {'  '}
+                        {d.by} · {hhmm(d.at)} · {d.size >= 1000 ? `${(d.size / 1000).toFixed(1)}k` : d.size} chars
+                      </Text>
+                    )}
+                  </Box>
+                  {peek.name === d.name && (
+                    <Callout>
+                      {peek.error !== '' && <Text color="error">{peek.error}</Text>}
+                      {peek.error === '' && peek.head.length === 0 && <Text dimColor>Opening…</Text>}
+                      {peek.head.map(l => (
+                        <Text dimColor wrap="truncate-end">
+                          {l || ' '}
+                        </Text>
+                      ))}
+                      {peek.more > 0 && <Text dimColor>…{peek.more} more lines</Text>}
+                      <Box flexDirection="row">
+                        <Button key="doc-copy" label="Copy it all" onPress={() => copyDoc($, e.surface, d.name)} />
+                        <Button key="doc-close" label="Close" dimColor onPress={() => openDocPress($, d.name)} />
+                      </Box>
+                    </Callout>
+                  )}
+                </Box>
+              ))}
+              {docs.length > 5 && <Text dimColor>…and {docs.length - 5} older (crew_read_shared lists them all)</Text>}
+            </Section>
+
             <Section title="Ask a Claude">
                 <Text dimColor>
                   {others.length
@@ -1863,12 +2084,42 @@ export const register: Register = (on, options) => {
                   </Box>
                 </Callout>
               )}
-              {s.feed.length === 0 && <Text dimColor>No messages yet.</Text>}
-              {s.feed.slice(-room).map(m => (
-                <Text dimColor={m.kind === 'update' || m.kind === 'join' || m.kind === 'leave'}>{line(m)}</Text>
-              ))}
+              {s.feed.length === 0 && <Text dimColor>No messages yet. Say hi!</Text>}
+              {chat.map(item =>
+                item.type === 'more' ? (
+                  <Box flexDirection="row" justifyContent="center">
+                    <Text dimColor>· {item.count} more updates ·</Text>
+                  </Box>
+                ) : item.type === 'event' ? (
+                  <Box flexDirection="row" justifyContent="center">
+                    <Text dimColor wrap="truncate-end">
+                      — {item.text} · {hhmm(item.at)} —
+                    </Text>
+                  </Box>
+                ) : (
+                  // a bubble: yours on the right, theirs on the left, at most about two thirds of the width
+                  <Box flexDirection="row" justifyContent={item.mine ? 'flex-end' : 'flex-start'}>
+                    <Box flexDirection="column" width="65%" alignItems={item.mine ? 'flex-end' : 'flex-start'}>
+                      <Text dimColor bold={!item.mine}>
+                        {groupHeader(item, me)}
+                      </Text>
+                      <Box
+                        flexDirection="column"
+                        borderStyle="round"
+                        borderColor={item.request ? 'warning' : item.mine ? 'suggestion' : undefined}
+                        borderDimColor={!item.mine && !item.request}
+                        paddingX={1}
+                      >
+                        {item.msgs.map(m => (
+                          <Text>{bubbleText(m)}</Text>
+                        ))}
+                      </Box>
+                    </Box>
+                  </Box>
+                ),
+              )}
               {Input && (
-                <Input key="say" placeholder="Chat with the people (Claudes don't read this; @name to DM)" submitLabel="send" onSubmit={(v: string) => say($, v)} />
+                <Input key="say" placeholder="Message the people (Claudes don't read this; @name to DM)" submitLabel="send" onSubmit={(v: string) => say($, v)} />
               )}
             </Section>
           </Box>

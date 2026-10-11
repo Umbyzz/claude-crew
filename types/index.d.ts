@@ -66,6 +66,9 @@ declare module 'claude-code' {
       askTo: string
       briefed: number
       confirmClear: boolean
+      confirmLeave: boolean
+      docList: { names: string; docs: { name: string; by: string; at: number; size: number }[] }
+      docOpen: { name: string; head: string[]; more: number; error: string }
     }
   }
 }
