@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.8.8'
+const VERSION = '0.8.9'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -44,6 +44,8 @@ const pins = atom({ plugin: 'crew', key: 'pins' } as const, [] as Pin[])
 const pendingLeader = atom({ plugin: 'crew', key: 'pendingLeader' } as const, '') // "make X the leader?" awaiting a yes
 const joinMode = atom({ plugin: 'crew', key: 'joinMode' } as const, false) // first-run setup: joining a friend's crew
 const askTo = atom({ plugin: 'crew', key: 'askTo' } as const, '') // whose Claude "Ask a Claude" goes to ('' = the leader)
+const briefed = atom({ plugin: 'crew', key: 'briefed' } as const, 0) // newest message id (+1) this session's Claude was caught up to
+const confirmClear = atom({ plugin: 'crew', key: 'confirmClear' } as const, false) // "remove every open task?" awaiting a yes
 
 // Relay time (seconds) as "HH:MM:SS.mmm UTC", for the sent/delivered stamps on crew messages.
 function stamp(at: number) {
@@ -144,7 +146,19 @@ function line(m: CrewMessage) {
 
 // -- the crew session: joining, leaving, and asking after a restart
 
+let joining = false // a second Join (double press, or Start relay joining too) waits out the first instead of re-briefing
+
 async function joinSession($: EngineInterface) {
+  if (joining) return
+  joining = true
+  try {
+    await joinOnce($)
+  } finally {
+    joining = false
+  }
+}
+
+async function joinOnce($: EngineInterface) {
   await update($, membership, () => 'joined' as Membership)
   await $.store.set(`membership:${cfg.base}`, 'joined')
   joined = true
@@ -521,6 +535,40 @@ function makeBlocks(Box: any, Text: any) {
   return { Section, Callout }
 }
 
+// -- the task manager in /crew: the same board the Claudes use through crew_task
+
+function taskAction($: EngineInterface, body: Record<string, unknown>, done?: string) {
+  if (!joined) {
+    $.ui.toast('crew: join the crew session first (Join session, top right)', { timeoutMs: 5000 })
+    return
+  }
+  void relay($, 'POST', '/tasks', body)
+    .then(() => poll($))
+    .then(() => done && $.ui.toast(`crew: ${done}`, { timeoutMs: 3000 }))
+    .catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
+}
+
+function addTask($: EngineInterface, value: string) {
+  // "title @name" assigns it straight away
+  const m = value.trim().match(/^([\s\S]*?)(?:\s+@(\S+))?$/)
+  const title = (m?.[1] ?? '').trim()
+  if (!title) return
+  taskAction($, { action: 'add', title, assignee: m?.[2] }, 'task added')
+}
+
+function askClear($: EngineInterface, on: boolean) {
+  void update($, confirmClear, () => on)
+}
+
+async function clearTasks($: EngineInterface) {
+  await update($, confirmClear, () => false)
+  const s = await read($, snapshot)
+  const ids = s.tasks.filter(t => t.status !== 'done').map(t => t.id)
+  for (const id of ids) await relay($, 'POST', '/tasks', { action: 'remove', id }).catch(() => {})
+  await poll($).catch(() => {})
+  $.ui.toast(`crew: removed ${ids.length} task${ids.length === 1 ? '' : 's'}`, { timeoutMs: 4000 })
+}
+
 function setAskTo($: EngineInterface, name: string) {
   void update($, askTo, () => name)
 }
@@ -846,9 +894,12 @@ async function startRelay($: EngineInterface): Promise<boolean> {
   return false
 }
 
+// Start relay = host and be in it: once the relay answers, join the session too (if you weren't already).
 function startRelayPress($: EngineInterface) {
-  void startRelay($).then(up => {
-    if (up) refresh($).catch(() => {})
+  void startRelay($).then(async up => {
+    if (!up) return
+    if (!joined && isHosting()) await joinSession($).catch(() => {})
+    else await refresh($).catch(() => {})
   })
 }
 
@@ -996,6 +1047,10 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
   const msgs = fresh.slice(-30)
   const hidden = all.length - msgs.length
   if (!tasks.length && !msgs.length) return
+  // This Claude was already briefed in this session and nothing happened since: don't spend tokens saying it again.
+  const newest = all.length ? all[all.length - 1].id : 0
+  if ((await read($, briefed)) === newest + 1 && !msgs.length) return
+  await update($, briefed, () => newest + 1) // +1 so an empty relay (newest 0) still counts as briefed
   const leader = data.leader ?? null
   const role =
     leader === cfg.me
@@ -1437,6 +1492,7 @@ export const register: Register = (on, options) => {
     const joining = await read($, joinMode)
     const open = s.tasks.filter(t => t.status !== 'done')
     const others = s.peers.filter(p => p.name !== me).map(p => p.name).sort()
+    const clearing = (await read($, confirmClear)) && open.length > 0
     const askPick = await read($, askTo)
     const askTarget = askPick && others.includes(askPick) ? askPick : s.leader && s.leader !== me ? s.leader : ''
     const names = [...new Set([...s.peers.map(p => p.name), ...(me ? [me] : [])])].sort()
@@ -1600,13 +1656,14 @@ export const register: Register = (on, options) => {
               {isHosting() && s.connected ? (
                 <Button key="host-settings" label="Hosting ✓" onPress={() => hostPress($)} />
               ) : isHosting() ? (
-                <Button key="start-relay-settings" label="Start relay" variant="primary" onPress={() => startRelayPress($)} />
+                <Button key="start-relay-settings" label="Start relay (double-click)" variant="primary" onPress={() => startRelayPress($)} />
               ) : (
                 <Box flexDirection="row">
                   <Button key="host-settings" label="Host a crew" variant="primary" onPress={() => hostPress($)} />
-                  <Button key="start-relay-settings" label="Start relay" onPress={() => startRelayPress($)} />
+                  <Button key="start-relay-settings" label="Start relay (double-click)" onPress={() => startRelayPress($)} />
                 </Box>
               )}
+              {member !== 'joined' && <Button key="join-settings" label="Join session" onPress={() => joinPress($)} />}
             </Box>
             {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
             <Text dimColor>Or join a friend: paste their Relay URL and Crew key. Press Enter in a field to save it.</Text>
@@ -1716,12 +1773,33 @@ export const register: Register = (on, options) => {
               ))}
             </Section>
 
-            <Section title={`Tasks${open.length ? ` (${open.length} open)` : ''}`}>
+            <Section
+              title={`Tasks${open.length ? ` (${open.length} open)` : ''}`}
+              right={open.length > 1 && !clearing && <Button key="clear-tasks" label="Clear all" dimColor onPress={() => askClear($, true)} />}
+            >
+              {clearing && (
+                <Callout>
+                  <Text bold>⚠ Remove all {open.length} open tasks, for everyone?</Text>
+                  <Box flexDirection="row">
+                    <Button key="clear-yes" label="Yes, remove them" onPress={() => void clearTasks($)} />
+                    <Button key="clear-no" label="Cancel" variant="primary" onPress={() => askClear($, false)} />
+                  </Box>
+                </Callout>
+              )}
               {open.length === 0 && <Text dimColor>No open tasks.</Text>}
-              {open.slice(-6).map(t => (
-                <Text>• {fmtTask(t)}</Text>
+              {open.slice(-8).map(t => (
+                <Box flexDirection="row" justifyContent="space-between">
+                  <Text>• {fmtTask(t)}</Text>
+                  <Box flexDirection="row">
+                    <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `#${t.id} done`)} />
+                    <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `#${t.id} removed`)} />
+                  </Box>
+                </Box>
               ))}
-              {open.length > 6 && <Text dimColor>…and {open.length - 6} more (crew_status shows them all)</Text>}
+              {open.length > 8 && <Text dimColor>…and {open.length - 8} more (crew_status shows them all)</Text>}
+              {Input && (
+                <Input key="add-task" placeholder="Add a task (end with @name to assign it)" submitLabel="add" onSubmit={(v: string) => addTask($, v)} />
+              )}
             </Section>
 
             <Section title="Ask a Claude">

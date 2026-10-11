@@ -64,6 +64,8 @@ declare module 'claude-code' {
       pendingLeader: string
       joinMode: boolean
       askTo: string
+      briefed: number
+      confirmClear: boolean
     }
   }
 }

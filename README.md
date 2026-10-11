@@ -122,6 +122,7 @@ Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the 
 2. Give the leader's Claude a goal, for example: *"We're building X. Plan it and split it across the crew."*
 3. The leader adds tasks to the board and assigns them. Everyone else's Claude picks up its assignments, works on them and reports back.
 4. **Chat** at the bottom of `/crew` is for the people: everyone sees it in `/crew`, but no Claude reads it, so it costs no tokens. Type `@name message` to DM someone.
+4b. **Tasks** in `/crew` is a small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
 5. **Ask a Claude** (above the chat) talks straight to a teammate's Claude, the leader's by default. It arrives as a request, so that Claude starts on it right away when its Auto-run allows: on *only from the leader*, the leader's Claude takes anyone's Ask a Claude, and the others take only the leader's.
 6. Done for the day? Press **Leave session**, or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**.
 7. **↻ Refresh** (top of `/crew`) reconnects to the relay right away and re-checks GitHub for updates. Use it after the host restarts the relay.

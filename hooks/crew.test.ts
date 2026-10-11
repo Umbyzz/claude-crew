@@ -717,6 +717,64 @@ test('Ask a Claude sends a request to the leader by default, flagged as typed by
   expect(JSON.parse(send?.init.body)).toEqual({ text: 'plan the next sprint', to: 'alice', kind: 'request', human: true })
 })
 
+test('the task manager in /crew finishes, removes, adds and clears tasks', { options: OPTIONS }, async ($, on) => {
+  const posted: any[] = []
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const tasks = [
+    { id: 3, title: 'Write login tests', note: '', status: 'open', owner: null, assignee: 'bob', by: 'alice', at: 0 },
+    { id: 4, title: 'Old Roblox thing', note: '', status: 'open', owner: null, assignee: null, by: 'alice', at: 0 },
+  ]
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posted.push(JSON.parse(e.init.body))
+      return { value: { status: 200, ok: true, headers: {}, text: '{"id": 9}' } }
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, tasks }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'task-done-3' })
+  await ui.press({ key: 'task-rm-4' })
+  await ui.input({ key: 'add-task', text: 'Fix the jump @bob' })
+  await settle()
+  expect(posted).toContainEqual({ action: 'done', id: 3 })
+  expect(posted).toContainEqual({ action: 'remove', id: 4 })
+  expect(posted).toContainEqual({ action: 'add', title: 'Fix the jump', assignee: 'bob' })
+
+  posted.length = 0
+  await ui.press({ key: 'clear-tasks' })
+  expect(await ui.find({ text: /Remove all 2 open tasks/ } as any)).toBeDefined()
+  await ui.press({ key: 'clear-no' })
+  expect(posted.length).toBe(0)
+  await ui.press({ key: 'clear-tasks' })
+  await ui.press({ key: 'clear-yes' })
+  await settle()
+  expect(posted.filter(p => p.action === 'remove').map(p => p.id).sort()).toEqual([3, 4])
+  await ui.unmount()
+})
+
+test('joining twice with nothing new briefs Claude only once', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 7 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages: [{ id: 7, from: 'bob', to: 'all', kind: 'update', text: 'added task #3', at: 0 }] }) } }))
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'leave' })
+  await settle()
+  await ui.press({ key: 'join' })
+  await settle()
+  await ui.press({ key: 'leave' })
+  await settle()
+  await ui.press({ key: 'join' })
+  await settle()
+  await ui.unmount()
+  const briefs = session.appended().filter(r => JSON.stringify(r.message.content).includes('crew-catchup'))
+  expect(briefs.length).toBe(1)
+})
+
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
   const seen: { url: string; init: any }[] = []
   mock.store(on)
