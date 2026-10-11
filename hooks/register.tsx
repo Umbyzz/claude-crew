@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.7.0'
+const VERSION = '0.7.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -302,6 +302,10 @@ function setOption($: EngineInterface, field: string, value: string) {
 }
 
 function testConnection($: EngineInterface, base: string) {
+  if (!base) {
+    $.ui.toast('crew: type the relay URL above and press Enter to save it first', { timeoutMs: 6000 })
+    return
+  }
   void $.http
     .fetch(`${base}/health`)
     .then(r => $.ui.toast(r.ok ? `crew: relay reachable (${r.text.slice(0, 60)})` : `crew: relay answered ${r.status}`))
@@ -639,7 +643,10 @@ export const register: Register = (on, options) => {
         {showSettings && (
           <Box flexDirection="column" borderStyle="round" paddingX={1}>
             <Text bold>Settings</Text>
-            <Text dimColor>Each field saves on Enter.</Text>
+            <Text dimColor>Each field saves when you press Enter in it.</Text>
+            <Text dimColor>
+              Saved: relay URL {base ? '✓' : '✗'} · name {me ? '✓' : '✗'} · key {key ? '✓' : '✗'}
+            </Text>
             {Input && (
               <Input key="opt-relayUrl" label="Relay URL " value={base} placeholder="http://26.x.x.x:7777" submitLabel="save" onSubmit={(v: string) => setOption($, 'relayUrl', v)} />
             )}
@@ -696,7 +703,7 @@ export const register: Register = (on, options) => {
                 onSelect={(v: string) => setOption($, 'clawdsWindow', v)}
               />
             )}
-            {base !== '' && <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />}
+            <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />
           </Box>
         )}
 
