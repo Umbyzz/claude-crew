@@ -829,11 +829,19 @@ test('the task manager in /crew finishes, removes, adds and clears tasks', { opt
   await ui.press({ key: 'tab-tasks' })
   await ui.press({ key: 'task-done-3' })
   await ui.press({ key: 'task-rm-4' })
+  await ui.input({ key: 'add-task', text: 'Fix the jump @bob', kind: 'change' } as any)
+  expect((await ui.find({ key: 'add-task' }) as any).props.value).toBe('Fix the jump @bob')
   await ui.input({ key: 'add-task', text: 'Fix the jump @bob' })
   await settle()
   expect(posted).toContainEqual({ action: 'done', id: 3 })
   expect(posted).toContainEqual({ action: 'remove', id: 4 })
   expect(posted).toContainEqual({ action: 'add', title: 'Fix the jump', assignee: 'bob' })
+  expect((await ui.find({ key: 'add-task' }) as any).props.value).toBe('') // the field empties after Enter
+  await ui.press({ key: 'tab-chat' })
+  await ui.input({ key: 'say', text: 'hi', kind: 'change' } as any)
+  await ui.input({ key: 'say', text: 'hi' })
+  expect((await ui.find({ key: 'say' }) as any).props.value).toBe('')
+  await ui.press({ key: 'tab-tasks' })
 
   posted.length = 0
   await ui.press({ key: 'clear-tasks' })

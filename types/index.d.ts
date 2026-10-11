@@ -101,6 +101,7 @@ declare module 'claude-code' {
       projectMenu: string
       docDeleting: string
       tipSeen: boolean
+      drafts: Record<string, string>
     }
   }
 }

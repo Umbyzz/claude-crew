@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.5.4'
+const VERSION = '1.5.5'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -882,6 +882,19 @@ function tick($: EngineInterface) {
 function fastTick($: EngineInterface) {
   if (!joined || skip > 0) return
   if (working || Date.now() - lastTalk < 30000) poll($).catch(() => {})
+}
+
+// What's typed in the say/ask/add-task fields. An Input keeps the person's typing until the hook draws
+// a different value, so each field is drawn from its draft and the draft goes back to '' after Enter.
+const drafts = atom({ plugin: 'crew', key: 'drafts' } as const, {} as Record<string, string>)
+
+function setDraft($: EngineInterface, field: string, value: string) {
+  void update($, drafts, d => (d[field] === value ? d : { ...d, [field]: value }))
+}
+
+function submitted($: EngineInterface, field: string, run: () => unknown) {
+  setDraft($, field, '')
+  return run()
 }
 
 function say($: EngineInterface, value: string) {
@@ -2332,6 +2345,7 @@ export const register: Register = (on, options) => {
     const folderMode = await read($, folderModeAtom)
     const invite = await read($, inviteAtom)
     const deletingDoc = await read($, docDeleting)
+    const draft = await read($, drafts)
     const showTip = configured && !(await read($, tipSeen)) && !(await $.store.get('tip:doubleClick'))
     const deleting = await read($, deleteStage)
     const menuOpen = await read($, projectMenu)
@@ -2775,10 +2789,19 @@ export const register: Register = (on, options) => {
                     key="ask"
                     placeholder={`Ask ${askTarget}'s Claude (it starts right away if their Auto-run allows)`}
                     submitLabel="ask"
-                    onSubmit={(v: string) => ask($, askTarget, v)}
+                    value={draft.ask ?? ''}
+                    onInput={(v: string) => setDraft($, 'ask', v)}
+                    onSubmit={(v: string) => submitted($, 'ask', () => ask($, askTarget, v))}
                   />
                 ) : (
-                  <Input key="say" placeholder="Message the people (@name to DM)" submitLabel="send" onSubmit={(v: string) => say($, v)} />
+                  <Input
+                    key="say"
+                    placeholder="Message the people (@name to DM)"
+                    submitLabel="send"
+                    value={draft.say ?? ''}
+                    onInput={(v: string) => setDraft($, 'say', v)}
+                    onSubmit={(v: string) => submitted($, 'say', () => say($, v))}
+                  />
                 ))}
             </Box>
           </Card>
@@ -2812,7 +2835,14 @@ export const register: Register = (on, options) => {
             {open.length > taskRows && <Text dimColor>…and {open.length - taskRows} more (crew_status shows them all)</Text>}
             {Input && (
               <Box marginTop={1}>
-                <Input key="add-task" placeholder="Add a task (end with @name to assign it)" submitLabel="add" onSubmit={(v: string) => addTask($, v)} />
+                <Input
+                  key="add-task"
+                  placeholder="Add a task (end with @name to assign it)"
+                  submitLabel="add"
+                  value={draft['add-task'] ?? ''}
+                  onInput={(v: string) => setDraft($, 'add-task', v)}
+                  onSubmit={(v: string) => submitted($, 'add-task', () => addTask($, v))}
+                />
               </Box>
             )}
           </Card>
