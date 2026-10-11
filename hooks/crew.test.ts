@@ -977,7 +977,7 @@ test('with a projects home set, a new project gets its own folder there', { opti
   await ui.press({ key: 'new-project-open' })
   // no projects home yet: it's offered right there, with "Choose…" for your own
   expect(await ui.find({ key: 'home-default' })).toBeDefined()
-  await ui.press({ key: 'home-choose' })
+  await ui.press({ key: 'home-paste' }) // "Choose…" opens Windows' folder picker instead
   await ui.input({ key: 'projects-home', text: 'C:\\Crew' })
   await settle()
   await ui.input({ key: 'new-project', text: 'lava' })
@@ -1071,6 +1071,51 @@ test('the Crew tab shows who is on which version, and nudges whoever is behind',
   await ui.unmount()
   const body = JSON.parse(seen.find(s => s.url.endsWith('/send'))?.init.body)
   expect(body).toMatchObject({ to: 'bob', kind: 'chat', human: true, notify: true })
+})
+
+test('an invite to another project shows a notice; Switch moves you there', { options: OPTIONS }, async ($, on) => {
+  const seen: { url: string; init: any }[] = []
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  let polls = 0
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    polls += 1
+    const messages = polls === 1 ? [{ id: 9201, from: 'bob', to: 'all', kind: 'invite', invite: 'lava', text: 'invites everyone to the project "lava"', at: 0 }] : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 9201 }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(session.appended().some(r => JSON.stringify(r.message.content).includes('invites everyone'))).toBe(false) // no tokens
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /bob invites you to the project "lava"/ } as any)).toBeDefined()
+  await ui.press({ key: 'invite-accept' })
+  await settle()
+  expect(seen[seen.length - 1].init.headers['X-Crew-Project']).toBe('lava')
+  await ui.unmount()
+  await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any) // leave the shared module state on main
+})
+
+test('Use a different folder… opens the Windows folder picker and uses what you choose', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  const ran: string[] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    const line = e.argv.join(' ')
+    ran.push(line)
+    const picker = line.includes('FolderBrowserDialog')
+    return { value: { exitCode: 0, stdout: picker ? 'D:\\Games\\Lava\r\n' : '', stderr: '' } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  await ui.press({ key: 'folder-browse' })
+  await settle(200)
+  expect(ran.some(l => l.includes('-STA') && l.includes('FolderBrowserDialog'))).toBe(true)
+  expect(await ui.find({ text: /D:\\Games\\Lava/ } as any)).toBeDefined()
+  await ui.unmount()
 })
 
 test('tasks read as T-numbers, and a stale claim says anyone can take it', { options: OPTIONS }, async ($, on) => {

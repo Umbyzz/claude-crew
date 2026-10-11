@@ -18,7 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.4.2"
+VERSION = "1.5.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -79,7 +79,7 @@ def project_of(headers_or_value):
     return name or MAIN
 
 
-CREW_WIDE = ("join", "leave", "out", "back")  # about a person, not a project: every project shows them
+CREW_WIDE = ("join", "leave", "out", "back", "invite")  # about a person (or asking people over): every project shows them
 
 
 def in_project(m, project):
@@ -535,7 +535,7 @@ class Handler(BaseHTTPRequestHandler):
                 text = str(b.get("text", "")).strip()
                 if not text:
                     return self.reply(400, {"error": "empty text"})
-                kind = b.get("kind") if b.get("kind") in ("chat", "request", "update", "out", "back") else "chat"
+                kind = b.get("kind") if b.get("kind") in ("chat", "request", "update", "out", "back", "invite") else "chat"
                 if kind == "out":  # "out of tokens" once per outage, not again on every reconnect
                     last = next((m for m in reversed(state["messages"])
                                  if m["from"] == self.name and m["kind"] in ("out", "back")), None)
@@ -543,7 +543,9 @@ class Handler(BaseHTTPRequestHandler):
                         return self.reply(200, last)
                 extra = {"notify": True} if b.get("notify") else {}  # "for your human": shown to them, not just their Claude
                 if b.get("human"):
-                    extra["human"] = True  # typed by a person in /crew, not sent by their Claude
+                    extra["human"] = True
+                if kind == "invite":
+                    extra["invite"] = self.project  # the project being invited to  # typed by a person in /crew, not sent by their Claude
                 msg = post_message(self.name, str(b.get("to") or "all")[:40], text, kind, self.project, **extra)
                 save()
                 return self.reply(200, msg)

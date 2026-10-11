@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.4.2'
+const VERSION = '1.5.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -240,7 +240,7 @@ async function setFolder($: EngineInterface, raw: string) {
   const path = raw.trim().replace(/^["']|["']$/g, '').replace(/[\\/]+$/, '')
   if (!path) return
   await $.store.set(`folder:${cfg.base}:${projectName}`, path)
-  await loadFolder($, `Folder for "${projectName}" set.`)
+  await loadFolder($, `Folder for "${projectName}" set to ${shortPath(path)}.`)
 }
 
 // "Projects home": set once, and every project without a folder of its own gets <home>\<project name>,
@@ -263,7 +263,7 @@ async function homeFolderFor($: EngineInterface, announce = false) {
   const path = `${home}\\${projectName.replace(/[<>:"/\\|?*]/g, '').trim() || 'main'}`
   const made = await makeDir($, path)
   if (made.ok) await $.store.set(`folder:${cfg.base}:${projectName}`, path)
-  await loadFolder($, made.ok ? (announce ? `Projects home set: "${projectName}" lives in ${path}.` : `Made ${path} for "${projectName}".`) : `Couldn't make ${path}: ${made.out.slice(0, 120)}`)
+  await loadFolder($, made.ok ? (announce ? `New project folders now go in ${shortPath(home)}.` : `Made its folder: ${shortPath(path)}.`) : `Couldn't make ${shortPath(path)}: ${made.out.slice(0, 120)}`)
 }
 
 async function useChatFolder($: EngineInterface) {
@@ -299,6 +299,51 @@ function shortPath(p: string) {
   return userHome && p.toLowerCase().startsWith(userHome.toLowerCase() + '\\') ? p.slice(userHome.length + 1) : p
 }
 
+// Windows' own folder chooser, on top of everything; resolves to the chosen folder, or '' when cancelled.
+async function pickFolder($: EngineInterface, title: string, start: string) {
+  const script =
+    `Add-Type -AssemblyName System.Windows.Forms; ` +
+    `$d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = ${psPath(title)}; $d.ShowNewFolderButton = $true; ` +
+    (start ? `if (Test-Path -LiteralPath ${psPath(start)}) { $d.SelectedPath = ${psPath(start)} }; ` : '') +
+    `$o = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false }; ` +
+    `if ($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }`
+  // up to 10 minutes to choose: the person is clicking around, not the plugin working
+  const r = await ran($, ['powershell', '-NoProfile', '-STA', '-Command', script], 600000)
+  return r.ok ? r.out.split(/\r?\n/).map(l => l.trim()).filter(Boolean).pop() ?? '' : ''
+}
+
+async function browseProjectsHome($: EngineInterface) {
+  const picked = await pickFolder($, 'Where should new crew project folders go?', (await projectsHome($)) || `${userHome}\\Documents`)
+  if (picked) await setProjectsHome($, picked)
+}
+
+async function browseProjectFolder($: EngineInterface) {
+  const picked = await pickFolder($, `Folder for the crew project "${projectName}"`, (await projectFolder($)).path || userHome)
+  if (picked) {
+    await setFolder($, picked)
+    setFolderMode($, '')
+  }
+}
+
+// -- invites: projects are per person, so the crew is asked along instead of moved
+
+type Invite = { from: string; project: string }
+const inviteAtom = atom({ plugin: 'crew', key: 'invite' } as const, { from: '', project: '' } as Invite)
+
+function inviteCrew($: EngineInterface) {
+  void relay($, 'POST', '/send', { to: 'all', kind: 'invite', text: `invites everyone to the project "${projectName}"` })
+    .then(() => $.ui.toast(`crew: invited the crew to "${projectName}"`, { timeoutMs: 5000 }))
+    .catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
+}
+
+function answerInvite($: EngineInterface, accept: boolean) {
+  void (async () => {
+    const inv = await read($, inviteAtom)
+    await update($, inviteAtom, () => ({ from: '', project: '' }))
+    if (accept && inv.project) await switchProject($, inv.project)
+  })().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
+}
+
 function copyPath($: EngineInterface, surface: any, path: string) {
   void $.ui
     .copy({ text: path, surface })
@@ -312,7 +357,11 @@ function newProjectPress($: EngineInterface, raw: string) {
     const existed = (await read($, snapshot)).projects?.some(p => p.name === name)
     await switchProject($, name)
     setFolderMode($, '')
-    if (!existed) $.ui.toast(`crew: made "${name}" (and its folder). Teammates can pick it from the list.`, { timeoutMs: 8000 })
+    if (!existed) {
+      await relay($, 'POST', '/leader', { name: cfg.me }).catch(() => {}) // whoever makes a project leads it
+      await poll($).catch(() => {})
+      $.ui.toast(`crew: made "${name}" with its own folder, and you lead it. Press "Invite the crew here" to bring the others.`, { timeoutMs: 10000 })
+    }
   })().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
 
@@ -624,6 +673,10 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
       await update($, pins, list => [...list, { id: m.id, from: m.from, text: m.text, at: m.at }].slice(-3))
     } else if (cfg.toasts === 'all' || (cfg.toasts === 'direct' && important))
       $.ui.toast(toast.slice(0, 300), { timeoutMs: m.kind === 'out' || m.kind === 'leave' ? 10000 : 6000 })
+    if (m.kind === 'invite') {
+      if (m.invite && m.invite !== projectName) await update($, inviteAtom, () => ({ from: m.from, project: m.invite ?? '' }))
+      continue
+    }
     if (m.kind === 'update' || m.kind === 'join') continue
     lastTalk = Date.now()
     // People chatting in /crew is for the people: their Claudes don't read it, which keeps it out of every
@@ -1604,7 +1657,7 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
   const data = await relay($, 'GET', '/poll?since=0')
   const tasks: CrewTask[] = (data.tasks ?? []).filter((t: CrewTask) => t.status !== 'done')
   // people's /crew chat stays out of the briefing too, like it stays out of live delivery
-  const all: CrewMessage[] = (data.messages ?? []).filter((m: CrewMessage) => m.kind !== 'join' && !(m.human && m.kind === 'chat'))
+  const all: CrewMessage[] = (data.messages ?? []).filter((m: CrewMessage) => m.kind !== 'join' && m.kind !== 'leave' && m.kind !== 'invite' && !(m.human && m.kind === 'chat'))
   // Back after a break: only what happened since we last looked. First time here: the recent history.
   const fresh = lastSeen > 0 ? all.filter(m => m.id > lastSeen) : all
   const msgs = fresh.slice(-30)
@@ -2189,6 +2242,8 @@ export const register: Register = (on, options) => {
     const kicking = await read($, kickPending)
     const home = configured ? await projectsHome($) : ''
     const folderMode = await read($, folderModeAtom)
+    const invite = await read($, inviteAtom)
+    const elsewhere = s.peers.filter(p => p.online && p.name !== me && (p.project ?? 'main') !== projectName).map(p => p.name)
     const projectNames = [...new Set(['main', projectName, ...(s.projects ?? []).map(p => p.name)])]
     const here = s.peers.filter(p => p.online && (p.project ?? 'main') === projectName).map(p => p.name)
     const canKick = s.leader === me || isHosting() // the relay checks this too
@@ -2297,6 +2352,16 @@ export const register: Register = (on, options) => {
         )}
 
         {/* -- notices, only when they apply */}
+        {inSession && invite.project !== '' && invite.project !== projectName && (
+          <Callout>
+            <Text bold>{invite.from} invites you to the project "{invite.project}"</Text>
+            <Text dimColor>Switching is just for you: you'll see that project's chat, tasks and docs, and your Claude gets a catch-up.</Text>
+            <Box flexDirection="row">
+              <Button key="invite-accept" label={`Switch to ${invite.project}`} variant="primary" onPress={() => answerInvite($, true)} />
+              <Button key="invite-dismiss" label="Not now" onPress={() => answerInvite($, false)} />
+            </Box>
+          </Callout>
+        )}
         {leaving && (
           <Callout>
             <Text bold>Leave the crew session?</Text>
@@ -2493,6 +2558,10 @@ export const register: Register = (on, options) => {
                   onSubmit={(v: string) => folderPress($, () => setProjectsHome($, v))}
                 />
               )}
+              <Box flexDirection="row">
+                <Text dimColor>{'  '}or </Text>
+                <Button key="projects-home-browse" label="Browse…" onPress={() => folderPress($, () => browseProjectsHome($))} />
+              </Box>
             </Card>
 
             <Card
@@ -2670,9 +2739,13 @@ export const register: Register = (on, options) => {
                 Switching is just for you. Everyone in a project shares its chat, tasks and docs.
                 {projectNames.length <= 1 ? " Everyone starts in 'main': make a project per game or app to keep its chat, tasks and docs separate." : ''}
               </Text>
-              <Text dimColor>
-                Here: {here.length ? here.join(', ') : 'just you'} · Leader of {projectName}: {s.leader ?? 'none yet (Crew tab)'}
-              </Text>
+              <Box flexDirection="row" justifyContent="space-between">
+                <Text dimColor>
+                  Here: {here.length ? here.join(', ') : 'just you'} · Leader of {projectName}: {s.leader ?? 'none yet (Crew tab)'}
+                </Text>
+                {elsewhere.length > 0 && <Button key="invite-here" label="Invite the crew here" onPress={() => inviteCrew($)} />}
+              </Box>
+              {elsewhere.length > 0 && <Text dimColor>Not here yet: {elsewhere.join(', ')}</Text>}
               {folderMode === 'new' && (
                 <Callout>
                   {Input && (
@@ -2685,7 +2758,8 @@ export const register: Register = (on, options) => {
                       <Text>New project folders go in:</Text>
                       <Box flexDirection="row">
                         <Button key="home-default" label={`Documents\\Crew projects`} variant="primary" onPress={() => folderPress($, () => setProjectsHome($, `${userHome}\\Documents\\Crew projects`))} />
-                        <Button key="home-choose" label="Choose…" onPress={() => setFolderMode($, 'home')} />
+                        <Button key="home-choose" label="Choose…" onPress={() => folderPress($, () => browseProjectsHome($))} />
+                        <Button key="home-paste" label="Paste a path" dimColor onPress={() => setFolderMode($, 'home')} />
                       </Box>
                     </Box>
                   )}
@@ -2702,7 +2776,7 @@ export const register: Register = (on, options) => {
                   {folder.path !== '' && <Button key="folder-refresh" label="↻" dimColor onPress={() => folderPress($, () => loadFolder($))} />}
                 </Box>
                 {folder.path === '' ? (
-                  <Text dimColor>No folder yet: press "Use a different folder…".</Text>
+                  <Text dimColor>No folder yet: press "Use a different folder…" to pick one.</Text>
                 ) : (
                   <Text wrap="truncate-middle">{shortPath(folder.path)}</Text>
                 )}
@@ -2712,7 +2786,8 @@ export const register: Register = (on, options) => {
                   {folder.path !== '' && <Button key="folder-open" label="Open folder" variant="primary" onPress={() => openInExplorer($, folder.path)} />}
                   {folder.path !== '' && <Button key="folder-copy" label="Copy path" onPress={() => copyPath($, e.surface, folder.path)} />}
                   {folder.path !== '' && <Button key="folder-sub-open" label="+ Folder" dimColor={folderMode !== 'sub'} onPress={() => setFolderMode($, folderMode === 'sub' ? '' : 'sub')} />}
-                  <Button key="folder-change-open" label="Use a different folder…" dimColor={folderMode !== 'change'} onPress={() => setFolderMode($, folderMode === 'change' ? '' : 'change')} />
+                  <Button key="folder-browse" label="Use a different folder…" onPress={() => folderPress($, () => browseProjectFolder($))} />
+                  <Button key="folder-change-open" label="…" dimColor onPress={() => setFolderMode($, folderMode === 'change' ? '' : 'change')} />
                 </Box>
                 {folderMode === 'sub' && Input && (
                   <Input key="folder-new" label="New folder " placeholder="name, then Enter" submitLabel="make" autoFocus onSubmit={(v: string) => folderPress($, () => newFolder($, v))} />
@@ -2728,8 +2803,7 @@ export const register: Register = (on, options) => {
                   </Box>
                 )}
                 <Text dimColor>
-                  Each person has their own copy; share files with crew_share or git. Your Claude works in this folder
-                  {sessionCwd && folder.path && folder.path !== sessionCwd ? ` (this chat itself is open in ${shortPath(sessionCwd)})` : ''}.
+                  Each person has their own copy; share files with crew_share or git. Your Claude works in this folder.
                 </Text>
                 {folder.dirs.length > 0 && (
                   <Box flexDirection="row" flexWrap="wrap">

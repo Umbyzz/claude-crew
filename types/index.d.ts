@@ -2,7 +2,8 @@ export type CrewMessage = {
   id: number
   from: string
   to: string
-  kind: 'chat' | 'request' | 'update' | 'out' | 'back' | 'join' | 'leave' | 'image'
+  kind: 'chat' | 'request' | 'update' | 'out' | 'back' | 'join' | 'leave' | 'image' | 'invite'
+  invite?: string // kind 'invite': the project the sender asks people into
   text: string
   at: number
   // images only: the relay's file id, its name, type, size and caption
@@ -93,6 +94,7 @@ declare module 'claude-code' {
       folder: { path: string; chosen: boolean; dirs: string[]; error: string; note: string }
       kickPending: string
       folderMode: '' | 'new' | 'home' | 'sub' | 'change'
+      invite: { from: string; project: string }
     }
   }
 }
