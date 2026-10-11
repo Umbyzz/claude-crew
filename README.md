@@ -10,6 +10,15 @@ Everything goes through one small relay that one of you runs. The plugin talks t
  friend B ─┘     over Tailscale / Radmin VPN / LAN
 ```
 
+## What's new in 1.5
+- **Projects list.** Every project sits in a **Projects** box under main, with who's in it, open tasks and an **unread count**. The ⋯ menu deletes one after a double warning (*You sure?* then *VERY sure??*), and moves its folder to the Recycle Bin when it's inside your projects home.
+- **Invites and a folder picker.** Invite the crew into a project, and press **Set** to pick a folder in Explorer instead of pasting a path.
+- **Delete shared docs** from the Project tab (their author, the project's leader or the host; one confirm), so old plans and patches don't pile up.
+- **Up to ten Clawds**, and the Clawds window works across multiple monitors.
+- **Who's on which version** shows in the Crew tab, so you know who still needs to update.
+- The chat, Ask and Add task fields now **empty after you press Enter**.
+- A one-time **double-click tip**: in the desktop app a button's first click can just focus the pane. That's the app, not crew, so /crew says so once, and **Got it** hides it.
+
 ## What's new in 1.3
 - **Remove (kick)** a teammate from the Crew tab, as leader or host.
 - The Clawds and crew log windows can no longer open twice.
@@ -94,7 +103,7 @@ The host needs Python 3.8 or newer, and nothing else.
 
 **Easiest: host from Claude.** Install the plugin (step 3) and open `/crew`. The setup asks your name, then **Host a crew** or **Join a friend's crew**. **Host a crew** opens `start-relay.bat` in its own window (keep it open while you host) and puts you straight into the session. Press **Copy invite** to get a ready-to-send message with your address, the key and the install steps. **Stop hosting** shuts the relay down. If you're set up as host but the relay isn't running (say, after a reboot), `/crew` says so and shows **▶ Start relay** in its top bar (and in Settings → Connection); it also puts you back in the session. After a crew update, the old relay keeps running until you press **Restart relay** in the version notice: same key, same chat, new code.
 
-> Start relay sometimes needs a double-click in the desktop app. We haven't found why yet, so the button says so.
+> Start relay sometimes needs a double-click in the desktop app: the first click can just focus the pane. That's the desktop app's behavior, not crew's.
 
 **Or the classic way:** double-click **`server/start-relay.bat`**. The first time, it creates a random key, then prints the key and your IP addresses. The key and the saved chat, tasks and docs live in **`%USERPROFILE%\.claude\crew-relay`** (`crew_key.txt`, `crew_state.json`), so they survive plugin updates; older versions kept them next to the .bat, and the first start moves the newest copy over. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow the relay on **private** networks.
 
@@ -229,7 +238,7 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 1.0.1
 - **The pop-out commands are Windows-only** (they use `start`). On other systems, run `python window/clawd_window.py` or `python window/crew_log.py` yourself.
 - **The windows need Python** (with its built-in tkinter) on each person's PC. The relay needs Python only on the host's PC.
 - **In a brand-new desktop chat, `/crew` may be missing from the slash menu at first.** Type `/crew` in full and press Enter: it works, and from then on the menu lists it. (The app builds a new chat's menu before plugins add their commands.)
-- **Buttons in `/crew` sometimes need a double-click** in the desktop app. It's being looked into; a second click always works.
+- **Buttons in `/crew` sometimes need a double-click** in the desktop app: the first click can just focus the pane. That's the app, not crew; `/crew` shows a one-time tip about it, and a second click always works.
 
 ## Safety and privacy
 - A teammate's message reaches your Claude marked as coming from a collaborator, not from you, and your instructions win. Auto-run starts turns, but every tool permission prompt still applies. Only allow requests from people you trust.
