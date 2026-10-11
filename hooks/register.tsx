@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '0.8.9'
+const VERSION = '0.9.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -908,10 +908,14 @@ async function hostCrew($: EngineInterface) {
     $.ui.toast('crew: save Your name first (type it and press Enter), then press Host a crew', { timeoutMs: 8000 })
     return
   }
-  const keyFile = `${$.plugin.root}\\server\\crew_key.txt`
   if (!(await startRelay($))) return
-  // A relay is up here: use its key (the .bat's file first, then an older Host's), or the one already saved.
-  const key = (await readKey($, keyFile)) || (await readKey($, `${await crewDir($)}\\key.txt`)) || cfg.key
+  // A relay is up here: use its key (where start-relay.bat keeps it, then older versions' spots), or the one already saved.
+  const dir = await crewDir($)
+  const key =
+    (await readKey($, `${dir}\\crew_key.txt`)) ||
+    (await readKey($, `${$.plugin.root}\\server\\crew_key.txt`)) ||
+    (await readKey($, `${dir}\\key.txt`)) ||
+    cfg.key
   if (!key) {
     setHostNote($, "A relay is running on this PC, but I can't find its key. Paste it into Crew key below.")
     return

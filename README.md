@@ -71,7 +71,7 @@ The host needs Python 3.8 or newer, and nothing else.
 
 **Easiest: host from Claude.** Install the plugin (step 3) and open `/crew`. The setup asks your name, then **Host a crew** or **Join a friend's crew**. **Host a crew** opens `start-relay.bat` in its own window (keep it open while you host) and puts you straight into the session. Press **Copy invite** to get a ready-to-send message with your address, the key and the install steps. **Stop hosting** shuts the relay down. If you're set up as host but the relay isn't running (say, after a reboot), `/crew` says so and shows a **Start relay** button; it's also in Settings → Connection.
 
-**Or the classic way:** double-click **`server/start-relay.bat`**. The first time, it creates a random key in `server/crew_key.txt`, then prints the key and your IP addresses. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow the relay on **private** networks.
+**Or the classic way:** double-click **`server/start-relay.bat`**. The first time, it creates a random key, then prints the key and your IP addresses. The key and the saved chat, tasks and docs live in **`%USERPROFILE%\.claude\crew-relay`** (`crew_key.txt`, `crew_state.json`), so they survive plugin updates; older versions kept them next to the .bat, and the first start moves the newest copy over. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow the relay on **private** networks.
 
 On another OS, run:
 
@@ -185,7 +185,7 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1 0.7.1
 
 ## Safety and privacy
 - A teammate's message reaches your Claude marked as coming from a collaborator, not from you, and your instructions win. Auto-run starts turns, but every tool permission prompt still applies. Only allow requests from people you trust.
-- The relay keeps the chat, tasks and shared docs in `crew_state.json` on the host's PC. `crew_key.txt` and `crew_state.json` are git-ignored, so they never get committed.
+- The relay keeps the chat, tasks and shared docs in `crew_state.json` on the host's PC (in `~/.claude/crew-relay` when started with `start-relay.bat`). `crew_key.txt` and `crew_state.json` are git-ignored, so they never get committed.
 - The Clawds window only *reads* the relay (`GET /watch`) and never counts as a crew member.
 
 ## Troubleshooting
