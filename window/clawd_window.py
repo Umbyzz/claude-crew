@@ -280,6 +280,8 @@ class Clawd:
         self.blink_at = clock() + random.uniform(2, 6)
         self.look = 0
         self.arm = [0, 0]  # how far each arm is raised (cells)
+        self.swing = "up"  # the blacksmith's hammer: "up" (wound up) or "down" (on the gear)
+        self.struck = False
         self.sit = 0
         self.mini = mini
         self.minis = []
@@ -973,12 +975,23 @@ class World:
                                      "*hacker voice*", "firewall? never heard of it"]), 2.5)
             return
         if a == "working" and c.dramatic:
-            c.mood = "frantic"
-            c.arm = [3, 0] if int(t * 10) % 2 else [0, 3]
-            if c.jump == 0 and random.random() < 0.15:
-                c.hop(2)
-            if random.random() < 0.6:
-                self.emit(c.x + random.uniform(-7, 7), self.ground - random.uniform(6, 16), "spark", "✦", "#E3B23C")
+            # the blacksmith: hard hat on, hammering a mini gear, a shower of sparks on every CLANG
+            c.mood, c.sit, c.look, c.arm = "smith", 0, 0, [0, 0]
+            hit = (t * 1.7) % 1 > 0.7  # a slow wind-up, then the blow
+            c.swing = "down" if hit else "up"
+            if hit and not c.struck:
+                gx = c.x + c.facing * 12
+                for _ in range(7):
+                    self.particles.append({"x": gx + random.uniform(-1, 1), "y": self.ground - 8,
+                                           "vx": random.uniform(-0.9, 0.9), "vy": random.uniform(-1.1, -0.4),
+                                           "life": 0.7, "kind": "spark", "char": "✦",
+                                           "color": random.choice(("#E3B23C", "#ff9f43", "#fff3b0"))})
+                if random.random() < 0.18:
+                    c.say(random.choice(["CLANG!", "*bonk*", "TINK TINK TINK", "percussive maintenance",
+                                         "one more hit…", "fixed it. probably.", "it's supposed to look like that"]), 1.6)
+                if random.random() < 0.1:
+                    c.hop(1.4)
+            c.struck = hit
             return
         if a == "typing":
             # perched on the rim, laptop on the lap (the painter draws both hands on the keys)
@@ -1470,6 +1483,8 @@ class Painter:
             self.lap_laptop(c, x0, y_body, h, w0, w1, now, color)
         elif c.mood in ("thonk", "smug"):
             self.chin_pose(c, x0, y_body, h, w0, w1, color)
+        elif c.mood == "smith":
+            self.smith(c, x0, y_body, h, w0, w1, ground, color)
         else:
             # arms ride at the body's middle, raised by c.arm
             arm_row = max(0, h // 2)
@@ -1511,6 +1526,11 @@ class Painter:
             for ex in (lx - 1, rx):
                 self.cells(x0, y, [(ey - 1, ex, ex + 1), (ey, ex, ex + 1)], INK)
                 self.cells(x0, y, [(ey - 1 + j, ex + j, ex + j)], EYE)
+            return
+        if mood == "smith":
+            # squinting with focus under the hard hat, brows down, tongue out the side
+            self.cells(x0, y, [(ey, lx, lx), (ey, rx, rx), (ey - 1, lx - 1, lx), (ey - 1, rx, rx + 1)], EYE)
+            self.cells(x0, y, [(ey + 2, 7, 7)], "#e06c75")
             return
         if mood == "hacker":
             # pink sunglasses and a smug little smirk
@@ -1556,6 +1576,40 @@ class Painter:
             self.cells(x0, y, [(arm_row - 3, w1 + 4, w1 + 4)], "#f0eee6")  # its handle
         else:
             self.cells(x0, y, [(arm_row, w1 + 1, w1 + 2), (arm_row + 1, w1 + 1, w1 + 2)], color)
+
+    def smith(self, c, x0, y, h, w0, w1, ground, color):
+        """Hard hat, hammer, and a little bronze gear on the ground in front, taking a beating."""
+        f = c.facing or 1
+
+        def dots(ax, ay, pts, col):  # single cells at (row, col) offsets, mirrored to face the gear
+            for r, dx in pts:
+                self.cells(ax + f * dx, ay + r, [(0, 0, 0)], col)
+
+        # the hard hat: a yellow dome with a brim, and a stripe down the middle
+        self.cells(x0, y, [(-2, 4, 9), (-1, 2, 11)], "#E3B23C")
+        self.cells(x0, y, [(-2, 6, 7)], "#c79a2a")
+        # the other arm, relaxed at the side
+        arm_row = max(0, h // 2)
+        back = w0 - 2 if f > 0 else w1 + 1
+        self.cells(x0, y, [(arm_row, back, back + 1), (arm_row + 1, back, back + 1)], color)
+        # the mini gear: bronze, toothy, with a dark hole in the middle
+        gx, gy = c.x + f * 12 - 3, ground - 7
+        self.cells(gx, gy, [(0, 2, 2), (0, 4, 4), (1, 1, 5), (2, 0, 6), (3, 1, 5), (4, 0, 6), (5, 1, 5), (6, 2, 2), (6, 4, 4)],
+                   "#c98a4b")
+        self.cells(gx, gy, [(1, 2, 3), (2, 1, 1)], "#e8b37a")  # a glint
+        self.cells(gx, gy, [(3, 3, 3)], "#4a2e17")  # the axle hole
+        hx = c.x + f * 5  # the hammer hand's column
+        handle, head = "#a0703a", "#7d7d78"
+        if c.swing == "up":
+            # wound up: arm high, hammer held over the shoulder
+            dots(hx, y, [(arm_row - 1, 0), (arm_row - 2, 1), (arm_row - 3, 1)], color)
+            dots(hx, y, [(arm_row - 4, 1), (arm_row - 5, 1), (arm_row - 6, 1)], handle)
+            dots(hx, y, [(arm_row - 7, 0), (arm_row - 7, 1), (arm_row - 7, 2), (arm_row - 8, 0), (arm_row - 8, 1), (arm_row - 8, 2)], head)
+        else:
+            # the blow: arm out, handle level, the head down on the gear
+            dots(hx, y, [(arm_row, 0), (arm_row, 1)], color)
+            dots(hx, ground - 9, [(0, 2), (0, 3), (0, 4), (0, 5)], handle)
+            dots(hx, ground - 10, [(0, 6), (0, 7), (1, 6), (1, 7), (2, 6), (2, 7)], head)
 
     def lap_laptop(self, c, x0, y, h, w0, w1, now, color):
         """The Claude Code pose: laptop on the lap, lid toward us, both hands tapping the keys."""
