@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.9.7'
+const VERSION = '1.9.8'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -2227,6 +2227,30 @@ function invite(ip: string, key: string) {
   )
 }
 
+// 🔑 New crew key (the host only): the relay makes a new key, the old one stops working at once, and the new
+// invite is copied, so whoever still belongs can rejoin. For a teammate who left, or an invite that went astray.
+const keyAsk = atom({ plugin: 'crew', key: 'keyAsk' } as const, false)
+
+function askNewKey($: EngineInterface, show: boolean) {
+  void update($, keyAsk, () => show)
+}
+
+async function newCrewKey($: EngineInterface, surface: any) {
+  await update($, keyAsk, () => false)
+  try {
+    const r = await relay($, 'POST', '/key/rotate', {})
+    const fresh = String(r.key ?? '')
+    if (!fresh) throw new Error('the relay sent no key back')
+    cfg.key = fresh // from now on, with the new key
+    await $.config.set({ key: 'crew.key', value: fresh })
+    await update($, hostInfo, h => ({ ...h, key: fresh }))
+    copyInvite($, surface, (await read($, hostInfo)).ip, fresh)
+    $.ui.toast('crew: new crew key made. The old one no longer works; send the new invite to whoever should be in.', { timeoutMs: 10000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+}
+
 function copyInvite($: EngineInterface, surface: any, ip: string, key: string) {
   const text = invite(ip, key)
   void $.ui
@@ -2336,7 +2360,8 @@ function explain(msg: string) {
     return `Can't reach the relay at ${cfg.base}. Is it running? (the host double-clicks server/start-relay.bat)`
   if (/ETIMEDOUT|timed out|EHOSTUNREACH|ENETUNREACH/i.test(msg))
     return `The relay at ${cfg.base} isn't answering. Check you're on the same Radmin/Tailscale network and the IP is right.`
-  if (/relay 401/.test(msg)) return "The relay refused the crew key: it doesn't match the host's crew_key.txt."
+  if (/relay 401/.test(msg))
+    return "The relay refused the crew key. The host may have made a new one: paste the key from their new invite in ⚙ Settings → Crew key."
   return msg
 }
 
@@ -2866,6 +2891,7 @@ export const register: Register = (on, options) => {
     const showSettings = (await read($, settingsOpen)) && configured // first run uses the guided setup instead
     const member = (await read($, membership)) || (configured ? 'joined' : '')
     const host = await read($, hostInfo)
+    const askingKey = await read($, keyAsk)
     const confirming = await read($, confirmReset)
     const note = await read($, updateNote)
     const hostMsg = await read($, hostNote)
@@ -3773,7 +3799,21 @@ export const register: Register = (on, options) => {
                 <Box flexDirection="row">
                   <Button key="invite" label="Copy invite" variant="primary" onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
                   <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
+                  {!askingKey && <Button key="key-new" label="🔑 New crew key…" dimColor onPress={() => askNewKey($, true)} />}
                 </Box>
+                {askingKey && (
+                  <Callout>
+                    <Text bold>Make a new crew key?</Text>
+                    <Text dimColor>
+                      The old key stops working right away, so everyone is cut off until they paste the new invite (it's copied for you).
+                      Use it when someone left the crew or an invite went somewhere it shouldn't.
+                    </Text>
+                    <Box flexDirection="row">
+                      <Button key="key-new-yes" label="Yes, new key" onPress={() => void newCrewKey($, e.surface)} />
+                      <Button key="key-new-no" label="Cancel" variant="primary" onPress={() => askNewKey($, false)} />
+                    </Box>
+                  </Callout>
+                )}
               </Card>
             )}
           </Box>

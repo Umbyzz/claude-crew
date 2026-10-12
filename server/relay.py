@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.9.7"
+VERSION = "1.9.8"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -52,8 +52,13 @@ KICK_SECONDS = 60
 
 
 def save():
-    with open(args.data, "w", encoding="utf-8") as f:
+    """Write to a temp file, then swap it in: a relay killed mid-save never leaves a half-written state behind."""
+    tmp = args.data + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, args.data)
 
 
 def load():
@@ -62,6 +67,11 @@ def load():
             state.update(json.load(f))
     except FileNotFoundError:
         pass
+    except (ValueError, OSError) as err:
+        # damaged (from a version before crash-safe saves): keep it aside for a look, and start fresh
+        aside = f"{args.data}.damaged-{int(time.time())}"
+        os.replace(args.data, aside)
+        print(f"The saved crew state couldn't be read ({err}); moved it to {aside} and started fresh.")
 
 
 def new_id():
@@ -624,6 +634,17 @@ class Handler(BaseHTTPRequestHandler):
                 post_message(self.name, "all", f'deleted the project "{pr}"', "deleted", deleted=pr)
                 save()
                 return self.reply(200, {"ok": True})
+            if path == "/key/rotate":  # Settings → New crew key: only from the host's own PC
+                if self.client_address[0] not in ("127.0.0.1", "::1"):
+                    return self.reply(403, {"error": "only the host's own PC can change the crew key"})
+                post_message(self.name, "all", f"{self.name} made a new crew key: old invites stop working. "
+                                               f"Ask {self.name} for the new invite.", "update")
+                args.key = secrets.token_urlsafe(18)
+                if args.key_file:
+                    with open(args.key_file, "w", encoding="utf-8") as f:
+                        f.write(args.key + "\n")
+                save()
+                return self.reply(200, {"ok": True, "key": args.key})
             if path in ("/folder/manifest", "/folder/commit", "/folder/delete"):
                 pr, name = self.project, clean_rel(b.get("name"))
                 if not name:

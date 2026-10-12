@@ -1,6 +1,6 @@
 {
   "name": "crew",
-  "version": "1.9.7",
+  "version": "1.9.8",
   "description": "Link Claude Code sessions across machines: a leader, shared chat, task board and docs through a small relay.",
   "author": { "name": "Umbyz" },
   "license": "MIT",

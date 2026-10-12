@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.9.8
+- **🔑 New crew key** for the host, in the Crew tab's Invite friends card (one confirm). The old key stops working at once and the new invite is copied, for when someone left the crew or an invite went astray.
+- **Crash-safe saves.** The relay writes its state to a temp file and swaps it in, so a crash or power cut mid-save can't wipe the chat, tasks and docs. A damaged state file from before is put aside instead of stopping the relay.
+
 ## 1.9.7
 - **Only one relay at a time.** The relay now claims its port alone; on Windows a second one could silently share it, and then both answered at random. Starting another while one runs says *"a crew relay (version x) is already running"* and closes itself. Restart relay still hands over cleanly.
 

@@ -108,6 +108,7 @@ declare module 'claude-code' {
       drafts: Record<string, string>
       madeFolder: string
       folderJobs: Record<string, string>
+      keyAsk: boolean
     }
   }
 }
