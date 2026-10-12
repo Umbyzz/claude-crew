@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.9.3'
+const VERSION = '1.9.4'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -144,6 +144,7 @@ async function relay($: EngineInterface, method: 'GET' | 'POST', path: string, b
       'X-Crew-Version': VERSION,
       'X-Crew-Model': modelName,
       'X-Crew-Usage': usageNow(),
+      'X-Crew-Usage-Detail': usageDetail(),
       'X-Crew-Project': projectName,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -715,6 +716,12 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
 }
 
 // The most of any usage-limit window used so far, for the crew's board ('' off a subscription or before a reading).
+// Each window on its own, for people to read: "26% session · 35% week".
+function usageDetail() {
+  const name: Record<string, string> = { five_hour: 'session', seven_day: 'week', spend_limit: 'spend limit' }
+  return limits.map(l => `${Math.round(l.percentUsed)}% ${name[l.kind] ?? l.kind.replace(/_/g, ' ')}`).join(' · ')
+}
+
 function usageNow() {
   return limits.length ? String(Math.round(Math.max(...limits.map(l => l.percentUsed)))) : ''
 }
@@ -1066,7 +1073,7 @@ function crewExtras(s: CrewSnapshot) {
   let text = ''
   const team = s.peers.filter(p => p.online || p.name === cfg.me)
   const about = (p: CrewSnapshot['peers'][number]) =>
-    [p.model ? modelLabel(p.model) : 'model unknown', p.usage != null ? `${p.usage}% of usage limit used` : ''].filter(Boolean).join(', ')
+    [p.model ? modelLabel(p.model) : 'model unknown', p.usageDetail ? `usage ${p.usageDetail}` : p.usage != null ? `${p.usage}% of usage limit used` : ''].filter(Boolean).join(', ')
   if (team.length > 1 && team.some(p => p.model || p.usage != null)) {
     const leading = s.leader === cfg.me || s.acting === cfg.me
     text +=
@@ -2678,7 +2685,7 @@ export const register: Register = (on, options) => {
       `${p.name}${p.leader ? ' (leader)' : ''}${p.acting ? ' (acting leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}` +
       (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '') +
       (p.model ? ` · ${modelLabel(p.model)}` : '') +
-      (p.usage != null ? ` · ${p.usage}% usage used` : '') +
+      (p.usageDetail ? ` · usage ${p.usageDetail}` : p.usage != null ? ` · ${p.usage}% usage used` : '') +
       (editingNow(p.name) ? ` · editing ${editingNow(p.name)?.path}` : '')
     const openTasks = s.tasks.filter(t => t.status !== 'done')
     const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
@@ -3675,7 +3682,7 @@ export const register: Register = (on, options) => {
                     {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                     {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
                     {p.model ? `  · ${modelLabel(p.model)}` : ''}
-                    {p.usage != null ? `  · ${p.usage}% used${p.usage >= 80 ? ' ⚠' : ''}` : ''}
+                    {p.usage != null ? `  · ${p.usageDetail || `${p.usage}% used`}${p.usage >= 80 ? ' ⚠' : ''}` : ''}
                     {p.online && editingNow(p.name) ? `  · ✎ ${editingNow(p.name)?.path}` : ''}
                     {p.version ? `  · v${p.version}${versionMark(p.version)}` : ''}
                   </Text>

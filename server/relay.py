@@ -20,7 +20,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.9.3"
+VERSION = "1.9.4"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -290,7 +290,7 @@ def peer_list(project=MAIN):
         {"name": n, "online": is_online(p, now), "lastSeen": int(p["seen"]),
          "activity": p["activity"], "leader": n == leader, "acting": n == stand_in, "since": p["since"],
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
-         "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"),
+         "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"), "usageDetail": p.get("usageDetail"),
          "project": p.get("project", MAIN)}
         for n, p in sorted(peers.items())
     ]
@@ -360,6 +360,7 @@ def touch(name, headers):
         p["usage"] = max(0, min(999, round(float(headers.get("X-Crew-Usage") or ""))))
     except ValueError:
         pass
+    p["usageDetail"] = (headers.get("X-Crew-Usage-Detail") or "").strip()[:60] or p.get("usageDetail")
     p["project"] = project_of(headers)  # which project this member's Claude is working in right now
 
 

@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.9.4
+- **Usage per window.** The Crew tab shows each limit on its own, like *26% session · 35% week*, instead of only the fullest one.
+- Checked live with a scripted teammate: model and usage on the board, Crewshared sending and receiving, file locks and the acting leader.
+
 ## 1.9.3
 - **New Clawd moments.** The over-the-top idle taps a foot at you, hands on hips: *"Are you gonna prompt yet?"* When someone runs out of tokens, the crew frets for half a minute, then sighs *"they'll be back"* and pats the sleeper (or high-fives or hugs the ghost after a funeral) before getting back to work. Clawds walking past each other now leapfrog instead of bumping and moonwalking. (Ideas by Umbyz.)
 - **A shorter README**, with the details moved to pages in `docs/`.
