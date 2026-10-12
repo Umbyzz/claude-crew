@@ -1016,10 +1016,11 @@ class World:
                 self.emit(c.x + random.uniform(-4, 4), self.ground - 9, "code")
             return self.worry_extra(c)
         if a == "working":
-            c.mood = "focus"
-            c.arm = [0, 3 if int(t * 4) % 2 else 1]
-            if random.random() < 0.2:
-                self.emit(c.x + c.facing * 6, self.ground - 14, "spark", "✦", "#E3B23C")
+            # reading glasses on, sitting with a sheet of paper, sketching it all out
+            c.mood, c.sit = "drafting", 1
+            if random.random() < 0.004:
+                c.say(random.choice(["hmm, carry the 1…", "measure twice, code once", "*sketch sketch*",
+                                     "and this bit connects to…", "yes. yes. no.", "*adjusts glasses*"]), 2.4)
             return self.worry_extra(c)
         if a == "chatting":
             c.mood = "talk"
@@ -1563,6 +1564,8 @@ class Painter:
             self.chin_pose(c, x0, y_body, h, w0, w1, color)
         elif c.mood == "smith":
             self.smith(c, x0, y_body, h, w0, w1, ground, color)
+        elif c.mood == "drafting":
+            self.drafting(c, x0, y_body, h, w0, w1, ground, now, color)
         elif c.mood == "annoyed":
             arm_row = max(0, h // 2)  # hands on hips: elbows out, fists at the waist
             self.cells(x0, y_body, [(arm_row - 1, w0 - 1, w0 - 1), (arm_row, w0 - 2, w0 - 2), (arm_row + 1, w0 - 1, w0 - 1),
@@ -1608,6 +1611,13 @@ class Painter:
             for ex in (lx - 1, rx):
                 self.cells(x0, y, [(ey - 1, ex, ex + 1), (ey, ex, ex + 1)], INK)
                 self.cells(x0, y, [(ey - 1 + j, ex + j, ex + j)], EYE)
+            return
+        if mood == "drafting":
+            # little reading glasses, eyes down on the paper
+            ed = ey + 1
+            self.cells(x0, y, [(ed, lx, lx), (ed, rx, rx)], EYE)
+            # thin wire frames, one line: a rim either side of each eye and the bridge between them ("-o-o-")
+            self.cells(x0, y, [(ed, lx - 1, lx - 1), (ed, lx + 1, rx - 1), (ed, rx + 1, rx + 1)], "#c9c6bd")
             return
         if mood == "annoyed":
             # brows down at you, a flat unimpressed mouth
@@ -1667,6 +1677,26 @@ class Painter:
             self.cells(x0, y, [(arm_row - 3, w1 + 4, w1 + 4)], "#f0eee6")  # its handle
         else:
             self.cells(x0, y, [(arm_row, w1 + 1, w1 + 2), (arm_row + 1, w1 + 1, w1 + 2)], color)
+
+    def drafting(self, c, x0, y, h, w0, w1, ground, now, color):
+        """A sheet of paper on the floor in front, filling up with scribbles, and a pencil in hand."""
+        f = c.facing or 1
+
+        def dots(ax, ay, pts, col):  # single cells at (row, col) offsets, mirrored to face the paper
+            for r, dx in pts:
+                self.cells(ax + f * dx, ay + r, [(0, 0, 0)], col)
+
+        px = c.x + f * 6
+        dots(px, ground - 2, [(r, i) for r in range(2) for i in range(7)], "#f0eee6")  # the sheet
+        n = int(now * 1.5) % 12  # scribbles grow line by line, then a fresh sheet
+        dots(px, ground - 2, [(0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (0, 4), (0, 5), (1, 3), (1, 4), (1, 5), (0, 6)][:n], "#6b6862")
+        arm_row = max(0, h // 2)
+        back = w0 - 2 if f > 0 else w1 + 1
+        self.cells(x0, y, [(arm_row, back, back + 1), (arm_row + 1, back, back + 1)], color)  # the other arm, resting
+        hx, wig = c.x + f * 4, int(now * 6) % 2
+        dots(hx, y, [(arm_row, 0), (arm_row, 1), (arm_row + 1, 2)], color)  # the drawing arm, reaching down
+        dots(hx, y, [(arm_row + 1, 3 + wig), (arm_row + 2, 3 + wig)], "#E3B23C")  # the pencil
+        dots(hx, y, [(arm_row + 3, 3 + wig)], "#3d3d3a")  # its tip, on the paper
 
     def smith(self, c, x0, y, h, w0, w1, ground, color):
         """Hard hat, hammer, and a little bronze gear on the ground in front, taking a beating."""

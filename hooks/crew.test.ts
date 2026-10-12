@@ -1762,6 +1762,7 @@ test('a personal key handed over by the host is saved and used from then on', { 
   await settle()
   expect(saved).toContainEqual({ key: 'crew.key', value: 'personal-key-123' })
   expect(keys[keys.length - 1]).toBe('personal-key-123')
+  await new Promise(r => setTimeout(r, 300)) // the settings save (and the reload it causes) finishes inside the test
 })
 
 test("a connected tool says whether its app is open, from a tasklist (no tokens)", { options: OPTIONS }, async ($, on) => {
@@ -1783,5 +1784,35 @@ test("a connected tool says whether its app is open, from a tasklist (no tokens)
   await settle()
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   expect(sent[sent.length - 1]).toContain('Roblox Studio (closed)')
+  await settle() // let the check-in's background work finish inside the test
+  await new Promise(r => setTimeout(r, 300))
 })
 
+test("the host's own relay refusing its key heals itself from crew_key.txt", { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777', key: 'old-key' } }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('env.get', async (_$: unknown, e: any) => ({ value: e.name === 'USERPROFILE' ? 'C:\\Users\\host' : '' }) as any)
+  on('process.run', async (_$: unknown, e: any) => {
+    const reading = e.argv.join(' ').includes('crew_key.txt')
+    return { value: { exitCode: 0, stdout: reading ? 'new-key\r\n' : '', stderr: '' } }
+  })
+  const saved: any[] = []
+  on('config.set', async (_$: unknown, e: any) => {
+    saved.push(e)
+    return { value: e.value } as any
+  })
+  const keys: string[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    const k = e.init?.headers?.['X-Crew-Key']
+    keys.push(k)
+    if (k !== 'new-key') return { value: { status: 401, ok: false, headers: {}, text: '{"error": "bad or missing crew key"}' } }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, leader: 'alice' }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // refused: the plugin reads crew_key.txt
+  await settle()
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(saved).toContainEqual({ key: 'crew.key', value: 'new-key' })
+  expect(keys[keys.length - 1]).toBe('new-key')
+  await new Promise(r => setTimeout(r, 300))
+})

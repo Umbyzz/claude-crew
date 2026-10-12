@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.10.7
+- **Fix: a new crew key could lock the host out.** Claude Code can refuse a plugin's settings save, and 🔑 New crew key didn't check, so the relay switched keys while the host's plugin kept the old one. Now crew keeps its own copy of the key that works (a new crew key, or a friend's personal key) and uses it after a restart. A refused save is reported. And if the host's own relay ever refuses their key, the plugin picks the right one up from `crew_key.txt` on that PC by itself.
+- **The sketching Clawd.** Tinkering now means sitting down with little reading glasses and sketching on a sheet of paper. The blacksmith stays as the over-the-top version. (Idea by Umbyz.)
+
 ## 1.10.6
 - **Shorter Crew tab rows:** usage reads *60S%-40W% usage*, tools read *🔌 R-Studio on/off*. Model and version stay in full. Claude's own instructions keep the long wording.
 

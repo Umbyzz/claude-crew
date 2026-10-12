@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.10.6'
+const VERSION = '1.10.7'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -127,6 +127,37 @@ function bump($: EngineInterface) {
   if (now - lastBump < 700) return
   lastBump = now
   poll($).catch(() => {})
+}
+
+// The crew key this plugin last knew to work, per relay, in its own store. Saving a setting can be refused (or land
+// where the next load doesn't read it), and a key that then quietly reverts locks you out: a new crew key, or a
+// friend's personal key, must survive restarts whatever happens to the settings write.
+let keyLoadedFor = ''
+
+async function storedKey($: EngineInterface) {
+  if (keyLoadedFor === cfg.base) return
+  keyLoadedFor = cfg.base
+  const k = await $.store.get(`keyFor:${cfg.base}`).catch(() => undefined)
+  if (typeof k === 'string' && k) cfg.key = k
+}
+
+async function rememberKey($: EngineInterface, key: string) {
+  cfg.key = key
+  keyLoadedFor = cfg.base
+  await $.store.set(`keyFor:${cfg.base}`, key).catch(() => {})
+  const r = await $.config.set({ key: 'crew.key', value: key }).catch(err => ({ deny: String(err) }))
+  return r && 'deny' in r && r.deny ? String(r.deny) : ''
+}
+
+// The host's own relay refused the key: the right one is in crew_key.txt on this very PC, so take it from there.
+async function healHostKey($: EngineInterface) {
+  if (!isHosting()) return false
+  const r = await ran($, ['powershell', '-NoProfile', '-Command', `Get-Content -Raw -LiteralPath ${psPath(`${await crewDir($)}\\crew_key.txt`)}`], 15000)
+  const fileKey = r.ok ? r.out.trim() : ''
+  if (!fileKey || fileKey === cfg.key) return false
+  await rememberKey($, fileKey)
+  $.ui.toast("crew: your relay's key had changed; picked up the right one from crew_key.txt.", { timeoutMs: 8000 })
+  return true
 }
 
 async function relay($: EngineInterface, method: 'GET' | 'POST', path: string, body?: unknown) {
@@ -1433,8 +1464,7 @@ async function pollOnce($: EngineInterface) {
     }))
     // a doc shared again under the same name keeps the list the same, but who/when/size change
     if (typeof data.yourKey === 'string' && data.yourKey && data.yourKey !== cfg.key) {
-      cfg.key = data.yourKey
-      void $.config.set({ key: 'crew.key', value: data.yourKey }).catch(() => {})
+      void rememberKey($, data.yourKey)
       $.ui.toast("crew: you're now on the host's friends list. Your personal key is saved; nothing else to do.", { timeoutMs: 10000 })
     }
     othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
@@ -1451,6 +1481,7 @@ async function pollOnce($: EngineInterface) {
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err)
     // Removed by the leader or host: leave (no rejoining on our own), and say so. Join session brings you back.
+    if (/relay 401/.test(raw) && isHosting() && (await healHostKey($).catch(() => false))) return // fixed: the next check-in uses it
     const shut = /relay 403: (the project .+ is private.*)$/.exec(raw)
     if (shut && projectName !== 'main') {
       $.ui.toast(`crew: ${shut[1]}. You're back in main.`, { timeoutMs: 10000 })
@@ -1820,6 +1851,7 @@ function setLeader($: EngineInterface, name: string) {
 }
 
 function setOption($: EngineInterface, field: string, value: string) {
+  if (field === 'key' && value.trim()) void $.store.set(`keyFor:${cfg.base}`, value.trim()).catch(() => {})
   // Still setting up: Settings comes up open once you're in, so you can check it all before closing it.
   if (!cfg.configured) void update($, settingsOpen, () => true)
   void $.config
@@ -2233,7 +2265,7 @@ async function hostCrew($: EngineInterface) {
     return
   }
   // Each saved setting reloads the plugin; the reload connects and joins on its own.
-  if (cfg.key !== key) await $.config.set({ key: 'crew.key', value: key })
+  if (cfg.key !== key) await rememberKey($, key)
   if (cfg.base !== HOST_URL) await $.config.set({ key: 'crew.relayUrl', value: HOST_URL })
 }
 
@@ -2341,8 +2373,8 @@ async function newCrewKey($: EngineInterface, surface: any) {
     const r = await relay($, 'POST', '/key/rotate', {})
     const fresh = String(r.key ?? '')
     if (!fresh) throw new Error('the relay sent no key back')
-    cfg.key = fresh // from now on, with the new key
-    await $.config.set({ key: 'crew.key', value: fresh })
+    const refused = await rememberKey($, fresh) // from now on, with the new key
+    if (refused) $.ui.toast(`crew: the new key works, but Settings didn't save it (${refused}). Crew keeps its own copy, so you're fine.`, { timeoutMs: 10000 })
     await update($, hostInfo, h => ({ ...h, key: fresh }))
     copyInvite($, surface, (await read($, hostInfo)).ip, fresh)
     $.ui.toast('crew: new crew key made. The old one no longer works; send the new invite to whoever should be in.', { timeoutMs: 10000 })
@@ -2715,6 +2747,7 @@ export const register: Register = (on, options) => {
       }
     }
     void refreshModel($)
+    await storedKey($) // the key that last worked, even if a settings save was refused
     await attempt('/crew', () => $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' }))
     await attempt('/clawds', () => $.command.register({ name: 'clawds', description: 'Open the Clawds window: your crew as little pixel friends (uses no tokens)' }))
     await attempt('/crewlog', () => $.command.register({ name: 'crewlog', description: "Open the crew log window: every crew message live, the Claudes' requests and replies too (uses no tokens)" }))
