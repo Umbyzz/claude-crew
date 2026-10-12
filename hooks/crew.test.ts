@@ -1639,3 +1639,40 @@ test("shared folders: a teammate's folder is mirrored by the plugin on Get it, a
   expect(role).toContain('source/ from bob (2 files, 2.5 MB) at C:\\Games\\Lava\\source')
   expect(role).toContain('crew_share a map doc ("source-map")') // alice leads
 })
+
+test("Crewshared: your drop folder is sent when it changes, and teammates' arrive without Get it", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'folder:http://relay.test:7777:main': 'C:\\Games\\Lava' })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const jobs: { dir: string; stdin: string }[] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    const dir = String(e.init?.env?.CREW_DIR ?? '')
+    if (dir) jobs.push({ dir, stdin: String(e.init?.stdin ?? '') })
+    let stdout = ''
+    if (dir.endsWith('Crewshared\\alice') && !e.init.stdin) stdout = jobs.filter(j => j.dir === dir).length === 1 ? `logo.png|5|111\n` : `logo.png\t5\t${'c'.repeat(64)}\n`
+    else if (dir.endsWith('Crewshared\\alice')) stdout = '::done 1'
+    else if (dir) stdout = '::done 1 0 0 0'
+    return { value: { exitCode: 0, stdout, stderr: '' } }
+  })
+  const posts: { url: string; body: any }[] = []
+  const folders = [{ name: 'Crewshared/bob', by: 'bob', at: 70, files: 1, bytes: 9, ready: true }]
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posts.push({ url: e.url, body: JSON.parse(e.init.body) })
+      const missing = e.url.endsWith('/folder/manifest') && posts.filter(p => p.url.endsWith('/folder/manifest')).length === 1 ? ['c'.repeat(64)] : []
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, missing }) } }
+    }
+    const body = e.url.includes('/folder?name=') ? { name: 'Crewshared/bob', by: 'bob', at: 70, files: [{ path: 'map.txt', size: 9, hash: 'd'.repeat(64) }] } : e.url.endsWith('/shared') ? { docs: [] } : { ...POLL, folders }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' }) // loads the project folder
+  await settle()
+  await ui.unmount()
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  await new Promise(r => setTimeout(r, 200))
+  expect(jobs.some(j => j.dir === 'C:\\Games\\Lava\\Crewshared\\bob' && j.stdin.includes('map.txt'))).toBe(true) // no Get it needed
+  expect(posts.some(p => p.url.endsWith('/folder/manifest') && p.body.name === 'Crewshared/alice')).toBe(true)
+  expect(posts.some(p => p.url.endsWith('/folder/commit') && p.body.name === 'Crewshared/alice')).toBe(true)
+})

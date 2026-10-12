@@ -10,6 +10,9 @@ Everything goes through one small relay that one of you runs. The plugin talks t
  friend B ─┘     over Tailscale / Radmin VPN / LAN
 ```
 
+## What's new in 1.9
+- **Crewshared drop folders.** Every project folder gets `Crewshared\<your name>`. Drop files in yours (assets, references, exports, notes) and within about 2 minutes every teammate has them in `Crewshared\<your name>` on their PC. No buttons and no tokens. Teammates' drops arrive in their own subfolders by themselves. Everyone can share, not just the leader: you can't change someone else's folder, but yours is all yours. The Project tab has **📥 Open my Crewshared** and **Open Crewshared**.
+
 ## What's new in 1.8
 - **Shared folders.** Share a folder of your project (source, assets, references) from the Project tab (**Share a folder…**) or by asking your Claude (`crew_share_folder`). Teammates press **Get it** and their crew copies it into the same place in their own project folder, then keeps it in sync when you press **Update**. The plugin does the copying, so it costs **no tokens**, and each Claude reads its own local copy with Read/Grep, the cheapest way to read code. Only changed files move, and identical files are stored once. If a teammate changed a file themselves, theirs stays and yours lands next to it as `.new`. The leader's Claude also maps a big shared folder once in a doc, so nobody re-explores the whole thing.
 

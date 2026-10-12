@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.8.0'
+const VERSION = '1.9.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -924,11 +924,50 @@ async function unshareFolder($: EngineInterface, name: string) {
 // After each check-in: teammates' folders this person asked for follow along when they change.
 async function autoSyncFolders($: EngineInterface) {
   for (const f of sharedFolders) {
-    if (!wantedFolders.has(f.name)) wantedFolders.set(f.name, Boolean(await $.store.get(wantKey(f.name))))
+    if (!wantedFolders.has(f.name)) {
+      const said = await $.store.get(wantKey(f.name))
+      wantedFolders.set(f.name, said === undefined || said === null ? isCrewshared(f.name) : Boolean(said))
+    }
     if (!f.ready || f.by === cfg.me || busyFolders.has(f.name) || !wantedFolders.get(f.name)) continue
     if (Number((await $.store.get(syncedKey(f.name))) ?? 0) >= f.at) continue
     void syncFolder($, f.name).then(note => $.ui.toast(`crew: ${note}`, { timeoutMs: 8000 }))
   }
+}
+
+// Crewshared: every project folder has Crewshared\<name>\ per person, the same on every PC. Whatever you drop
+// in yours reaches the crew by itself (checked every 2 minutes: a cheap size/date listing, and a real share only
+// when something changed), and teammates' arrive in theirs without pressing Get it.
+const CREWSHARED = 'Crewshared'
+const QUICK_PS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$root = $env:CREW_DIR.TrimEnd('\\')\nif (-not (Test-Path -LiteralPath $root -PathType Container)) { [void](New-Item -ItemType Directory -Force -Path $root) }\n$sb = New-Object Text.StringBuilder\nforeach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue)) {\n  if ($f.Name -eq '.crew-sync.json') { continue }\n  [void]$sb.Append($f.FullName.Substring($root.Length + 1)).Append('|').Append($f.Length).Append('|').Append($f.LastWriteTimeUtc.Ticks).Append(\"`n\")\n}\n[Console]::Out.Write($sb.ToString())\n"
+const mySharedName = () => `${CREWSHARED}/${cfg.me.replace(/[<>:"/\\|?*]/g, '').trim() || 'me'}`
+const isCrewshared = (name: string) => name.startsWith(`${CREWSHARED}/`)
+let lastDropCheck = 0
+
+function signature(text: string) {
+  let h = 5381
+  for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0
+  return `${text.length}:${h}`
+}
+
+async function autoSendCrewshared($: EngineInterface) {
+  if (!folderPath || Date.now() - lastDropCheck < 120000) return
+  lastDropCheck = Date.now()
+  const name = mySharedName()
+  if (busyFolders.has(name)) return
+  const quick = await psJob($, QUICK_PS, mirrorPath(name)) // also makes the folder, the first time
+  if (!quick.ok) return
+  const sigKey = `crewsharedSig:${cfg.base}:${projectName}`
+  const sig = signature(quick.out)
+  if ((await $.store.get(sigKey)) === sig) return
+  const shared = sharedFolders.some(f => f.name === name)
+  if (!quick.out) {
+    if (shared) await relay($, 'POST', '/folder/delete', { name }).catch(() => {})
+  } else {
+    const note = await shareFolder($, name)
+    if (!note.startsWith('Shared')) return // try again next round
+    $.ui.toast(`crew: sent your ${CREWSHARED} files to the crew (${note.replace(/^Shared the folder "[^"]+" \(|\)\..*$/g, '')})`, { timeoutMs: 6000 })
+  }
+  await $.store.set(sigKey, sig)
 }
 
 async function folderTool($: EngineInterface, e: any) {
@@ -1039,6 +1078,11 @@ function crewExtras(s: CrewSnapshot) {
           `straightforward building; the lightest (like Haiku) take small, well-defined chores, tests and docs. Take your own share by the same rule.`
         : `The leader splits work by these. If a task would clearly fit another teammate's model (or yours) better, say so in one line.`)
   }
+  if (folderPath)
+    text +=
+      `\n\nCrew drop folder: anything the crew needs from you (assets, references, exports, notes) goes in ` +
+      `${mirrorPath(mySharedName())}; the plugin sends it to every teammate by itself within ~2 minutes (no tokens). ` +
+      `Teammates' drops arrive in ${folderPath}\\${CREWSHARED}\\<their name>.`
   const shared = sharedFolders.filter(f => f.ready)
   if (shared.length) {
     const leading = s.leader === cfg.me || s.acting === cfg.me
@@ -1260,6 +1304,7 @@ async function pollOnce($: EngineInterface) {
     othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
     sharedFolders = Array.isArray(data.folders) ? data.folders : []
     void autoSyncFolders($).catch(() => {})
+    void autoSendCrewshared($).catch(() => {})
     syncDocs($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.startsWith('shared doc ')))
     void syncRules($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.includes(`doc '${RULES_DOC}'`))).catch(() => {})
     failures = 0
@@ -3506,8 +3551,15 @@ export const register: Register = (on, options) => {
               )
             })}
             {folderPath !== '' && (
+              <Text dimColor>
+                Drop files in {CREWSHARED}\{mySharedName().split('/')[1]} and the crew gets them by itself; teammates' land in {CREWSHARED}\their name.
+              </Text>
+            )}
+            {folderPath !== '' && (
               <Box flexDirection="row">
-                <Button key="folder-share-pick" label="Share a folder…" onPress={() => folderPress($, () => pickSharedFolder($))} />
+                <Button key="crewshared-mine" label={`📥 Open my ${CREWSHARED}`} onPress={() => folderPress($, () => makeDir($, mirrorPath(mySharedName())).then(() => openInExplorer($, mirrorPath(mySharedName()))))} />
+                <Button key="crewshared-all" label={`Open ${CREWSHARED}`} dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWSHARED)).then(() => openInExplorer($, mirrorPath(CREWSHARED))))} />
+                <Button key="folder-share-pick" label="Share another folder…" dimColor onPress={() => folderPress($, () => pickSharedFolder($))} />
               </Box>
             )}
           </Card>
