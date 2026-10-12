@@ -33,6 +33,7 @@ export type CrewPeer = {
   model?: string | null // the model their Claude runs (the leader splits work by it)
   usage?: number | null // the most of any usage-limit window they've used, in percent
   usageDetail?: string | null // each window on its own: "26% session · 35% week"
+  mcp?: string | null // the MCP servers their Claude is connected to ("Roblox Studio, Unity")
 }
 
 export type CrewTask = {

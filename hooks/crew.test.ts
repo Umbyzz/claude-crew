@@ -1586,18 +1586,20 @@ test("teammates' usage shows in the Crew tab, and the leader's Claude hands big 
   on('ui.status', async () => ({ value: undefined }))
   const peers = [
     { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true, model: 'claude-opus-5-5', usage: 30 },
-    { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false, model: 'claude-sonnet-5-5', usage: 91 },
+    { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false, model: 'claude-sonnet-5-5', usage: 91, mcp: 'Roblox Studio' },
   ]
   on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers }) } }))
   on('prompt.compose', async () => ({ sections: [] }) as any)
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   const composed: any = await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as any)
   const role = composed.sections.find((s: any) => s.id === 'crew:role').text
-  expect(role).toContain('bob (Sonnet 5.5, 91% of usage limit used)')
   expect(role).toContain('anyone past 80% gets only small ones')
+  expect(role).toContain('bob (Sonnet 5.5, 91% of usage limit used, connected to Roblox Studio)')
+  expect(role).toContain('goes to whoever has it connected')
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'tab-crew' })
   expect(await ui.find({ text: /91% used ⚠/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /🔌 Roblox Studio/ } as any)).toBeDefined()
   await ui.unmount()
 })
 

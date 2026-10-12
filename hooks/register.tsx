@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.9.4'
+const VERSION = '1.9.5'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -145,6 +145,7 @@ async function relay($: EngineInterface, method: 'GET' | 'POST', path: string, b
       'X-Crew-Model': modelName,
       'X-Crew-Usage': usageNow(),
       'X-Crew-Usage-Detail': usageDetail(),
+      'X-Crew-Mcp': [...mcpServers].slice(0, 8).join(', '),
       'X-Crew-Project': projectName,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -716,6 +717,24 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
 }
 
 // The most of any usage-limit window used so far, for the crew's board ('' off a subscription or before a reading).
+// The MCP servers this Claude is connected to (Roblox Studio, Unity…), so the leader gives work that needs one to
+// whoever has it. From the session's tool list, plus any MCP tool it actually calls (some load only on demand).
+// The desktop app's own helpers and crew itself are left out.
+const mcpServers = new Set<string>()
+const HIDDEN_MCP = /^(crew|ccd_.+|Claude_Browser|visualize|terminal|mcp-registry|scheduled-tasks|claude-in-chrome)$/i
+
+function noteMcp(tool: string) {
+  const m = /^mcp__(.+?)__/.exec(tool)
+  if (!m || HIDDEN_MCP.test(m[1]) || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(m[1])) return
+  mcpServers.add(m[1].replace(/[_-]+/g, ' ').trim())
+}
+
+async function refreshMcp($: EngineInterface) {
+  try {
+    for (const t of await $.tool.list()) if (t.mcp) noteMcp(t.name)
+  } catch {}
+}
+
 // Each window on its own, for people to read: "26% session · 35% week".
 function usageDetail() {
   const name: Record<string, string> = { five_hour: 'session', seven_day: 'week', spend_limit: 'spend limit' }
@@ -952,6 +971,7 @@ const QUICK_PS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$root = $en
 const mySharedName = () => `${CREWSHARED}/${cfg.me.replace(/[<>:"/\\|?*]/g, '').trim() || 'me'}`
 const isCrewshared = (name: string) => name.startsWith(`${CREWSHARED}/`)
 let lastDropCheck = 0
+let dropMs = 120000 // Settings → Crewshared check every
 
 function signature(text: string) {
   let h = 5381
@@ -959,8 +979,8 @@ function signature(text: string) {
   return `${text.length}:${h}`
 }
 
-async function autoSendCrewshared($: EngineInterface) {
-  if (!folderPath || Date.now() - lastDropCheck < 120000) return
+async function autoSendCrewshared($: EngineInterface, force = false) {
+  if (!folderPath || (!force && Date.now() - lastDropCheck < dropMs)) return
   lastDropCheck = Date.now()
   const name = mySharedName()
   if (busyFolders.has(name)) return
@@ -968,7 +988,7 @@ async function autoSendCrewshared($: EngineInterface) {
   if (!quick.ok) return
   const sigKey = `crewsharedSig:${cfg.base}:${projectName}`
   const sig = signature(quick.out)
-  if ((await $.store.get(sigKey)) === sig) return
+  if (!force && (await $.store.get(sigKey)) === sig) return
   const shared = sharedFolders.some(f => f.name === name)
   if (!quick.out) {
     if (shared) await relay($, 'POST', '/folder/delete', { name }).catch(() => {})
@@ -978,6 +998,16 @@ async function autoSendCrewshared($: EngineInterface) {
     $.ui.toast(`crew: sent your ${CREWSHARED} files to the crew (${note.replace(/^Shared the folder "[^"]+" \(|\)\..*$/g, '')})`, { timeoutMs: 6000 })
   }
   await $.store.set(sigKey, sig)
+}
+
+// ⇅ Sync now: send your Crewshared changes and pull every folder you follow, without waiting for the timers.
+async function syncNow($: EngineInterface) {
+  if (!folderPath) return $.ui.toast('crew: set a folder for this project first', { timeoutMs: 6000 })
+  $.ui.toast('crew: syncing…', { timeoutMs: 3000 })
+  await autoSendCrewshared($, true)
+  const pulls = sharedFolders.filter(f => f.ready && f.by !== cfg.me && wantedFolders.get(f.name))
+  const notes = await Promise.all(pulls.map(f => syncFolder($, f.name)))
+  $.ui.toast(`crew: synced. ${notes.length ? notes.join(' ') : 'Nothing to pull from teammates yet.'}`.slice(0, 300), { timeoutMs: 8000 })
 }
 
 async function folderTool($: EngineInterface, e: any) {
@@ -1073,13 +1103,17 @@ function crewExtras(s: CrewSnapshot) {
   let text = ''
   const team = s.peers.filter(p => p.online || p.name === cfg.me)
   const about = (p: CrewSnapshot['peers'][number]) =>
-    [p.model ? modelLabel(p.model) : 'model unknown', p.usageDetail ? `usage ${p.usageDetail}` : p.usage != null ? `${p.usage}% of usage limit used` : ''].filter(Boolean).join(', ')
-  if (team.length > 1 && team.some(p => p.model || p.usage != null)) {
+    [p.model ? modelLabel(p.model) : 'model unknown', p.usageDetail ? `usage ${p.usageDetail}` : p.usage != null ? `${p.usage}% of usage limit used` : '',
+     p.mcp ? `connected to ${p.mcp}` : ''].filter(Boolean).join(', ')
+  if (team.length > 1 && team.some(p => p.model || p.usage != null || p.mcp)) {
     const leading = s.leader === cfg.me || s.acting === cfg.me
     text +=
       `\n\nThe crew's models right now: ${team.map(p => `${p.name === cfg.me ? 'you' : p.name} (${about(p)})`).join(', ')}. ` +
       (leading && team.some(p => p.usage != null)
         ? `Give big tasks to whoever has the most usage left; anyone past 80% gets only small ones (or none), and hand their work on before they run dry. `
+        : '') +
+      (leading && team.some(p => p.mcp)
+        ? `Work that needs a connected tool (Roblox Studio, Unity, a browser…) goes to whoever has it connected. `
         : '') +
       (leading
         ? `Play to strengths: before splitting a bigger goal, propose who takes what in one crew_send and let teammates say ` +
@@ -2489,6 +2523,7 @@ export const register: Register = (on, options) => {
   const pollMs = Math.max(1, Number(opts.pollSeconds) || 3) * 1000
   const configured = base !== '' && me !== '' && key !== ''
   const clawdsWithCrew = String(opts.clawdsWindow ?? 'yes') !== 'no'
+  dropMs = Math.max(15, Number(opts.dropSeconds) || 120) * 1000
   cfg = { base, me, key, autoRun, toasts, pollMs, configured }
 
   on('session.start', async ($, e, next) => {
@@ -2569,6 +2604,7 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     working = true
     void refreshModel($) // /model may have switched it
+    void refreshMcp($)
     phase = 'thinking'
     bump($)
     return next(e)
@@ -2608,6 +2644,7 @@ export const register: Register = (on, options) => {
   // Every tool the main loop runs sets the Clawd's pose; subagents become mini Clawds.
   // Registered before the crew tools' own hooks, so it wraps them too.
   on('tool.call', async ($, e: any, next) => {
+    noteMcp(String(e.tool))
     const locked = fileLock($, e) // subagents' edits count too
     if (locked) return locked
     if (e.agentId) return next(e)
@@ -2686,6 +2723,7 @@ export const register: Register = (on, options) => {
       (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '') +
       (p.model ? ` · ${modelLabel(p.model)}` : '') +
       (p.usageDetail ? ` · usage ${p.usageDetail}` : p.usage != null ? ` · ${p.usage}% usage used` : '') +
+      (p.mcp ? ` · connected to ${p.mcp}` : '') +
       (editingNow(p.name) ? ` · editing ${editingNow(p.name)?.path}` : '')
     const openTasks = s.tasks.filter(t => t.status !== 'done')
     const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
@@ -3169,6 +3207,20 @@ export const register: Register = (on, options) => {
               )}
               {Select && (
                 <Select
+                  key="opt-drop"
+                  label="Crewshared check every "
+                  value={String(dropMs / 1000)}
+                  options={[
+                    { value: '30', label: '30s' },
+                    { value: '60', label: '1 min' },
+                    { value: '120', label: '2 min' },
+                    { value: '300', label: '5 min' },
+                  ]}
+                  onSelect={(v: string) => setOption($, 'dropSeconds', v)}
+                />
+              )}
+              {Select && (
+                <Select
                   key="opt-clawds"
                   label="Clawds window with /crew "
                   value={clawdsWithCrew ? 'yes' : 'no'}
@@ -3569,6 +3621,7 @@ export const register: Register = (on, options) => {
               <Box flexDirection="row">
                 <Button key="crewshared-mine" label={`📥 Open my ${CREWSHARED}`} onPress={() => folderPress($, () => makeDir($, mirrorPath(mySharedName())).then(() => openInExplorer($, mirrorPath(mySharedName()))))} />
                 <Button key="crewshared-all" label={`Open ${CREWSHARED}`} dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWSHARED)).then(() => openInExplorer($, mirrorPath(CREWSHARED))))} />
+                <Button key="folder-sync-now" label="⇅ Sync now" dimColor onPress={() => folderPress($, () => syncNow($))} />
                 <Button key="folder-share-pick" label="Share another folder…" dimColor onPress={() => folderPress($, () => pickSharedFolder($))} />
               </Box>
             )}
@@ -3684,6 +3737,7 @@ export const register: Register = (on, options) => {
                     {p.model ? `  · ${modelLabel(p.model)}` : ''}
                     {p.usage != null ? `  · ${p.usageDetail || `${p.usage}% used`}${p.usage >= 80 ? ' ⚠' : ''}` : ''}
                     {p.online && editingNow(p.name) ? `  · ✎ ${editingNow(p.name)?.path}` : ''}
+                    {p.mcp ? `  · 🔌 ${p.mcp}` : ''}
                     {p.version ? `  · v${p.version}${versionMark(p.version)}` : ''}
                   </Text>
                   <Box flexDirection="row">

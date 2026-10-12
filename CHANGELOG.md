@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.9.5
+- **See what everyone's Claude is connected to.** The Crew tab shows each teammate's MCP servers (🔌 Roblox Studio, Unity…), and the leader's Claude gives work that needs one to whoever has it connected. (Asked for by CoriZori.)
+- **⇅ Sync now** in the Project tab sends your Crewshared changes and pulls teammates' at once. **Settings → Crewshared check every** sets how often it checks by itself: 30s, 1, 2 or 5 minutes.
+
 ## 1.9.4
 - **Usage per window.** The Crew tab shows each limit on its own, like *26% session · 35% week*, instead of only the fullest one.
 - Checked live with a scripted teammate: model and usage on the board, Crewshared sending and receiving, file locks and the acting leader.

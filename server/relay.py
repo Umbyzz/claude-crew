@@ -20,7 +20,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.9.4"
+VERSION = "1.9.5"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -290,7 +290,7 @@ def peer_list(project=MAIN):
         {"name": n, "online": is_online(p, now), "lastSeen": int(p["seen"]),
          "activity": p["activity"], "leader": n == leader, "acting": n == stand_in, "since": p["since"],
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
-         "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"), "usageDetail": p.get("usageDetail"),
+         "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"), "usageDetail": p.get("usageDetail"), "mcp": p.get("mcp"),
          "project": p.get("project", MAIN)}
         for n, p in sorted(peers.items())
     ]
@@ -361,6 +361,8 @@ def touch(name, headers):
     except ValueError:
         pass
     p["usageDetail"] = (headers.get("X-Crew-Usage-Detail") or "").strip()[:60] or p.get("usageDetail")
+    if "X-Crew-Mcp" in headers:  # the MCP servers their Claude is connected to (Roblox Studio, Unity…)
+        p["mcp"] = (headers.get("X-Crew-Mcp") or "").strip()[:200]
     p["project"] = project_of(headers)  # which project this member's Claude is working in right now
 
 
