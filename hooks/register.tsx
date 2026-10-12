@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.9.0'
+const VERSION = '1.9.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -300,8 +300,11 @@ async function undoFolder($: EngineInterface) {
 
 function openInExplorer($: EngineInterface, path: string) {
   if (!path) return
-  // explorer.exe returns at once (and often with exit code 1, which means nothing): no need to wait on it
-  void $.process.run(['explorer.exe', path], { timeoutMs: 10000 }).catch(() => {})
+  // Through the shell, like a double-click in Explorer: explorer.exe started straight from the plugin can quietly
+  // open nothing. Invoke-Item asks the running Explorer for the window instead.
+  void ran($, ['powershell', '-NoProfile', '-Command', `Invoke-Item -LiteralPath ${psPath(path)}`], 20000).then(r => {
+    if (!r.ok) $.ui.toast(`crew: couldn't open ${shortPath(path)}: ${r.out.slice(0, 120)}`, { timeoutMs: 8000 })
+  })
 }
 
 // Which inline box the Project card shows: none by default, so there are no fields until you ask for one.

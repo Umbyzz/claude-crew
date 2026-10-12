@@ -967,7 +967,7 @@ test("the Project tab shows the project's folder, opens it, lists and makes subf
   await settle()
   await ui.unmount()
   const lines = ran.map(a => a.join(' '))
-  expect(lines).toContain('explorer.exe C:\\Games\\Lava')
+  expect(lines).toContain("powershell -NoProfile -Command Invoke-Item -LiteralPath 'C:\\Games\\Lava'")
   expect(lines.some(l => l.includes("New-Item -ItemType Directory -Force -Path 'C:\\Games\\Lava\\levels'"))).toBe(true)
 })
 
