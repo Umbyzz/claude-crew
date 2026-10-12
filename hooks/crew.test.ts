@@ -1600,3 +1600,42 @@ test("teammates' usage shows in the Crew tab, and the leader's Claude hands big 
   expect(await ui.find({ text: /91% used ⚠/ } as any)).toBeDefined()
   await ui.unmount()
 })
+
+test("shared folders: a teammate's folder is mirrored by the plugin on Get it, and Claude hears where it is", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'folder:http://relay.test:7777:main': 'C:\\Games\\Lava' })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const runs: { argv: string[]; init: any }[] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    runs.push({ argv: [...e.argv], init: e.init })
+    const encoded = e.argv.includes('-EncodedCommand')
+    return { value: { exitCode: 0, stdout: encoded ? '::done 2 0 0 0' : '', stderr: '' } }
+  })
+  const folders = [{ name: 'source', by: 'bob', at: 50, files: 2, bytes: 2500000, ready: true }]
+  const manifest = { name: 'source', by: 'bob', at: 50, files: [
+    { path: 'main.lua', size: 12, hash: 'a'.repeat(64) },
+    { path: 'AI/enemy.lua', size: 9, hash: 'b'.repeat(64) },
+  ] }
+  on('http.fetch', async (_$: unknown, e: any) => {
+    const body = e.url.includes('/folder?name=source') ? manifest : e.url.endsWith('/shared') ? { docs: [] } : { ...POLL, folders }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  on('prompt.compose', async () => ({ sections: [] }) as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  await settle()
+  expect(await ui.find({ text: /source/ } as any)).toBeDefined()
+  await ui.press({ key: 'folder-get-source' })
+  await settle()
+  await ui.unmount()
+  const job = runs.find(r => r.argv.includes('-EncodedCommand'))
+  expect(job?.init.env.CREW_DIR).toBe('C:\\Games\\Lava\\source')
+  expect(job?.init.env.CREW_KEY).toBe('k') // the key travels in the environment, never on the command line
+  expect(job?.argv.join(' ')).not.toContain('X-Crew-Key')
+  expect(job?.init.stdin).toContain(`${'b'.repeat(64)}\t9\tAI/enemy.lua`)
+  const composed: any = await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as any)
+  const role = composed.sections.find((s: any) => s.id === 'crew:role').text
+  expect(role).toContain('source/ from bob (2 files, 2.5 MB) at C:\\Games\\Lava\\source')
+  expect(role).toContain('crew_share a map doc ("source-map")') // alice leads
+})

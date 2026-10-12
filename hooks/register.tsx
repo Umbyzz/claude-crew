@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.7.2'
+const VERSION = '1.8.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -761,6 +761,199 @@ function fileLock($: EngineInterface, e: any) {
   return null
 }
 
+// -- shared folders: one member shares a folder of the project, and every teammate's plugin mirrors it into the
+// same place in their own project folder. Plain file copying in PowerShell, so no Claude spends tokens on it: each
+// Claude then reads its own copy with Read/Grep, the cheapest way there is. One-way: a file a teammate changed
+// stays theirs (the shared version lands next to it as .new). The relay stores each file once, by its SHA-256.
+type SharedFolder = { name: string; by: string; at: number; files: number; bytes: number; ready: boolean }
+let sharedFolders: SharedFolder[] = []
+const wantedFolders = new Map<string, boolean>() // name -> this person pressed Get it (kept in the store per project)
+const busyFolders = new Set<string>()
+const folderJobs = atom({ plugin: 'crew', key: 'folderJobs' } as const, {} as Record<string, string>) // name -> progress
+
+const SCAN_PS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$root = $env:CREW_DIR.TrimEnd('\\')\nif (-not (Test-Path -LiteralPath $root -PathType Container)) { [Console]::Out.Write('::missing'); exit 3 }\n$sha = [Security.Cryptography.SHA256]::Create()\n$sb = New-Object Text.StringBuilder\n$n = 0\nforeach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue)) {\n  $rel = $f.FullName.Substring($root.Length + 1).Replace('\\', '/')\n  if ($rel -eq '.crew-sync.json' -or $rel -like '.git/*' -or $rel -like '*/.git/*') { continue }\n  $n++\n  if ($n -gt 20000) { [Console]::Out.Write('::toomany'); exit 3 }\n  $s = [IO.File]::OpenRead($f.FullName)\n  try { $h = [BitConverter]::ToString($sha.ComputeHash($s)).Replace('-', '').ToLower() } finally { $s.Dispose() }\n  [void]$sb.Append($rel).Append(\"`t\").Append($f.Length).Append(\"`t\").Append($h).Append(\"`n\")\n}\n[Console]::Out.Write($sb.ToString())\n"
+const UPLOAD_PS = "[Console]::InputEncoding = [Text.Encoding]::UTF8\n[Console]::OutputEncoding = [Text.Encoding]::UTF8\nAdd-Type -AssemblyName System.Net.Http\n$c = New-Object Net.Http.HttpClient\n$c.Timeout = [TimeSpan]::FromMinutes(30)\n$c.DefaultRequestHeaders.Add('X-Crew-Key', $env:CREW_KEY)\n$c.DefaultRequestHeaders.Add('X-Crew-Name', $env:CREW_NAME)\n$c.DefaultRequestHeaders.Add('X-Crew-Project', $env:CREW_PROJECT)\n$root = $env:CREW_DIR.TrimEnd('\\')\n$start = Get-Date\n$done = 0\nforeach ($l in ([Console]::In.ReadToEnd() -split \"`n\")) {\n  if (-not $l.Trim()) { continue }\n  if (((Get-Date) - $start).TotalMinutes -gt 8) { [Console]::Out.Write(\"::more $done\"); exit 0 }\n  $h, $rel = $l.Trim().Split(\"`t\", 2)\n  $s = [IO.File]::OpenRead((Join-Path $root $rel.Replace('/', '\\')))\n  try {\n    $r = $c.PostAsync(\"$($env:CREW_BASE)/folder/blob?hash=$h\", (New-Object Net.Http.StreamContent($s))).Result\n    if (-not $r.IsSuccessStatusCode) { [Console]::Out.Write(\"::fail $rel $([int]$r.StatusCode) $($r.Content.ReadAsStringAsync().Result)\"); exit 2 }\n  } finally { $s.Dispose() }\n  $done++\n}\n[Console]::Out.Write(\"::done $done\")\n"
+const DOWNLOAD_PS = "[Console]::InputEncoding = [Text.Encoding]::UTF8\n[Console]::OutputEncoding = [Text.Encoding]::UTF8\nAdd-Type -AssemblyName System.Net.Http\n$c = New-Object Net.Http.HttpClient\n$c.Timeout = [TimeSpan]::FromMinutes(30)\n$c.DefaultRequestHeaders.Add('X-Crew-Key', $env:CREW_KEY)\n$c.DefaultRequestHeaders.Add('X-Crew-Name', $env:CREW_NAME)\n$c.DefaultRequestHeaders.Add('X-Crew-Project', $env:CREW_PROJECT)\n$root = $env:CREW_DIR.TrimEnd('\\')\n[void](New-Item -ItemType Directory -Force -Path $root)\n$stateFile = Join-Path $root '.crew-sync.json'\n$prev = @{}\nif (Test-Path -LiteralPath $stateFile) {\n  (Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $prev[$_.Name] = $_.Value }\n}\n$sha = [Security.Cryptography.SHA256]::Create()\nfunction HashOf($p) { $s = [IO.File]::OpenRead($p); try { [BitConverter]::ToString($sha.ComputeHash($s)).Replace('-', '').ToLower() } finally { $s.Dispose() } }\nfunction Save { $o = New-Object PSObject; foreach ($k in $prev.Keys) { $o | Add-Member -NotePropertyName $k -NotePropertyValue $prev[$k] }; [IO.File]::WriteAllText($stateFile, ($o | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false)) }\n$start = Get-Date\n$want = @{}; $got = 0; $same = 0; $kept = 0; $removed = 0\nforeach ($l in ([Console]::In.ReadToEnd() -split \"`n\")) {\n  if (-not $l.Trim()) { continue }\n  $h, $size, $rel = $l.Trim().Split(\"`t\", 3)\n  $want[$rel] = $h\n  $dest = Join-Path $root $rel.Replace('/', '\\')\n  if (Test-Path -LiteralPath $dest) {\n    if ($prev[$rel] -eq $h -and (Get-Item -LiteralPath $dest).Length -eq [int64]$size) { $same++; continue }\n    $cur = HashOf $dest\n    if ($cur -eq $h) { $prev[$rel] = $h; $same++; continue }\n    # changed on this PC since the last sync (or never ours): keep it, and put the shared version next to it\n    if (-not $prev.ContainsKey($rel) -or $prev[$rel] -ne $cur) { $dest = \"$dest.new\"; $kept++ }\n  }\n  if (((Get-Date) - $start).TotalMinutes -gt 8) { Save; [Console]::Out.Write(\"::more\"); exit 0 }\n  $r = $c.GetAsync(\"$($env:CREW_BASE)/folder/blob?hash=$h\", [Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result\n  if (-not $r.IsSuccessStatusCode) { Save; [Console]::Out.Write(\"::fail $rel $([int]$r.StatusCode)\"); exit 2 }\n  [void](New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest))\n  $out = [IO.File]::Create($dest)\n  try { $r.Content.ReadAsStreamAsync().Result.CopyTo($out) } finally { $out.Dispose() }\n  if (-not $dest.EndsWith('.new')) { $prev[$rel] = $h }\n  $got++\n}\n# files the sharer removed: gone here too, unless they were changed on this PC\nforeach ($k in @($prev.Keys)) {\n  if ($want.ContainsKey($k)) { continue }\n  $d = Join-Path $root $k.Replace('/', '\\')\n  if ((Test-Path -LiteralPath $d) -and (HashOf $d) -eq $prev[$k]) { Remove-Item -LiteralPath $d -Force; $removed++ }\n  $prev.Remove($k)\n}\nSave\n[Console]::Out.Write(\"::done $got $same $kept $removed\")\n"
+
+const wantKey = (name: string) => `folderWant:${cfg.base}:${projectName}:${name}`
+const syncedKey = (name: string) => `folderSynced:${cfg.base}:${projectName}:${name}`
+const mirrorPath = (name: string) => (folderPath ? `${folderPath}\\${name.replace(/\//g, '\\')}` : '')
+
+function setJob($: EngineInterface, name: string, text: string) {
+  void update($, folderJobs, j => ({ ...j, [name]: text }))
+}
+
+function mb(bytes: number) {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1e3))} kB`
+}
+
+// A PowerShell script as -EncodedCommand (UTF-16LE, base64): no quoting trouble, and the data goes in on stdin.
+function psEncoded(text: string) {
+  const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const bytes: number[] = []
+  for (let i = 0; i < text.length; i++) bytes.push(text.charCodeAt(i) & 255, text.charCodeAt(i) >> 8)
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
+    out += abc[(n >> 18) & 63] + abc[(n >> 12) & 63] + (i + 1 < bytes.length ? abc[(n >> 6) & 63] : '=') + (i + 2 < bytes.length ? abc[n & 63] : '=')
+  }
+  return out
+}
+
+// The key goes in through the environment, never on a command line.
+async function psJob($: EngineInterface, script: string, dir: string, stdin = '') {
+  try {
+    const r = await $.process.run(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand', psEncoded(script)], {
+      stdin,
+      env: { CREW_BASE: cfg.base, CREW_KEY: cfg.key, CREW_NAME: cfg.me, CREW_PROJECT: projectName, CREW_DIR: dir },
+      timeoutMs: 590000, // the scripts stop at 8 minutes and say "::more"; the plugin then runs them again
+    })
+    return { ok: r.exitCode === 0, out: r.stdout.trim(), err: r.stderr.trim() }
+  } catch (err) {
+    return { ok: false, out: '', err: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+// Share a folder that's inside the project folder (again, after changes: only what changed is uploaded).
+async function shareFolder($: EngineInterface, raw: string): Promise<string> {
+  const given = raw.trim().replace(/^["']|["']$/g, '')
+  if (!folderPath) return 'This project has no folder on this PC yet: set one in /crew → Project first.'
+  const name = (relPath(given) || given).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!name || /^[a-zA-Z]:/.test(name) || name.split('/').includes('..'))
+    return `Pick a folder inside the project folder (${shortPath(folderPath)}).`
+  if (busyFolders.has(name)) return `"${name}" is already being shared or synced.`
+  busyFolders.add(name)
+  try {
+    setJob($, name, 'reading the files…')
+    const dir = mirrorPath(name)
+    const scan = await psJob($, SCAN_PS, dir)
+    if (scan.out.includes('::missing')) throw new Error(`there's no folder ${shortPath(dir)}`)
+    if (scan.out.includes('::toomany')) throw new Error('it has more than 20,000 files; share a smaller part of it')
+    if (!scan.ok) throw new Error(`couldn't read it: ${(scan.err || scan.out).slice(0, 150)}`)
+    const files = scan.out.split('\n').filter(Boolean).map(l => {
+      const [path, size, hash] = l.split('\t')
+      return { path, size: Number(size), hash }
+    })
+    if (!files.length) throw new Error("it's empty")
+    const pathOf = new Map(files.map(f => [f.hash, f.path]))
+    let sent = 0
+    for (let round = 0; round < 60; round++) {
+      const missing: string[] = (await relay($, 'POST', '/folder/manifest', { name, files })).missing ?? []
+      if (!missing.length) break
+      setJob($, name, `uploading ${missing.length} file${missing.length === 1 ? '' : 's'}…`)
+      const up = await psJob($, UPLOAD_PS, dir, missing.map(h => `${h}\t${pathOf.get(h)}`).join('\n'))
+      if (!up.ok || up.out.startsWith('::fail')) throw new Error(`upload stopped: ${(up.out || up.err).replace('::fail ', '').slice(0, 150)}`)
+      sent += Number(/\d+/.exec(up.out)?.[0] ?? 0)
+    }
+    await relay($, 'POST', '/folder/commit', { name })
+    setJob($, name, '')
+    await poll($)
+    const total = files.reduce((n, f) => n + f.size, 0)
+    return `Shared the folder "${name}" (${files.length} files, ${mb(total)}; ${sent} uploaded). Teammates press Get it in /crew → Project to mirror it.`
+  } catch (err) {
+    const msg = explain(err instanceof Error ? err.message : String(err))
+    setJob($, name, `✗ ${msg}`)
+    return `Couldn't share "${name}": ${msg}`
+  } finally {
+    busyFolders.delete(name)
+  }
+}
+
+async function shareFolderPress($: EngineInterface, raw: string) {
+  $.ui.toast(`crew: ${await shareFolder($, raw)}`, { timeoutMs: 9000 })
+}
+
+async function pickSharedFolder($: EngineInterface) {
+  if (!folderPath) return $.ui.toast('crew: set a folder for this project first', { timeoutMs: 6000 })
+  const picked = await pickFolder($, 'Which folder should the crew get a copy of? (inside the project folder)', folderPath)
+  if (picked) await shareFolderPress($, picked)
+}
+
+// Mirror a teammate's shared folder into this project folder (and again whenever they update it).
+async function syncFolder($: EngineInterface, name: string): Promise<string> {
+  if (!folderPath) return 'This project has no folder on this PC yet: set one in /crew → Project first.'
+  if (busyFolders.has(name)) return `"${name}" is already syncing.`
+  busyFolders.add(name)
+  try {
+    setJob($, name, 'getting the file list…')
+    const m = await relay($, 'GET', `/folder?name=${encodeURIComponent(name)}`)
+    const list = (m.files ?? []).map((f: any) => `${f.hash}\t${f.size}\t${f.path}`).join('\n')
+    let out = ''
+    for (let round = 0; round < 60; round++) {
+      setJob($, name, round ? 'still downloading…' : `downloading ${m.files.length} files…`)
+      const r = await psJob($, DOWNLOAD_PS, mirrorPath(name), list)
+      if (!r.ok || r.out.startsWith('::fail')) throw new Error(`download stopped: ${(r.out || r.err).replace('::fail ', '').slice(0, 150)}`)
+      out = r.out
+      if (out.startsWith('::done')) break
+    }
+    const [got, , kept, removed] = out.replace('::done', '').trim().split(' ').map(Number)
+    await $.store.set(syncedKey(name), m.at)
+    setJob($, name, '')
+    return (
+      `Synced "${name}" from ${m.by} into ${shortPath(mirrorPath(name))}: ${got || 0} new or changed` +
+      (removed ? `, ${removed} removed` : '') +
+      (kept ? `. ${kept} file${kept === 1 ? '' : 's'} you changed stayed yours (theirs is next to it as .new)` : '') +
+      '.'
+    )
+  } catch (err) {
+    const msg = explain(err instanceof Error ? err.message : String(err))
+    setJob($, name, `✗ ${msg}`)
+    return `Couldn't sync "${name}": ${msg}`
+  } finally {
+    busyFolders.delete(name)
+  }
+}
+
+async function wantFolder($: EngineInterface, name: string, want: boolean) {
+  wantedFolders.set(name, want)
+  await $.store.set(wantKey(name), want)
+  setJob($, name, '')
+  if (want) $.ui.toast(`crew: ${await syncFolder($, name)}`, { timeoutMs: 9000 })
+}
+
+async function unshareFolder($: EngineInterface, name: string) {
+  try {
+    await relay($, 'POST', '/folder/delete', { name })
+    await poll($)
+    $.ui.toast(`crew: stopped sharing "${name}". Copies already on teammates' PCs stay; share it again any time.`, { timeoutMs: 8000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+}
+
+// After each check-in: teammates' folders this person asked for follow along when they change.
+async function autoSyncFolders($: EngineInterface) {
+  for (const f of sharedFolders) {
+    if (!wantedFolders.has(f.name)) wantedFolders.set(f.name, Boolean(await $.store.get(wantKey(f.name))))
+    if (!f.ready || f.by === cfg.me || busyFolders.has(f.name) || !wantedFolders.get(f.name)) continue
+    if (Number((await $.store.get(syncedKey(f.name))) ?? 0) >= f.at) continue
+    void syncFolder($, f.name).then(note => $.ui.toast(`crew: ${note}`, { timeoutMs: 8000 }))
+  }
+}
+
+async function folderTool($: EngineInterface, e: any) {
+  const action = String(e.action ?? 'share')
+  if (action === 'share') return shareFolder($, String(e.path ?? ''))
+  const name = String(e.path ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!sharedFolders.some(f => f.name === name)) return `No shared folder "${name}" in this project. Shared: ${sharedFolders.map(f => f.name).join(', ') || '(none)'}.`
+  if (action === 'get') {
+    wantedFolders.set(name, true)
+    await $.store.set(wantKey(name), true)
+    return syncFolder($, name)
+  }
+  if (action === 'stop') {
+    const f = sharedFolders.find(x => x.name === name)
+    if (f?.by === cfg.me) {
+      await relay($, 'POST', '/folder/delete', { name })
+      return `Stopped sharing "${name}". Teammates' copies stay.`
+    }
+    wantedFolders.set(name, false)
+    await $.store.set(wantKey(name), false)
+    return `Stopped syncing "${name}". The copy on this PC stays.`
+  }
+  return 'action must be share, get or stop'
+}
+
 async function refreshModel($: EngineInterface) {
   try {
     modelName = String(await $.session.model()).slice(0, 60)
@@ -845,6 +1038,25 @@ function crewExtras(s: CrewSnapshot) {
           `take the heavy or tricky coding, architecture and reviews; quicker ones (like Sonnet) take ideas, design, UI and ` +
           `straightforward building; the lightest (like Haiku) take small, well-defined chores, tests and docs. Take your own share by the same rule.`
         : `The leader splits work by these. If a task would clearly fit another teammate's model (or yours) better, say so in one line.`)
+  }
+  const shared = sharedFolders.filter(f => f.ready)
+  if (shared.length) {
+    const leading = s.leader === cfg.me || s.acting === cfg.me
+    text +=
+      `\n\nShared folders in this project (the crew plugin copies them onto each PC; no tokens): ` +
+      shared
+        .map(
+          f =>
+            `${f.name}/ from ${f.by === cfg.me ? 'you' : f.by} (${f.files} files, ${mb(f.bytes)})` +
+            (f.by !== cfg.me && !wantedFolders.get(f.name) ? ', not on this PC yet (crew_share_folder action "get" fetches it)' : folderPath ? ` at ${mirrorPath(f.name)}` : ''),
+        )
+        .join('; ') +
+      `. Read them locally with Read/Grep/Glob, only the parts your task needs. Treat teammates' shared folders as read-only: ` +
+      `the next sync updates them, so put your own work elsewhere.` +
+      (leading
+        ? ` Before splitting work over a big shared folder, read it once and crew_share a map doc ("${shared[0].name}-map"): ` +
+          `the systems, where each lives, and which files each task needs. Then point every task at its files, so no one re-explores the whole folder.`
+        : '')
   }
   const mine = s.peers.find(p => p.name === cfg.me)?.usage
   if (mine != null && mine >= 85)
@@ -1046,6 +1258,8 @@ async function pollOnce($: EngineInterface) {
     }))
     // a doc shared again under the same name keeps the list the same, but who/when/size change
     othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
+    sharedFolders = Array.isArray(data.folders) ? data.folders : []
+    void autoSyncFolders($).catch(() => {})
     syncDocs($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.startsWith('shared doc ')))
     void syncRules($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.includes(`doc '${RULES_DOC}'`))).catch(() => {})
     failures = 0
@@ -2154,6 +2368,22 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { name: { type: 'string' } } },
   },
   {
+    name: 'crew_share_folder',
+    description:
+      'Shared folders: give every teammate a copy of a folder inside the project folder (source, assets, references), ' +
+      'copied by the plugin with no tokens and kept in sync when it changes. action "share" (default) shares or updates ' +
+      'one of yours; "get" fetches a teammate\'s onto this PC (and follows their updates); "stop" stops sharing yours or ' +
+      'stops syncing theirs. Then read it locally with Read/Grep.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'the folder: its path inside the project folder (e.g. "source") or an absolute path inside it' },
+        action: { type: 'string', enum: ['share', 'get', 'stop'] },
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'crew_send_image',
     description:
       'Send an image file (png, jpg, gif, webp or bmp, up to 4 MB) to a teammate or the whole crew: a screenshot, ' +
@@ -2416,6 +2646,7 @@ export const register: Register = (on, options) => {
         `Crew: ${s.peers.map(peer).join(', ') || 'nobody yet'}`,
         `Tasks:\n${s.tasks.map(fmtTask).join('\n') || '(none)'}`,
         `Shared docs: ${s.shared.join(', ') || '(none)'}`,
+        `Shared folders: ${sharedFolders.map(f => `${f.name} (from ${f.by}, ${f.files} files, ${mb(f.bytes)}${f.by !== me ? (wantedFolders.get(f.name) ? ', synced here' : ', not fetched here') : ''})`).join(', ') || '(none)'}`,
         `Recent messages:\n${s.feed.slice(-n).map(m => `#${m.id} ${line(m)}${m.from === me && receipt(m, s, me) ? `  [${receipt(m, s, me)}]` : ''}`).join('\n') || '(none)'}`,
       ].join('\n\n'),
     )
@@ -2437,6 +2668,11 @@ export const register: Register = (on, options) => {
     const r = await relay($, 'POST', '/leader', { name: e.name ?? '' })
     await poll($)
     return ok(r.leader ? `${r.leader} is now the crew leader.` : 'The crew has no leader now.')
+  }).catch(failed)
+
+  on('tool.call', { tool: 'mcp__crew__crew_share_folder' }, async ($, e: any) => {
+    if (!joined) return ok("You're not in the crew session right now; ask the user to join it from /crew.")
+    return ok(await folderTool($, e))
   }).catch(failed)
 
   on('tool.call', { tool: 'mcp__crew__crew_share' }, async ($, e: any) => {
@@ -2566,6 +2802,7 @@ export const register: Register = (on, options) => {
     const deletingDoc = await read($, docDeleting)
     const draft = await read($, drafts)
     const justMade = await read($, madeFolder)
+    const jobs = await read($, folderJobs)
     const rulesLines = rules.project === projectName ? rules.text.split('\n').filter(l => l.trim()) : []
     const showTip = configured && !(await read($, tipSeen)) && !(await $.store.get('tip:doubleClick'))
     const deleting = await read($, deleteStage)
@@ -3242,6 +3479,38 @@ export const register: Register = (on, options) => {
                 )
               })}
             </Card>
+
+          <Card title={`Shared folders${sharedFolders.length ? ` (${sharedFolders.length})` : ''}`}>
+            {sharedFolders.length === 0 && (
+              <Text dimColor>
+                None yet. Share a folder of this project (source, assets, references) and every teammate's crew copies it onto their PC: no tokens, kept in sync.
+              </Text>
+            )}
+            {sharedFolders.map(f => {
+              const mine = f.by === me
+              const want = wantedFolders.get(f.name) === true
+              const job = jobs[f.name] ?? ''
+              return (
+                <Box flexDirection="row" justifyContent="space-between">
+                  <Text>
+                    📂 {f.name} <Text dimColor>· {mine ? 'you' : f.by} · {f.files} files · {mb(f.bytes)}{job ? ` · ${job}` : mine ? ' · shared' : want ? ' · ✓ on this PC' : ''}</Text>
+                  </Text>
+                  <Box flexDirection="row">
+                    {mine && <Button key={`folder-update-${f.name}`} label="Update" dimColor onPress={() => void shareFolderPress($, f.name)} />}
+                    {mine && <Button key={`folder-unshare-${f.name}`} label="Stop sharing" dimColor onPress={() => void unshareFolder($, f.name)} />}
+                    {!mine && !want && <Button key={`folder-get-${f.name}`} label="Get it" onPress={() => void wantFolder($, f.name, true)} />}
+                    {!mine && want && folderPath !== '' && <Button key={`folder-open-${f.name}`} label="Open" dimColor onPress={() => openInExplorer($, mirrorPath(f.name))} />}
+                    {!mine && want && <Button key={`folder-stop-${f.name}`} label="Stop syncing" dimColor onPress={() => void wantFolder($, f.name, false)} />}
+                  </Box>
+                </Box>
+              )
+            })}
+            {folderPath !== '' && (
+              <Box flexDirection="row">
+                <Button key="folder-share-pick" label="Share a folder…" onPress={() => folderPress($, () => pickSharedFolder($))} />
+              </Box>
+            )}
+          </Card>
 
           <Card title="House rules">
             {rulesLines.length === 0 && (

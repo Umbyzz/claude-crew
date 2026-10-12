@@ -10,15 +10,17 @@ or your LAN -- do not expose it to the open internet.
 import argparse
 import base64
 import binascii
+import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.7.2"
+VERSION = "1.8.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -116,6 +118,63 @@ def doc_key(project, name):
 
 def docs_of(project):
     return {v["name"]: v for k, v in state["shared"].items() if v.get("project", MAIN) == project}
+
+
+# -- shared folders: a member shares a folder of their project and every teammate's plugin mirrors it, without any
+# Claude reading it (no tokens). Each file is stored once, by its SHA-256, in crew-files/ next to the state file;
+# the folder's manifest (path, size, hash per file) lives in the state. A new upload stays in "next" until it's
+# complete, so teammates never sync a half-uploaded folder.
+MAX_FOLDER_FILE = 200_000_000  # bytes per file
+MAX_FOLDER_BYTES = 2_000_000_000  # bytes per shared folder
+MAX_FOLDER_FILES = 20_000
+
+
+def blob_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(args.data)), "crew-files")
+
+
+def blob_path(h):
+    return os.path.join(blob_dir(), h[:2], h)
+
+
+def is_hash(h):
+    return isinstance(h, str) and len(h) == 64 and all(c in "0123456789abcdef" for c in h)
+
+
+def clean_rel(raw):
+    """A path inside a project folder, with forward slashes; '' when it climbs out or isn't relative."""
+    parts = [p for p in str(raw or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." or ":" in p for p in parts):
+        return ""
+    return "/".join(parts)[:300]
+
+
+def folders_of(project):
+    return {v["name"]: v for v in state.setdefault("folders", {}).values() if v.get("project", MAIN) == project}
+
+
+def folder_view(f):
+    return {"name": f["name"], "by": f["by"], "at": f["at"], "files": len(f["files"]),
+            "bytes": sum(x["size"] for x in f["files"]), "ready": bool(f["files"])}
+
+
+def blobs_wanted():
+    return {x["hash"] for f in state.get("folders", {}).values() for x in f["files"] + f.get("next", [])}
+
+
+def gc_blobs():
+    """Drop stored files no shared folder lists any more."""
+    keep, root = blobs_wanted(), blob_dir()
+    if not os.path.isdir(root):
+        return
+    for sub in os.listdir(root):
+        d = os.path.join(root, sub)
+        for h in os.listdir(d) if os.path.isdir(d) else []:
+            if h not in keep and not h.endswith(".part"):
+                try:
+                    os.remove(os.path.join(d, h))
+                except OSError:
+                    pass
 
 
 def unread_in(project, viewer):
@@ -362,6 +421,44 @@ class Handler(BaseHTTPRequestHandler):
                 touch(name, self.headers)
         return True
 
+    def send_blob(self, h):
+        path = blob_path(h) if is_hash(h) else ""
+        if not path or not os.path.exists(path):
+            return self.reply(404, {"error": "no such file on the relay"})
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(os.path.getsize(path)))
+        self.end_headers()
+        with open(path, "rb") as f:
+            while chunk := f.read(1 << 20):
+                self.wfile.write(chunk)
+
+    def receive_blob(self):
+        """One file of a shared folder being uploaded: checked against its hash, stored once."""
+        h = parse_qs(urlparse(self.path).query).get("hash", [""])[0]
+        n = int(self.headers.get("Content-Length") or 0)
+        with lock:
+            wanted = is_hash(h) and h in blobs_wanted()
+        if not wanted or n > MAX_FOLDER_FILE:
+            return self.reply(400, {"error": "that file isn't part of a shared folder being uploaded"})
+        dest = blob_path(h)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        tmp = f"{dest}.{threading.get_ident()}.part"
+        sha, left = hashlib.sha256(), n
+        with open(tmp, "wb") as out:
+            while left > 0:
+                chunk = self.rfile.read(min(1 << 20, left))
+                if not chunk:
+                    break
+                sha.update(chunk)
+                out.write(chunk)
+                left -= len(chunk)
+        if left or sha.hexdigest() != h:
+            os.remove(tmp)
+            return self.reply(400, {"error": "the file arrived damaged (hash mismatch); try again"})
+        os.replace(tmp, dest)
+        self.reply(200, {"ok": True})
+
     def body(self, limit=MAX_SHARED * 2):
         n = int(self.headers.get("Content-Length") or 0)
         if n > limit:
@@ -376,6 +473,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authed(presence=url.path not in ("/watch", "/log", "/file")):
             return
         q = parse_qs(url.query)
+        if url.path == "/folder/blob":
+            return self.send_blob(q.get("hash", [""])[0])
         with lock:
             if url.path == "/poll":
                 # Read receipts: this member's plugin now has everything up to the cursor (shown in their /crew,
@@ -443,7 +542,14 @@ class Handler(BaseHTTPRequestHandler):
                                  "leader": leader_of(pr), "acting": acting.get(pr),
                                  "shared": sorted(docs_of(pr).keys()), "projects": projects_list(now, self.name),
                                  "cursor": state["next_id"] - 1, "chatEpoch": epoch_of(pr),
-                                 "editing": editing_in(pr, self.name, now), "version": VERSION})
+                                 "editing": editing_in(pr, self.name, now),
+                                 "folders": [folder_view(f) for f in folders_of(pr).values() if f["files"]],
+                                 "version": VERSION})
+            elif url.path == "/folder":  # one shared folder's manifest, for a teammate's plugin to mirror it
+                f = folders_of(self.project).get(clean_rel(q.get("name", [""])[0]))
+                if not f or not f["files"]:
+                    return self.reply(404, {"error": "no such shared folder in this project"})
+                self.reply(200, {"name": f["name"], "by": f["by"], "at": f["at"], "files": f["files"]})
             elif url.path == "/projects":
                 self.reply(200, {"projects": projects_list(time.time(), self.name)})
             elif url.path == "/pong":
@@ -472,10 +578,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         # leaving (or stopping the relay) must not count as a check-in, or it would announce a re-join
-        if not self.authed(presence=path not in ("/leave", "/shutdown")):
+        if not self.authed(presence=path not in ("/leave", "/shutdown", "/folder/blob")):
             return
+        if path == "/folder/blob":  # raw bytes, streamed to disk outside the lock
+            return self.receive_blob()
         try:
-            b = self.body(limit=MAX_FILE * 2 if path == "/files" else MAX_SHARED * 2)
+            b = self.body(limit=MAX_FILE * 2 if path in ("/files", "/folder/manifest") else MAX_SHARED * 2)
         except (ValueError, json.JSONDecodeError) as err:
             return self.reply(400, {"error": str(err)})
         if path == "/shutdown":  # "Stop hosting" in /crew: only from this PC, with the key
@@ -502,12 +610,58 @@ class Handler(BaseHTTPRequestHandler):
                 state["messages"] = [m for m in state["messages"] if m.get("project") != pr]
                 state["tasks"] = [t for t in state["tasks"] if t.get("project", MAIN) != pr]
                 state["shared"] = {k: v for k, v in state["shared"].items() if v.get("project", MAIN) != pr}
+                state["folders"] = {k: v for k, v in state.setdefault("folders", {}).items() if v.get("project", MAIN) != pr}
+                gc_blobs()
                 state.setdefault("leaders", {}).pop(pr, None)
                 state.setdefault("epochs", {}).pop(pr, None)
                 acting.pop(pr, None)
                 state.setdefault("deleted", {})[pr] = {"by": self.name, "at": time.time()}
                 post_message(self.name, "all", f'deleted the project "{pr}"', "deleted", deleted=pr)
                 save()
+                return self.reply(200, {"ok": True})
+            if path in ("/folder/manifest", "/folder/commit", "/folder/delete"):
+                pr, name = self.project, clean_rel(b.get("name"))
+                if not name:
+                    return self.reply(400, {"error": "name a folder inside the project folder"})
+                f = folders_of(pr).get(name)
+                host = self.client_address[0] in ("127.0.0.1", "::1")
+                if f and self.name != f["by"] and (path != "/folder/delete" or (self.name != leader_of(pr) and not host)):
+                    return self.reply(403, {"error": f"{f['by']} shares that folder; only they can change it"})
+                if path == "/folder/manifest":  # the file list of a (new) version; replies with what still needs uploading
+                    files = b.get("files")
+                    if not isinstance(files, list) or not files or len(files) > MAX_FOLDER_FILES:
+                        return self.reply(400, {"error": f"send between 1 and {MAX_FOLDER_FILES} files"})
+                    clean = []
+                    for x in files:
+                        p, h, size = clean_rel(x.get("path")), x.get("hash"), x.get("size")
+                        if not p or not is_hash(h) or not isinstance(size, int) or not 0 <= size <= MAX_FOLDER_FILE:
+                            return self.reply(400, {"error": f"bad file entry: {str(x.get('path'))[:80]}"})
+                        clean.append({"path": p, "size": size, "hash": h})
+                    if sum(x["size"] for x in clean) > MAX_FOLDER_BYTES:
+                        return self.reply(413, {"error": f"over {MAX_FOLDER_BYTES // 1_000_000} MB"})
+                    f = f or {"name": name, "by": self.name, "project": pr, "at": 0, "files": []}
+                    f["next"] = clean
+                    state["folders"][doc_key(pr, name)] = f
+                    save()
+                    return self.reply(200, {"missing": sorted({x["hash"] for x in clean if not os.path.exists(blob_path(x["hash"]))})})
+                if not f:
+                    return self.reply(404, {"error": "no such shared folder in this project"})
+                if path == "/folder/commit":  # every file is up: teammates may sync this version now
+                    nxt = f.get("next") or []
+                    missing = sorted({x["hash"] for x in nxt if not os.path.exists(blob_path(x["hash"]))})
+                    if not nxt or missing:
+                        return self.reply(409, {"error": "some files haven't been uploaded yet", "missing": missing})
+                    f.update(files=nxt, at=time.time())
+                    f.pop("next", None)
+                    mb = sum(x["size"] for x in nxt) / 1_000_000
+                    post_message(self.name, "all", f"shared the folder '{name}' ({len(nxt)} files, {mb:.1f} MB)", "update", pr)
+                    save()
+                    gc_blobs()
+                    return self.reply(200, {"ok": True, "at": f["at"]})
+                state["folders"].pop(doc_key(pr, name), None)  # /folder/delete: stop sharing it (copies stay on PCs)
+                post_message(self.name, "all", f"stopped sharing the folder '{name}' (copies already on PCs stay)", "update", pr)
+                save()
+                gc_blobs()
                 return self.reply(200, {"ok": True})
             if path == "/kick":  # the leader (or the host, from their own PC) removes someone from the session
                 who = str(b.get("name") or "").strip()[:40]

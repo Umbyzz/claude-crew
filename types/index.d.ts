@@ -105,6 +105,7 @@ declare module 'claude-code' {
       tipSeen: boolean
       drafts: Record<string, string>
       madeFolder: string
+      folderJobs: Record<string, string>
     }
   }
 }
