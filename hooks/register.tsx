@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.10.5'
+const VERSION = '1.10.6'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -761,6 +761,28 @@ async function checkApps($: EngineInterface) {
     const r = await $.process.run(['tasklist', '/fo', 'csv', '/nh'], { timeoutMs: 15000 })
     openApps = new Set(r.stdout.split(/\r?\n/).map(l => (/^"([^"]+)"/.exec(l)?.[1] ?? '').toLowerCase()).filter(Boolean))
   } catch {}
+}
+
+// The Crew tab's short forms: "58% session · 39% week" reads "58S%-39W% usage", "Roblox Studio (open)" reads
+// "R-Studio on". Claude's own instructions keep the long, clear wording.
+const SHORT_TOOLS: [RegExp, string][] = [[/^roblox studio/i, 'R-Studio'], [/^unreal( engine)?/i, 'UE'], [/^photoshop/i, 'PS']]
+
+function shortUsage(p: { usage?: number | null; usageDetail?: string | null }) {
+  const parts = [...String(p.usageDetail ?? '').matchAll(/(\d+)% (session|week|spend limit)/g)].map(
+    m => `${m[1]}${m[2] === 'session' ? 'S' : m[2] === 'week' ? 'W' : '$'}%`,
+  )
+  return `${parts.length ? parts.join('-') : `${p.usage}%`} usage`
+}
+
+function shortTools(mcp: string) {
+  return mcp
+    .split(', ')
+    .map(t => {
+      const m = /^(.*?)(?: \((open|closed)\))?$/.exec(t.trim())
+      const name = SHORT_TOOLS.reduce((n, [re, s]) => n.replace(re, s), m?.[1] ?? t).slice(0, 14)
+      return m?.[2] ? `${name} ${m[2] === 'open' ? 'on' : 'off'}` : name
+    })
+    .join(', ')
 }
 
 function mcpLabel(server: string) {
@@ -3941,10 +3963,10 @@ export const register: Register = (on, options) => {
                     {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                     {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
                     {p.model ? `  · ${modelLabel(p.model)}` : ''}
-                    {p.usage != null ? `  · ${p.usageDetail || `${p.usage}% used`}${p.usage >= 80 ? ' ⚠' : ''}` : ''}
+                    {p.usage != null ? `  · ${shortUsage(p)}${p.usage >= 80 ? ' ⚠' : ''}` : ''}
                     {p.online && editingNow(p.name) ? `  · ✎ ${editingNow(p.name)?.path}` : ''}
-                    {p.mcp ? `  · 🔌 ${p.mcp}` : ''}
-                    {p.friend ? '  · ★ friend' : ''}
+                    {p.mcp ? `  · 🔌 ${shortTools(p.mcp)}` : ''}
+                    {p.friend ? '  · friend' : ''}
                     {isHosting() && p.online && p.ip && p.name !== me ? `  · from ${p.ip}` : ''}
                     {p.version ? `  · v${p.version}${versionMark(p.version)}` : ''}
                   </Text>

@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.10.6
+- **Shorter Crew tab rows:** usage reads *60S%-40W% usage*, tools read *🔌 R-Studio on/off*. Model and version stay in full. Claude's own instructions keep the long wording.
+
 ## 1.10.5
 - **Is the app actually open?** A connected tool now shows whether its app is running: *🔌 Roblox Studio (open)* or *(closed)*. An MCP server can run while its app is shut, waiting for it. It's checked with a quick task list about once a minute, so no tokens (Roblox Studio, Unity, Blender, Godot, Figma, Photoshop, Unreal). The leader's Claude asks a teammate to open a closed app before giving them live work in it.
 
