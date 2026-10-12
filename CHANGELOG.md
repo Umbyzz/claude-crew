@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.10.2
+- **Crewleader: a private raw-material folder** in every project folder (**📦 Open my Crewleader**). Put huge raw material there (a whole source tree, every asset): it stays on your PC and is never synced, and edits inside it aren't even announced to teammates. The leader's Claude sorts it by structure, never by reading everything, copies only what the crew needs into `Crewshared\<name>` (copying costs no tokens), and shares a map doc. Smaller downloads, a smaller relay, and less for every Claude to read. (Idea by Umbyz.)
+
 ## 1.10.1
 - **Keep this PC awake while anyone's connected.** On by default for the host (Crew tab → Invite friends), so Windows doesn't sleep and pause the crew mid-work; the screen can still turn off. Switch it to *no* to let the PC sleep as usual.
 - **More relay tests** (20 now): shared folders and Crewshared (stored once, only changes uploaded, only the sharer can change them, no climbing out of the project folder, cleanup, privacy), file locks and keep-awake.

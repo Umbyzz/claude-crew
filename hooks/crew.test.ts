@@ -1711,3 +1711,33 @@ test('a members-only project shows its members, and + adds a teammate (who gets 
   expect(posts.find(p => p.url.endsWith('/project/members'))?.body).toEqual({ add: ['bob'] })
   await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any)
 })
+
+test("Crewleader: the leader's Claude learns to sort raw material, and edits there stay private", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'folder:http://relay.test:7777:main': 'C:\\Games\\Lava' })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  const touched: string[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.endsWith('/touch')) touched.push(JSON.parse(e.init.body).path)
+    const body = e.url.endsWith('/shared') ? { docs: [] } : e.init?.method === 'POST' ? { ok: true } : POLL // alice (us) leads
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  on('prompt.compose', async () => ({ sections: [] }) as any)
+  on('tool.call', { tool: 'Write' }, async () => ({ result: 'written' }) as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' }) // loads the project folder
+  await settle()
+  expect(await ui.find({ key: 'crewleader-open' })).toBeDefined()
+  await ui.unmount()
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const composed: any = await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as any)
+  const role = composed.sections.find((s: any) => s.id === 'crew:role').text
+  expect(role).toContain('C:\\Games\\Lava\\Crewleader is your private raw-material folder')
+  expect(role).toContain('never by reading everything')
+  await $.tool.call({ tool: 'Write', file_path: 'C:\\Games\\Lava\\Crewleader\\raw\\boss.lua', content: 'x' } as any)
+  await $.tool.call({ tool: 'Write', file_path: 'C:\\Games\\Lava\\src\\boss.lua', content: 'x' } as any)
+  await settle()
+  expect(touched).toEqual(['src/boss.lua']) // Crewleader edits never go out
+})
+

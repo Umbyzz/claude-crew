@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.10.1'
+const VERSION = '1.10.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -782,6 +782,7 @@ function fileLock($: EngineInterface, e: any) {
   if (!joined || !TYPING_TOOLS.has(String(e.tool))) return null
   const rel = relPath(String(e.file_path ?? e.notebook_path ?? ''))
   if (!rel) return null // outside the project folder: not crew work
+  if (/^crewleader\//i.test(rel)) return null // the private raw-material folder: not even its file names go out
   const key = rel.toLowerCase()
   const now = Date.now()
   const other = othersEditing.find(t => t.path.toLowerCase() === key && now / 1000 - t.at < LOCK_MINUTES * 60)
@@ -983,6 +984,10 @@ const QUICK_PS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$root = $en
 const mySharedName = () => `${CREWSHARED}/${cfg.me.replace(/[<>:"/\\|?*]/g, '').trim() || 'me'}`
 const isCrewshared = (name: string) => name.startsWith(`${CREWSHARED}/`)
 let lastDropCheck = 0
+// Crewleader: raw material (a whole decompile, every asset) that stays on this PC. Never synced; the leader's
+// Claude sorts it and copies only what the crew needs into Crewshared\<name>.
+const CREWLEADER = 'Crewleader'
+let leaderFolderMade = ''
 let dropMs = 120000 // Settings → Crewshared check every
 
 function signature(text: string) {
@@ -994,6 +999,10 @@ function signature(text: string) {
 async function autoSendCrewshared($: EngineInterface, force = false) {
   if (!folderPath || (!force && Date.now() - lastDropCheck < dropMs)) return
   lastDropCheck = Date.now()
+  if (leaderFolderMade !== folderPath) {
+    leaderFolderMade = folderPath
+    void makeDir($, mirrorPath(CREWLEADER))
+  }
   const name = mySharedName()
   if (busyFolders.has(name)) return
   const quick = await psJob($, QUICK_PS, mirrorPath(name)) // also makes the folder, the first time
@@ -1138,7 +1147,14 @@ function crewExtras(s: CrewSnapshot) {
     text +=
       `\n\nCrew drop folder: anything the crew needs from you (assets, references, exports, notes) goes in ` +
       `${mirrorPath(mySharedName())}; the plugin sends it to every teammate by itself within ~2 minutes (no tokens). ` +
-      `Teammates' drops arrive in ${folderPath}\\${CREWSHARED}\\<their name>.`
+      `Teammates' drops arrive in ${folderPath}\\${CREWSHARED}\\<their name>.` +
+      (s.leader === cfg.me || s.acting === cfg.me
+        ? ` ${mirrorPath(CREWLEADER)} is your private raw-material folder: never synced, only on this PC. When your user ` +
+          `puts big raw material there (a whole source tree, every asset) and asks you to share it, sort it for the crew: ` +
+          `decide from the structure (folder names, file types and sizes, a quick look at a few key files), never by ` +
+          `reading everything. Then copy only what teammates need into your drop folder with one shell copy command ` +
+          `(copying costs no tokens), and crew_share a map doc of what's there and which task needs which part.`
+        : '')
   const shared = sharedFolders.filter(f => f.ready)
   if (shared.length) {
     const leading = s.leader === cfg.me || s.acting === cfg.me
@@ -3733,12 +3749,14 @@ export const register: Register = (on, options) => {
             {folderPath !== '' && (
               <Text dimColor>
                 Drop files in {CREWSHARED}\{mySharedName().split('/')[1]} and the crew gets them by itself; teammates' land in {CREWSHARED}\their name.
+                Huge raw material goes in {CREWLEADER} instead: it stays on this PC, and the leader's Claude copies over only what the crew needs.
               </Text>
             )}
             {folderPath !== '' && (
               <Box flexDirection="row">
                 <Button key="crewshared-mine" label={`📥 Open my ${CREWSHARED}`} onPress={() => folderPress($, () => makeDir($, mirrorPath(mySharedName())).then(() => openInExplorer($, mirrorPath(mySharedName()))))} />
                 <Button key="crewshared-all" label={`Open ${CREWSHARED}`} dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWSHARED)).then(() => openInExplorer($, mirrorPath(CREWSHARED))))} />
+                <Button key="crewleader-open" label={`📦 Open my ${CREWLEADER}`} dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWLEADER)).then(() => openInExplorer($, mirrorPath(CREWLEADER))))} />
                 <Button key="folder-sync-now" label="⇅ Sync now" dimColor onPress={() => folderPress($, () => syncNow($))} />
                 <Button key="folder-share-pick" label="Share another folder…" dimColor onPress={() => folderPress($, () => pickSharedFolder($))} />
               </Box>
