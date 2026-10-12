@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.10.0"
+VERSION = "1.10.1"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -357,11 +357,31 @@ def sweep():
             save()
 
 
+# Keep this PC awake while anyone is connected (Windows; the screen may still turn off). Set and cleared from the
+# sweeper thread only: Windows ties the request to the thread that made it.
+awake = {"held": False}
+
+
+def keep_awake(want):
+    if want == awake["held"] or sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if want else 0))
+        awake["held"] = want
+    except Exception:
+        pass
+
+
 def sweeper():
     while True:
         time.sleep(2)
         with lock:
             sweep()
+            now = time.time()
+            want = state.get("keepAwake", True) and any(is_online(p, now) for p in peers.values())
+        keep_awake(want)
 
 
 def touch(name, headers):
@@ -611,6 +631,7 @@ class Handler(BaseHTTPRequestHandler):
                 now = time.time()
                 self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr, self.name), "project": pr,
                                  "friendsOnly": bool(state.get("friendsOnly")),
+                                 "keepAwake": bool(state.get("keepAwake", True)), "awake": awake["held"],
                                  "tasks": [task_view(t, now) for t in state["tasks"] if task_in(t, pr)],
                                  "leader": leader_of(pr), "acting": acting.get(pr),
                                  "shared": sorted(docs_of(pr).keys()), "projects": projects_list(now, self.name),
@@ -748,6 +769,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {"friends": [{"name": n, **f, "online": is_online(peers[n], time.time()) if n in peers else False}
                                                     for n, f in sorted(friends.items())],
                                         "friendsOnly": bool(state.get("friendsOnly"))})
+            if path == "/keepawake":  # the host's "keep this PC awake while anyone's connected"
+                if not self.host_pc():
+                    return self.reply(403, {"error": "only the host's own PC can change that"})
+                state["keepAwake"] = bool(b.get("on"))
+                save()
+                return self.reply(200, {"keepAwake": state["keepAwake"]})
             if path == "/key/rotate":  # Settings → New crew key: only from the host's own PC
                 if not self.host_pc():
                     return self.reply(403, {"error": "only the host's own PC can change the crew key"})

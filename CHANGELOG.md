@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.10.1
+- **Keep this PC awake while anyone's connected.** On by default for the host (Crew tab → Invite friends), so Windows doesn't sleep and pause the crew mid-work; the screen can still turn off. Switch it to *no* to let the PC sleep as usual.
+- **More relay tests** (20 now): shared folders and Crewshared (stored once, only changes uploaded, only the sharer can change them, no climbing out of the project folder, cleanup, privacy), file locks and keep-awake.
+
 ## 1.10.0
 - **Friends: personal keys.** The host adds friends in the Crew tab; each gets their own invite with a key that only works with their name, so nobody can pose as someone else. **Remove** stops just that friend's key. **Who can join → friends only** turns the shared crew key off (the host's own PC always gets in). Each friend shows when and from where they last connected.
 - **Members-only projects.** New projects are private to whoever made them: only members see them in the list, their chat, tasks, docs, shared folders and Crewshared, and they're kept out of the crew log and the Clawds for everyone else. Members press **+ name** to add someone (they get an invite); the leader removes people with **✕ name**. Projects from before stay open until their leader presses **🔒 Make members-only**. main is always the whole crew's.

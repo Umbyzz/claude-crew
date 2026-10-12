@@ -64,6 +64,7 @@ export type CrewSnapshot = {
   reads?: Record<string, number> // read receipts: the newest message id each member's plugin has (relay 0.9.5+)
   project?: string // the crew project this session is in ('main' unless switched)
   projects?: CrewProject[] // every project on the relay (relay 1.1+)
+  keepAwake?: boolean // the host keeps their PC awake while anyone's connected (relay 1.10.1+)
 }
 
 export type CrewProject = {

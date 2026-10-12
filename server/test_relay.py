@@ -3,6 +3,7 @@
 Each test starts a real relay on a free port with its own data folder. Requests marked remote=True play a
 teammate on another PC; the rest come from "the host's PC".
 """
+import hashlib
 import json
 import os
 import shutil
@@ -53,6 +54,25 @@ class Relay:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"{}")
+
+    def upload(self, name, data, project="", remote=True):
+        """One file of a shared folder, as raw bytes (what the plugin's PowerShell uploader sends)."""
+        h = hashlib.sha256(data).hexdigest()
+        headers = {"X-Crew-Key": KEY, "X-Crew-Name": name, "X-Crew-Project": project}
+        if remote:
+            headers["X-Crew-Test-Remote"] = "1"
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/folder/blob?hash={h}", method="POST", headers=headers, data=data)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def download(self, name, h):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/folder/blob?hash={h}",
+                                     headers={"X-Crew-Key": KEY, "X-Crew-Name": name, "X-Crew-Test-Remote": "1"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.read()
 
     def close(self):
         self.proc.kill()
@@ -169,6 +189,80 @@ class RelayTest(unittest.TestCase):
         self.assertNotIn("state.json.tmp", files)
         with open(os.path.join(self.r.dir, "state.json")) as f:
             self.assertTrue(json.load(f)["messages"])
+
+    # -- shared folders and Crewshared
+
+    def share(self, name, folder, files, project=""):
+        manifest = [{"path": p, "size": len(b), "hash": hashlib.sha256(b).hexdigest()} for p, b in files.items()]
+        code, r = self.r.call("POST", "/folder/manifest", name, project=project, body={"name": folder, "files": manifest})
+        self.assertEqual(code, 200, r)
+        for b in files.values():
+            if hashlib.sha256(b).hexdigest() in r["missing"]:
+                self.assertEqual(self.r.upload(name, b, project), 200)
+        return self.r.call("POST", "/folder/commit", name, project=project, body={"name": folder})
+
+    def test_a_shared_folder_reaches_teammates_and_stores_each_file_once(self):
+        files = {"a.txt": b"hello", "sub/b.txt": b"hello", "c.bin": b"\x00\x01" * 1000}
+        code, _ = self.share("pluh", "Crewshared/pluh", files)
+        self.assertEqual(code, 200)
+        f = next(x for x in self.poll("cori")[1]["folders"] if x["name"] == "Crewshared/pluh")
+        self.assertEqual((f["by"], f["files"]), ("pluh", 3))
+        m = self.r.call("GET", "/folder?name=Crewshared%2Fpluh", "cori")[1]
+        got = {x["path"]: self.r.download("cori", x["hash"]) for x in m["files"]}
+        self.assertEqual(got, files)
+        stored = [n for _, _, fs in os.walk(os.path.join(self.r.dir, "crew-files")) for n in fs]
+        self.assertEqual(len(stored), 2)  # "hello" twice is one stored file
+
+    def test_an_update_uploads_only_what_changed(self):
+        self.share("pluh", "src", {"a.txt": b"v1", "b.txt": b"same"})
+        manifest = [{"path": "a.txt", "size": 2, "hash": hashlib.sha256(b"v2").hexdigest()},
+                    {"path": "b.txt", "size": 4, "hash": hashlib.sha256(b"same").hexdigest()}]
+        missing = self.r.call("POST", "/folder/manifest", "pluh", body={"name": "src", "files": manifest})[1]["missing"]
+        self.assertEqual(missing, [hashlib.sha256(b"v2").hexdigest()])
+        # teammates keep seeing the old version until the new one is complete
+        self.assertEqual(self.r.call("POST", "/folder/commit", "pluh", body={"name": "src"})[0], 409)
+
+    def test_only_the_sharer_changes_a_folder(self):
+        self.share("pluh", "src", {"a.txt": b"mine"})
+        manifest = [{"path": "a.txt", "size": 4, "hash": hashlib.sha256(b"evil").hexdigest()}]
+        self.assertEqual(self.r.call("POST", "/folder/manifest", "cori", body={"name": "src", "files": manifest})[0], 403)
+        self.assertEqual(self.r.call("POST", "/folder/delete", "cori", body={"name": "src"})[0], 403)
+        self.assertEqual(self.r.upload("cori", b"not part of any folder"), 400)  # random uploads are refused
+
+    def test_paths_cannot_climb_out_of_the_project_folder(self):
+        manifest = [{"path": "../../evil.txt", "size": 1, "hash": hashlib.sha256(b"x").hexdigest()}]
+        self.assertEqual(self.r.call("POST", "/folder/manifest", "pluh", body={"name": "src", "files": manifest})[0], 400)
+        self.assertEqual(self.r.call("POST", "/folder/manifest", "pluh", body={"name": "../up", "files": manifest})[0], 400)
+
+    def test_stopping_sharing_cleans_up_the_stored_files(self):
+        self.share("pluh", "src", {"a.txt": b"bye"})
+        self.assertEqual(self.r.call("POST", "/folder/delete", "pluh", body={"name": "src"})[0], 200)
+        stored = [n for _, _, fs in os.walk(os.path.join(self.r.dir, "crew-files")) for n in fs]
+        self.assertEqual(stored, [])
+        self.assertEqual(self.poll("cori")[1]["folders"], [])
+
+    def test_a_private_projects_folders_stay_private(self):
+        self.r.call("POST", "/leader", "umbyz", project="secret", body={"name": "umbyz"})
+        self.assertEqual(self.share("umbyz", "Crewshared/umbyz", {"plan.txt": b"secret"}, project="secret")[0], 200)
+        self.assertEqual(self.r.call("GET", "/folder?name=Crewshared%2Fumbyz", "stranger", project="secret")[0], 403)
+        self.assertEqual(self.poll("stranger")[1]["folders"], [])  # and main doesn't show it
+
+    # -- file locks
+
+    def test_an_edit_shows_to_teammates_in_the_same_project_only(self):
+        self.r.call("POST", "/touch", "pluh", body={"path": "src/Player.lua"})
+        cori = self.poll("cori")[1]["editing"]
+        self.assertEqual([(e["path"], e["name"]) for e in cori], [("src/Player.lua", "pluh")])
+        self.assertEqual(self.poll("pluh")[1]["editing"], [])  # not your own edits
+        self.assertEqual(self.poll("cori", project="other")[1]["editing"], [])  # nor another project's
+
+    # -- keep awake
+
+    def test_keep_awake_is_on_by_default_and_only_the_host_switches_it(self):
+        self.assertTrue(self.poll("cori")[1]["keepAwake"])
+        self.assertEqual(self.r.call("POST", "/keepawake", "cori", body={"on": False})[0], 403)
+        self.assertEqual(self.r.call("POST", "/keepawake", "host", body={"on": False}, remote=False)[0], 200)
+        self.assertFalse(self.poll("cori")[1]["keepAwake"])
 
 
 if __name__ == "__main__":

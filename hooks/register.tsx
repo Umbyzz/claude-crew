@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.10.0'
+const VERSION = '1.10.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1355,6 +1355,7 @@ async function pollOnce($: EngineInterface) {
       tasks: data.tasks ?? [],
       shared: data.shared ?? [],
       reads: data.reads && typeof data.reads === 'object' ? data.reads : undefined, // absent from an older relay
+      keepAwake: data.keepAwake !== false,
     }))
     // a doc shared again under the same name keeps the list the same, but who/when/size change
     othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
@@ -2951,6 +2952,7 @@ export const register: Register = (on, options) => {
     const member = (await read($, membership)) || (configured ? 'joined' : '')
     const host = await read($, hostInfo)
     const askingKey = await read($, keyAsk)
+    const keepAwake = s.keepAwake !== false
     const confirming = await read($, confirmReset)
     const note = await read($, updateNote)
     const hostMsg = await read($, hostNote)
@@ -3933,6 +3935,23 @@ export const register: Register = (on, options) => {
                   <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
                   {!askingKey && <Button key="key-new" label="🔑 New crew key…" dimColor onPress={() => askNewKey($, true)} />}
                 </Box>
+                {Select && (
+                  <Select
+                    key="keep-awake"
+                    label="Keep this PC awake while anyone's connected "
+                    value={keepAwake ? 'yes' : 'no'}
+                    options={[
+                      { value: 'yes', label: 'yes (the screen can still turn off)' },
+                      { value: 'no', label: 'no, let it sleep' },
+                    ]}
+                    onSelect={(v: string) =>
+                      void relay($, 'POST', '/keepawake', { on: v === 'yes' })
+                        .then(() => poll($))
+                        .then(() => $.ui.toast(v === 'yes' ? "crew: this PC stays awake while anyone's connected" : 'crew: this PC may sleep again (the crew pauses when it does)', { timeoutMs: 6000 }))
+                        .catch(err => $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
+                    }
+                  />
+                )}
                 {askingKey && (
                   <Callout>
                     <Text bold>Make a new crew key?</Text>
