@@ -1742,3 +1742,24 @@ test("Crewleader: the leader's Claude learns to sort raw material, and edits the
   expect(touched).toEqual(['src/boss.lua']) // Crewleader edits never go out
 })
 
+test('a personal key handed over by the host is saved and used from then on', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const saved: any[] = []
+  on('config.set', async (_$: unknown, e: any) => {
+    saved.push(e)
+    return { value: e.value } as any
+  })
+  const keys: string[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    keys.push(e.init?.headers?.['X-Crew-Key'])
+    const handOver = keys.length === 1 ? { yourKey: 'personal-key-123' } : {}
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, ...handOver }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(saved).toContainEqual({ key: 'crew.key', value: 'personal-key-123' })
+  expect(keys[keys.length - 1]).toBe('personal-key-123')
+})

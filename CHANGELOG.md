@@ -2,6 +2,12 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.10.4
+- **★ Friend a connected teammate.** The host presses ★ Friend next to someone online (their address shows beside it), and their personal key reaches their plugin on its next check-in, saved by itself. No copy-paste, no typos. Typing a name and copying an invite stays for people who aren't connected yet.
+- **No duplicate friends.** A second friend with the same name is refused instead of silently replacing the first one's key.
+- **Who can join** moved to ⚙ Settings → Connection (host only).
+- Relay tests: 23.
+
 ## 1.10.3
 - **Claudes look before they ask.** Given a goal without saying where its material is, every Claude first checks its Crewleader and Crewshared folders. If the goal needs files and both are empty, it asks its user where they are (and suggests Crewleader) instead of guessing.
 

@@ -103,6 +103,28 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.poll("cori")[0], 401)  # nor can anyone be "cori" with the shared key
         self.assertEqual(self.r.call("POST", "/friends/add", "cori", key=cori_key, body={"name": "x"})[0], 403)  # host only
 
+    def test_a_connected_teammate_gets_their_friend_key_by_itself(self):
+        self.assertEqual(self.poll("timmy123")[0], 200)  # connected with the shared key
+        self.r.call("POST", "/friends/add", "host", body={"name": "timmy123"}, remote=False)
+        code, r = self.poll("timmy123")
+        self.assertEqual(code, 200)
+        key = r["yourKey"]  # handed over on the next check-in
+        self.assertEqual(self.poll("timmy123", key=key)[0], 200)
+        self.assertNotIn("yourKey", self.poll("timmy123", key=key)[1])
+        self.assertEqual(self.poll("timmy123")[0], 401)  # once used, the shared key can't be timmy123 any more
+
+    def test_a_second_friend_with_the_same_name_is_refused(self):
+        _, r = self.r.call("POST", "/friends/add", "host", body={"name": "timmy123"}, remote=False)
+        first = r["friends"][0]["key"]
+        self.assertEqual(self.r.call("POST", "/friends/add", "host", body={"name": "timmy123"}, remote=False)[0], 409)
+        self.assertEqual(self.poll("timmy123", key=first)[0], 200)  # the first timmy keeps working
+
+    def test_only_the_host_sees_where_people_connect_from(self):
+        self.poll("cori")
+        self.assertNotIn("ip", next(p for p in self.poll("pluh")[1]["peers"] if p["name"] == "cori"))
+        host_view = self.r.call("GET", "/poll?since=0", "host", remote=False)[1]
+        self.assertEqual(next(p for p in host_view["peers"] if p["name"] == "cori")["ip"], "127.0.0.1")
+
     def test_friends_only_turns_the_shared_key_off(self):
         self.r.call("POST", "/friends/mode", "host", body={"friendsOnly": True}, remote=False)
         self.assertEqual(self.poll("stranger")[0], 401)

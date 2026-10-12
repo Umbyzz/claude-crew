@@ -34,6 +34,8 @@ export type CrewPeer = {
   usage?: number | null // the most of any usage-limit window they've used, in percent
   usageDetail?: string | null // each window on its own: "26% session · 35% week"
   mcp?: string | null // the MCP servers their Claude is connected to ("Roblox Studio, Unity")
+  friend?: boolean // on the host's friends list (a personal key)
+  ip?: string // where they connect from (only the host sees it)
 }
 
 export type CrewTask = {

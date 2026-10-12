@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.10.3'
+const VERSION = '1.10.4'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1378,6 +1378,11 @@ async function pollOnce($: EngineInterface) {
       keepAwake: data.keepAwake !== false,
     }))
     // a doc shared again under the same name keeps the list the same, but who/when/size change
+    if (typeof data.yourKey === 'string' && data.yourKey && data.yourKey !== cfg.key) {
+      cfg.key = data.yourKey
+      void $.config.set({ key: 'crew.key', value: data.yourKey }).catch(() => {})
+      $.ui.toast("crew: you're now on the host's friends list. Your personal key is saved; nothing else to do.", { timeoutMs: 10000 })
+    }
     othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
     sharedFolders = Array.isArray(data.folders) ? data.folders : []
     void autoSyncFolders($).catch(() => {})
@@ -2320,6 +2325,17 @@ async function addFriend($: EngineInterface, surface: any, raw: string) {
   }
 }
 
+// ★ Friend: the person is connected right now, so their key goes straight to their plugin. No typing, no wrong Timmy.
+async function makeFriend($: EngineInterface, name: string, ip: string) {
+  try {
+    await friendCall($, '/friends/add', { name })
+    await poll($)
+    $.ui.toast(`crew: ${name}${ip ? ` (from ${ip})` : ''} is a friend now. Their personal key reaches them on their next check-in.`, { timeoutMs: 9000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+}
+
 async function removeFriend($: EngineInterface, name: string) {
   try {
     await friendCall($, '/friends/remove', { name })
@@ -2465,6 +2481,7 @@ function refreshPress($: EngineInterface) {
 
 function toggleSettings($: EngineInterface) {
   void update($, settingsOpen, open => !open)
+  if (isHosting()) void loadFriends($)
 }
 
 function ok(text: string) {
@@ -3277,6 +3294,22 @@ export const register: Register = (on, options) => {
               <Box flexDirection="row">
                 <Button key="test" label="Test connection" onPress={() => testConnection($, base)} />
               </Box>
+              {isHosting() && Select && (
+                <Select
+                  key="friends-only"
+                  label="Who can join "
+                  value={friendList.friendsOnly ? 'friends' : 'key'}
+                  options={[
+                    { value: 'key', label: 'anyone with the crew key' },
+                    { value: 'friends', label: 'friends only (personal keys)' },
+                  ]}
+                  onSelect={(v: string) =>
+                    void friendCall($, '/friends/mode', { friendsOnly: v === 'friends' })
+                      .then(() => $.ui.toast(v === 'friends' ? 'crew: friends only: the shared crew key no longer gets anyone in' : 'crew: anyone with the crew key can join again', { timeoutMs: 6000 }))
+                      .catch(err => $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
+                  }
+                />
+              )}
             </Card>
 
             <Card title="Preferences">
@@ -3878,9 +3911,14 @@ export const register: Register = (on, options) => {
                     {p.usage != null ? `  · ${p.usageDetail || `${p.usage}% used`}${p.usage >= 80 ? ' ⚠' : ''}` : ''}
                     {p.online && editingNow(p.name) ? `  · ✎ ${editingNow(p.name)?.path}` : ''}
                     {p.mcp ? `  · 🔌 ${p.mcp}` : ''}
+                    {p.friend ? '  · ★ friend' : ''}
+                    {isHosting() && p.online && p.ip && p.name !== me ? `  · from ${p.ip}` : ''}
                     {p.version ? `  · v${p.version}${versionMark(p.version)}` : ''}
                   </Text>
                   <Box flexDirection="row">
+                    {isHosting() && p.name !== me && p.online && !p.friend && (
+                      <Button key={`friend-make-${p.name}`} label="★ Friend" dimColor onPress={() => void makeFriend($, p.name, p.ip ?? '')} />
+                    )}
                     {p.name !== me && p.online && p.version && newer(VERSION, p.version) && (
                       <Button key={`nudge-${p.name}`} label="Nudge" dimColor onPress={() => nudgeUpdate($, p.name, p.version ?? '')} />
                     )}
@@ -3907,7 +3945,8 @@ export const register: Register = (on, options) => {
             {isHosting() && s.connected && (
               <Card title={`Friends${friendList.list.length ? ` (${friendList.list.length})` : ''}`}>
                 <Text dimColor>
-                  Each friend gets a personal key tied to their name: nobody can pose as them, and removing one doesn't touch anyone else.
+                  Press ★ Friend next to someone connected (in the list above) and their personal key reaches them by itself. It's tied
+                  to their name, so nobody can pose as them, and removing one friend doesn't touch anyone else. Who can join: ⚙ Settings.
                 </Text>
                 {friendList.list.map(f => (
                   <Box flexDirection="row" justifyContent="space-between">
@@ -3925,25 +3964,13 @@ export const register: Register = (on, options) => {
                   <Box marginTop={1} width="100%">
                     <Input
                       key="friend-add"
-                      placeholder="Add a friend: their crew name, then Enter (their personal invite is copied)"
+                      placeholder="Not connected yet? Type their crew name, then Enter: their personal invite is copied"
                       submitLabel="add"
                       value={draft['friend-add'] ?? ''}
                       onInput={(v: string) => setDraft($, 'friend-add', v)}
                       onSubmit={(v: string) => submitted($, 'friend-add', v, () => addFriend($, e.surface, v))}
                     />
                   </Box>
-                )}
-                {Select && (
-                  <Select
-                    key="friends-only"
-                    label="Who can join "
-                    value={friendList.friendsOnly ? 'friends' : 'key'}
-                    options={[
-                      { value: 'key', label: 'anyone with the crew key' },
-                      { value: 'friends', label: 'friends only (personal keys)' },
-                    ]}
-                    onSelect={(v: string) => void friendCall($, '/friends/mode', { friendsOnly: v === 'friends' }).catch(() => {})}
-                  />
                 )}
               </Card>
             )}

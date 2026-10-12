@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.10.3"
+VERSION = "1.10.4"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -312,7 +312,7 @@ def update_acting(now):
         save()
 
 
-def peer_list(project=MAIN, viewer=None):
+def peer_list(project=MAIN, viewer=None, host=False):
     now = time.time()
     leader, stand_in = leader_of(project), acting.get(project)
     return [
@@ -320,7 +320,8 @@ def peer_list(project=MAIN, viewer=None):
          "activity": p["activity"], "leader": n == leader, "acting": n == stand_in, "since": p["since"],
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
          "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"), "usageDetail": p.get("usageDetail"), "mcp": p.get("mcp"),
-         "project": p.get("project", MAIN) if can_see(p.get("project", MAIN), viewer) or n == viewer else "(private)"}
+         "project": p.get("project", MAIN) if can_see(p.get("project", MAIN), viewer) or n == viewer else "(private)",
+         "friend": n in state.get("friends", {}), **({"ip": p.get("ip", "")} if host else {})}
         for n, p in sorted(peers.items())
     ]
 
@@ -384,7 +385,7 @@ def sweeper():
         keep_awake(want)
 
 
-def touch(name, headers):
+def touch(name, headers, ip=""):
     """Mark a member present and take the activity their plugin reports."""
     now = time.time()
     fresh = name not in peers
@@ -413,6 +414,7 @@ def touch(name, headers):
     if "X-Crew-Mcp" in headers:  # the MCP servers their Claude is connected to (Roblox Studio, Unity…)
         p["mcp"] = (headers.get("X-Crew-Mcp") or "").strip()[:200]
     p["project"] = project_of(headers)  # which project this member's Claude is working in right now
+    p["ip"] = ip or p.get("ip", "")  # where they connect from: the host sees it next to ★ Friend
 
 
 def post_message(sender, to, text, kind, project=None, **extra):
@@ -468,12 +470,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(401, {"error": f"that key belongs to {owner}, not {name}"})
                 return False
             name = name or owner
-            friends[owner].update(seen=time.time(), ip=self.client_address[0])
+            friends[owner].update(seen=time.time(), ip=self.client_address[0], pending=False)
         elif hmac.compare_digest(key, args.key):
-            if name in friends and not self.host_pc():
+            pending = name in friends and friends[name].get("pending")
+            if name in friends and not pending and not self.host_pc():
                 self.reply(401, {"error": f"{name} has a personal key: use the invite the host sent you"})
                 return False
-            if state.get("friendsOnly") and not self.host_pc():
+            if state.get("friendsOnly") and not self.host_pc() and not pending:
                 self.reply(401, {"error": "this crew is friends-only: ask the host for your personal invite"})
                 return False
         else:
@@ -483,6 +486,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {"error": "missing X-Crew-Name"})
             return False
         self.name = name
+        self.via_shared = not owner  # signed in with the shared crew key (a new friend's key gets handed over then)
         self.project = project_of(self.headers)
         if name and self.project != MAIN:
             with lock:
@@ -508,7 +512,7 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if presence:
             with lock:
-                touch(name, self.headers)
+                touch(name, self.headers, self.client_address[0])
         return True
 
     def send_blob(self, h):
@@ -629,8 +633,10 @@ class Handler(BaseHTTPRequestHandler):
                 msgs = [m for m in state["messages"] if m["id"] > since and in_project(m, pr)
                         and (m["to"] in ("all", self.name) or m["from"] == self.name)]
                 now = time.time()
-                self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr, self.name), "project": pr,
+                self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr, self.name, self.host_pc()), "project": pr,
                                  "friendsOnly": bool(state.get("friendsOnly")),
+                                 **({"yourKey": state["friends"][self.name]["key"]}
+                                    if self.via_shared and state.get("friends", {}).get(self.name, {}).get("pending") else {}),
                                  "keepAwake": bool(state.get("keepAwake", True)), "awake": awake["held"],
                                  "tasks": [task_view(t, now) for t in state["tasks"] if task_in(t, pr)],
                                  "leader": leader_of(pr), "acting": acting.get(pr),
@@ -755,7 +761,10 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/friends/add":
                     if not who:
                         return self.reply(400, {"error": "name the friend"})
-                    friends[who] = {"key": secrets.token_urlsafe(18), "added": time.time(), "by": self.name, "seen": 0, "ip": ""}
+                    if who in friends and not b.get("renew"):
+                        return self.reply(409, {"error": f"there's already a friend called {who}: pick another name, or remove the old one first"})
+                    friends[who] = {"key": secrets.token_urlsafe(18), "added": time.time(), "by": self.name, "seen": 0, "ip": "",
+                                    "pending": True}
                 elif path == "/friends/remove":
                     if friends.pop(who, None) is not None:
                         kicked[who] = {"by": self.name, "until": time.time() + KICK_SECONDS}
