@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.10.5
+- **Is the app actually open?** A connected tool now shows whether its app is running: *🔌 Roblox Studio (open)* or *(closed)*. An MCP server can run while its app is shut, waiting for it. It's checked with a quick task list about once a minute, so no tokens (Roblox Studio, Unity, Blender, Godot, Figma, Photoshop, Unreal). The leader's Claude asks a teammate to open a closed app before giving them live work in it.
+
 ## 1.10.4
 - **★ Friend a connected teammate.** The host presses ★ Friend next to someone online (their address shows beside it), and their personal key reaches their plugin on its next check-in, saved by itself. No copy-paste, no typos. Typing a name and copying an invite stays for people who aren't connected yet.
 - **No duplicate friends.** A second friend with the same name is refused instead of silently replacing the first one's key.

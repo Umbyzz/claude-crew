@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.10.4'
+const VERSION = '1.10.5'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -145,7 +145,7 @@ async function relay($: EngineInterface, method: 'GET' | 'POST', path: string, b
       'X-Crew-Model': modelName,
       'X-Crew-Usage': usageNow(),
       'X-Crew-Usage-Detail': usageDetail(),
-      'X-Crew-Mcp': [...mcpServers].slice(0, 8).join(', '),
+      'X-Crew-Mcp': [...mcpServers].slice(0, 8).map(mcpLabel).join(', '),
       'X-Crew-Project': projectName,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -740,6 +740,37 @@ function noteMcp(tool: string) {
   mcpServers.add(m[1].replace(/[_-]+/g, ' ').trim())
 }
 
+// Whether a tool's app is actually open (an MCP server can run while its app is shut, waiting for it). Known apps
+// only, from a tasklist at most once a minute: no tokens. Other servers just show their name.
+const MCP_APPS: [RegExp, string[]][] = [
+  [/roblox/i, ['robloxstudiobeta.exe', 'robloxstudio.exe']],
+  [/unity/i, ['unity.exe']],
+  [/blender/i, ['blender.exe']],
+  [/godot/i, ['godot']],
+  [/figma/i, ['figma.exe']],
+  [/photoshop/i, ['photoshop.exe']],
+  [/unreal/i, ['unrealeditor.exe']],
+]
+let openApps: Set<string> | null = null // lowercase process names; null until the first look
+let lastAppCheck = 0
+
+async function checkApps($: EngineInterface) {
+  if (Date.now() - lastAppCheck < 60000 || ![...mcpServers].some(s => MCP_APPS.some(([re]) => re.test(s)))) return
+  lastAppCheck = Date.now()
+  try {
+    const r = await $.process.run(['tasklist', '/fo', 'csv', '/nh'], { timeoutMs: 15000 })
+    openApps = new Set(r.stdout.split(/\r?\n/).map(l => (/^"([^"]+)"/.exec(l)?.[1] ?? '').toLowerCase()).filter(Boolean))
+  } catch {}
+}
+
+function mcpLabel(server: string) {
+  const app = MCP_APPS.find(([re]) => re.test(server))
+  if (!app || !openApps) return server
+  const running = [...openApps]
+  const open = app[1].some(p => running.some(n => (p.endsWith('.exe') ? n === p : n.startsWith(p))))
+  return `${server} (${open ? 'open' : 'closed'})`
+}
+
 async function refreshMcp($: EngineInterface) {
   try {
     for (const t of await $.tool.list()) if (t.mcp) noteMcp(t.name)
@@ -1134,7 +1165,8 @@ function crewExtras(s: CrewSnapshot) {
         ? `Give big tasks to whoever has the most usage left; anyone past 80% gets only small ones (or none), and hand their work on before they run dry. `
         : '') +
       (leading && team.some(p => p.mcp)
-        ? `Work that needs a connected tool (Roblox Studio, Unity, a browser…) goes to whoever has it connected. `
+        ? `Work that needs a connected tool (Roblox Studio, Unity, a browser…) goes to whoever has it connected; one marked ` +
+          `"(closed)" has its app shut, so ask that teammate to open it before giving them live work in it. `
         : '') +
       (leading
         ? `Play to strengths: before splitting a bigger goal, propose who takes what in one crew_send and let teammates say ` +
@@ -1387,6 +1419,7 @@ async function pollOnce($: EngineInterface) {
     sharedFolders = Array.isArray(data.folders) ? data.folders : []
     void autoSyncFolders($).catch(() => {})
     void autoSendCrewshared($).catch(() => {})
+    void checkApps($)
     syncDocs($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.startsWith('shared doc ')))
     void syncRules($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.includes(`doc '${RULES_DOC}'`))).catch(() => {})
     failures = 0

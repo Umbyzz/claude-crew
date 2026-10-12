@@ -1763,3 +1763,25 @@ test('a personal key handed over by the host is saved and used from then on', { 
   expect(saved).toContainEqual({ key: 'crew.key', value: 'personal-key-123' })
   expect(keys[keys.length - 1]).toBe('personal-key-123')
 })
+
+test("a connected tool says whether its app is open, from a tasklist (no tokens)", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  let studioOpen = false
+  on('process.run', async (_$: unknown, e: any) => {
+    const stdout = e.argv[0] === 'tasklist' ? `"explorer.exe","1"\r\n${studioOpen ? '"RobloxStudioBeta.exe","2"\r\n' : ''}` : ''
+    return { value: { exitCode: 0, stdout, stderr: '' } }
+  })
+  const sent: string[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    sent.push(String(e.init?.headers?.['X-Crew-Mcp'] ?? ''))
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  on('tool.call', { tool: 'mcp__Roblox_Studio__list_roblox_studios' }, async () => ({ result: '[]' }) as any)
+  await $.tool.call({ tool: 'mcp__Roblox_Studio__list_roblox_studios' } as any) // this Claude has the Roblox Studio MCP
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // first check-in: looks at what's running
+  await settle()
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(sent[sent.length - 1]).toContain('Roblox Studio (closed)')
+})
+
