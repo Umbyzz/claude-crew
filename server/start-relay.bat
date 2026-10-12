@@ -16,4 +16,10 @@ echo Your IPs (use the 26.x Radmin / 100.x Tailscale one):
 ipconfig | findstr /c:"IPv4"
 echo.
 python relay.py --key-file "%DATA%\crew_key.txt" --data "%DATA%\crew_state.json" %*
+rem 2: a relay is already running (or the port is taken); the message says which. Close by ourselves.
+if errorlevel 2 if not errorlevel 3 (
+  echo This window closes in 10 seconds.
+  timeout /t 10 >nul
+  exit /b 2
+)
 pause

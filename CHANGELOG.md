@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.9.7
+- **Only one relay at a time.** The relay now claims its port alone; on Windows a second one could silently share it, and then both answered at random. Starting another while one runs says *"a crew relay (version x) is already running"* and closes itself. Restart relay still hands over cleanly.
+
 ## 1.9.6
 - **Open buttons bring the folder to the front.** Windows opened them behind Claude, so every press quietly stacked up another hidden Explorer window. Now a window already showing that folder comes forward, and a new one does too.
 

@@ -15,12 +15,14 @@ import hmac
 import json
 import os
 import secrets
+import socket
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.9.6"
+VERSION = "1.9.7"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -861,6 +863,27 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, t)
 
 
+class RelayServer(ThreadingHTTPServer):
+    """Claims its port alone: on Windows, SO_REUSEADDR (Python's default here) lets a second relay bind the same
+    port without an error, and then both answer at random."""
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def relay_on(port):
+    """The version of the crew relay answering on this PC's port, or '' when none does."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
+            return f"version {json.loads(r.read()).get('version', '?')}"
+    except Exception:
+        return ""
+
+
 def main():
     global args
     p = argparse.ArgumentParser(description="Crew relay for linked Claude Code sessions")
@@ -887,7 +910,23 @@ def main():
     print(f"Crew key: {args.key}")
     load()
     threading.Thread(target=sweeper, daemon=True).start()
-    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    srv = None
+    for attempt in range(16):  # Restart relay: the old one may need a moment to let go of the port
+        try:
+            srv = RelayServer((args.host, args.port), Handler)
+            break
+        except OSError:
+            if attempt == 0:
+                print(f"Port {args.port} is busy; waiting a few seconds in case an old relay is stopping…")
+            time.sleep(1)
+    if srv is None:
+        running = relay_on(args.port)
+        if running:
+            print(f"\nA crew relay ({running}) is already running on port {args.port}, so this one isn't needed.")
+            print("Use that one, or stop it first (Stop hosting in /crew, or close its window).")
+        else:
+            print(f"\nPort {args.port} is taken by another program. Close it, or start the relay with --port <another>.")
+        sys.exit(2)
     print(f"Crew relay {VERSION} listening on http://{args.host}:{args.port}  (Ctrl+C to stop)")
     try:
         srv.serve_forever()
