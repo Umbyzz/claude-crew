@@ -96,6 +96,7 @@ def friendly(err):
     if "getaddrinfo" in e or "11001" in e:
         return "can't find the relay's address"
     return err
+ACCEPT_AFTER = 30  # seconds the crew frets over a teammate out of tokens before "they'll be back"
 DRAMA = 0.2  # the chance that anything a Clawd does is the WAY over-the-top version
 TRIPS = ("car", "teleport", "superman", "door", "bird")  # ways to arrive and leave
 FORCE_TRIP = None  # --trip picks one, for trying them out
@@ -281,6 +282,9 @@ class Clawd:
         self.look = 0
         self.arm = [0, 0]  # how far each arm is raised (cells)
         self.swing = "up"  # the blacksmith's hammer: "up" (wound up) or "down" (on the gear)
+        self.heading_to, self.heading_at = 0.0, 0.0
+        self.accepted = ""  # the outage this Clawd has made peace with ("name:since")
+        self.accepting = None  # the sigh-then-pat in progress
         self.struck = False
         self.sit = 0
         self.mini = mini
@@ -318,6 +322,7 @@ class Clawd:
             self.vy = power
 
     def walk_to(self, x, speed=0.35):
+        self.heading_to, self.heading_at = x, clock()  # where it's going, for leapfrogging whoever's in the way
         d = x - self.x
         if abs(d) < speed:
             self.x = x
@@ -893,6 +898,11 @@ class World:
         """Nudge Clawds apart so they never stand inside each other (huggers may get closer)."""
         close = ("hug", "hi5", "chase")
         lo, hi = 8, self.cols - 8
+
+        def passing(w, other):  # w is walking to a spot past other: it leapfrogs over instead of being shoved
+            ahead = w.heading_to - w.x
+            return clock() - w.heading_at < 0.3 and ahead * (other.x - w.x) > 0 and abs(ahead) > abs(other.x - w.x) + 4
+
         for _ in range(3):  # a few passes so a pile against a wall untangles too
             ordered = sorted(clawds, key=lambda c: c.x)
             for a, b in zip(ordered, ordered[1:]):
@@ -902,7 +912,13 @@ class World:
                 h = self.huddle
                 if h and {a.name, b.name} <= set(h["spots"]):
                     continue  # a huddle is meant to be cosy
-                near = 11 if (a.behavior in close or b.behavior in close) else 16
+                if passing(a, b) or passing(b, a):
+                    for w, o in ((a, b), (b, a)):
+                        if passing(w, o) and abs(o.x - w.x) < 16 and w.jump <= 0.01:
+                            w.hop(3.2)
+                    continue
+                # huggers, and anyone on their way to pat a sleeper, may come closer (or they'd moonwalk on the spot)
+                near = 11 if (a.behavior in close or b.behavior in close or a.accepting or b.accepting) else 16
                 if self.funeral and self.funeral["name"] in (a.name, b.name):
                     near = 9.5  # mourners may come right up to the grave, but never stand on it
                 overlap = near - (b.x - a.x)
@@ -1047,7 +1063,7 @@ class World:
                 c.hop(2.6)
             return
         # idle: worried about a teammate first, otherwise free play
-        if c.worried:
+        if c.worried and not self.at_peace(c):
             return self.worry(c, now)
         self.play(c, now, clawds)
 
@@ -1073,12 +1089,71 @@ class World:
             c.say(random.choice(["for you, pookie", "rest well…", "🌹"]).replace("🌹", "*places flower*"), 2.5)
         return True
 
+    def out_key(self):
+        """The current outage, as "name:since" (the same in every window), or '' when nobody is out."""
+        s = next((o for o in self.clawds.values() if o.activity == "out"), None)
+        return f"{s.name}:{int(s.since)}" if s else ""
+
+    def at_peace(self, c):
+        return bool(c.accepted) and c.accepted == self.out_key()
+
+    def accept(self, c, s, now):
+        """After a while: a sigh, "they'll be back", a pat for the sleeper (or a high five / hug for the ghost),
+        then back to normal, unworried."""
+        key = f"{s.name}:{int(s.since)}"
+        a = c.accepting
+        if not a or a["key"] != key:
+            a = c.accepting = {"key": key, "start": now, "rng": random.Random(seed(c.name, "accept", key)),
+                               "said": False, "arrived": 0, "fx": False}
+        rng, el = a["rng"], now - a["start"]
+        ghost = bool(self.funeral and self.funeral["name"] == s.name)
+        if el < 2.4:  # the sigh
+            c.mood, c.sit = "sigh", 0
+            if not a["said"]:
+                a["said"] = True
+                c.say(rng.choice(["*sigh*… they'll be back", "they'll be back.", "*sigh* ok. back to work",
+                                  "they'll be fine", "*sigh* more work for us"]), 2.4)
+                self.emit(c.x + c.facing * 6, self.ground - 11, "steam", "~", "#b0aea5")
+            return
+        spot = s.x - (12 if c.x < s.x else -12)
+        if not a["arrived"]:
+            c.mood = "idle"
+            if c.walk_to(spot, 0.4):
+                a["arrived"] = now
+            return
+        c.facing = 1 if s.x > c.x else -1
+        since = now - a["arrived"]
+        c.mood = "happy"
+        if ghost:
+            hug = rng.random() < 0.5
+            c.arm = [3, 3]
+            if not a["fx"]:
+                a["fx"] = True
+                if hug:
+                    c.say("*hugs the ghost*", 2)
+                    self.emit(c.x + c.facing * 6, self.ground - 18, "heart", "♥", "#C46686")
+                else:
+                    c.hop(3.4)
+                    c.say(rng.choice(["high five, ghost buddy!", "see you on the other side", "up top, spooky!"]), 2)
+                    self.burst(s.x - c.facing * 4, self.ground - 19, "spark", 10)
+        else:
+            c.arm = ([0, 2] if c.facing > 0 else [2, 0]) if int(since * 4) % 2 else [0, 1] if c.facing > 0 else [1, 0]
+            if not a["fx"]:
+                a["fx"] = True
+                c.say(rng.choice(["*pat pat*", "sleep tight, pookie", "rest up, we got this", "nap well"]), 2)
+            if random.random() < 0.06:
+                self.emit(s.x, self.ground - 12, "heart", "♥", "#C46686")
+        if since > 2.8:
+            c.accepted, c.accepting = key, None
+
     def worry_extra(self, c):
-        if c.worried and random.random() < 0.03:
+        if c.worried and not self.at_peace(c) and random.random() < 0.03:
             self.emit(c.x - 6, self.ground - 11, "sweat", "•", "#6A9BCC")
 
     def worry(self, c, now):
         sleeper = next((o for o in self.clawds.values() if o.activity == "out"), None)
+        if sleeper and sleeper.since and now - sleeper.since > ACCEPT_AFTER:
+            return self.accept(c, sleeper, now)
         c.mood = "worried"
         if sleeper:
             c.facing = 1 if sleeper.x > c.x else -1
@@ -1208,11 +1283,14 @@ class World:
             if random.random() < 0.05:
                 self.emit(c.x, self.ground - 15, "note", "♪", ORANGE)
         elif b == "stroll":
-            c.mood = "frantic"  # zoomies
-            if c.walk_to(c.target, 0.9):
-                c.target = random.uniform(10, self.cols - 10)
-            if random.random() < 0.3:
-                self.emit(c.x - c.facing * 7, self.ground - 2, "steam", "~", "#5e5d59")
+            # hands on hips, tapping a foot, glaring at you: "are you gonna prompt yet?"
+            c.mood, c.look = "annoyed", 0
+            c.legs = 1 if int(now * 6) % 2 else 0
+            if random.random() < 0.04:
+                self.emit(c.x - 4, self.ground - 1, "steam", "tap", "#87867f")
+            if (not c.bubble or c.bubble[1] < now) and random.random() < 0.012:
+                c.say(random.choice(["Are you gonna prompt yet?", "*taps foot*", "any day now…", "I'm waiting.",
+                                     "c'mon, gimme a task", "you're too slow!", "hellooo? prompt?"]), 2.6)
         elif b == "look":
             c.mood = "frantic"
             c.look = random.choice((-1, 1))  # paranoid glancing
@@ -1485,6 +1563,10 @@ class Painter:
             self.chin_pose(c, x0, y_body, h, w0, w1, color)
         elif c.mood == "smith":
             self.smith(c, x0, y_body, h, w0, w1, ground, color)
+        elif c.mood == "annoyed":
+            arm_row = max(0, h // 2)  # hands on hips: elbows out, fists at the waist
+            self.cells(x0, y_body, [(arm_row - 1, w0 - 1, w0 - 1), (arm_row, w0 - 2, w0 - 2), (arm_row + 1, w0 - 1, w0 - 1),
+                                    (arm_row - 1, w1 + 1, w1 + 1), (arm_row, w1 + 2, w1 + 2), (arm_row + 1, w1 + 1, w1 + 1)], color)
         else:
             # arms ride at the body's middle, raised by c.arm
             arm_row = max(0, h // 2)
@@ -1526,6 +1608,15 @@ class Painter:
             for ex in (lx - 1, rx):
                 self.cells(x0, y, [(ey - 1, ex, ex + 1), (ey, ex, ex + 1)], INK)
                 self.cells(x0, y, [(ey - 1 + j, ex + j, ex + j)], EYE)
+            return
+        if mood == "annoyed":
+            # brows down at you, a flat unimpressed mouth
+            self.cells(x0, y, [(ey, lx, lx), (ey, rx, rx), (ey - 2, lx - 1, lx - 1), (ey - 1, lx, lx), (ey - 1, rx, rx),
+                               (ey - 2, rx + 1, rx + 1), (ey + 2, 6, 7)], EYE)
+            return
+        if mood == "sigh":
+            # eyes shut, a little 'o' letting the breath out
+            self.cells(x0, y, [(ey, lx - 1, lx), (ey, rx, rx + 1), (ey + 2, 6, 6)], EYE)
             return
         if mood == "smith":
             # squinting with focus under the hard hat, brows down, tongue out the side

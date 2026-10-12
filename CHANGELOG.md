@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.9.3
+- **New Clawd moments.** The over-the-top idle taps a foot at you, hands on hips: *"Are you gonna prompt yet?"* When someone runs out of tokens, the crew frets for half a minute, then sighs *"they'll be back"* and pats the sleeper (or high-fives or hugs the ghost after a funeral) before getting back to work. Clawds walking past each other now leapfrog instead of bumping and moonwalking. (Ideas by Umbyz.)
+- **A shorter README**, with the details moved to pages in `docs/`.
+
 ## 1.9
 - **Crewshared drop folders.** Every project folder gets `Crewshared\<your name>`. Drop files in yours (assets, references, exports, notes) and within about 2 minutes every teammate has them in `Crewshared\<your name>` on their PC. No buttons and no tokens. Teammates' drops arrive in their own subfolders by themselves. Everyone can share, not just the leader: you can't change someone else's folder, but yours is all yours. The Project tab has **📥 Open my Crewshared** and **Open Crewshared**.
 
