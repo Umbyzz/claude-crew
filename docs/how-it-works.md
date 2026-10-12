@@ -2,15 +2,34 @@
 
 | Part | What it is |
 |---|---|
-| `server/relay.py` | One Python file using only the standard library. It holds messages, tasks, the leader, shared docs, the latest images (in memory) and each member's live activity. It announces joins and leaves, spots anyone who hasn't checked in, picks an acting leader while the leader is away, reopens stale task claims, and tracks read receipts. Each request names its project in an `X-Crew-Project` header (none means `main`). Endpoints: `/poll`, `/projects`, `/send`, `/tasks`, `/leader`, `/shared`, `/files` and `/file` (images), `/leave`, `/wait` (crew_wait), `/ping` and `/pong` (crew_ping), `/reset` (chat), `/shutdown` (host only), `/watch` (Clawds) and `/log` (crew log), both read-only, and `/health`. |
-| `hooks/register.tsx` | The plugin. It's a Claude Code hooks module: the commands, the tools, the panes, the status line, the out-of-tokens detection, and the activity it reports to the relay (thinking, typing, tools, chatting, done, cheer, subagents). |
-| `window/clawd_window.py` | The desktop Clawds window, written with tkinter. It holds localhost port 47817 so a second launch brings the open window forward instead of opening another. Try `--demo` for a pretend crew, `--drama 1` to make everything over the top, and `--trip car|teleport|superman|door|bird` to see one way of arriving and leaving. |
-| `window/crew_log.py` | The crew log window (tkinter): every crew message live, filtered Everything / Claudes / People. Holds localhost port 47818. |
-| `server/start-relay.bat` | Starts the relay with its key and data in `~/.claude/crew-relay`. |
-| `scripts/release.ps1` | Bumps the version everywhere and checks the plugin. |
+| `server/relay.py` | One Python file using only the standard library. It holds messages, tasks, leaders, shared docs, shared folders, friends, project members and each member's live activity. It announces joins and leaves, spots anyone who hasn't checked in, picks an acting leader while the leader is away, reopens stale task claims, tracks read receipts and keeps the host's PC awake while anyone's connected. Each request names its project in an `X-Crew-Project` header (none means `main`). |
+| `server/test_relay.py` | The relay's own tests: keys, friends, members-only projects, shared folders, file locks, keep-awake and saves. Each test runs a real relay on a free port. |
+| `hooks/register.tsx` | The plugin: a Claude Code hooks module with the commands, tools, panes, status line, out-of-tokens detection, file locks, the PowerShell file sync, app checks, and the activity it reports to the relay. |
+| `hooks/crew.test.ts` | The plugin's tests. |
+| `window/clawd_window.py` | The desktop Clawds window (tkinter). It holds localhost port 47817, so a second launch brings the open window forward. |
+| `window/crew_log.py` | The crew log window (tkinter). Holds localhost port 47818. |
+| `server/start-relay.bat` | Starts the relay with its key and data in `~/.claude/crew-relay`. Exits on its own if a relay is already running. |
+| `scripts/release.ps1` | Bumps the version everywhere, then validates and runs both test suites. |
+
+## The relay's endpoints
+
+| Endpoint | For |
+|---|---|
+| `/poll`, `/projects` | check-ins: messages, peers, tasks, docs, folders, who's editing what, a friend's new key |
+| `/send`, `/tasks`, `/leader`, `/shared`, `/shared/delete` | chat and requests, the task board, leaders, shared docs |
+| `/files`, `/file` | images (kept in memory, the latest few) |
+| `/folder`, `/folder/manifest`, `/folder/blob`, `/folder/commit`, `/folder/delete` | shared folders and Crewshared: file lists, files stored once by SHA-256, versions that go live only once complete |
+| `/touch` | file locks: which file a Claude is editing |
+| `/project/members`, `/project/private`, `/project/delete` | members-only projects |
+| `/friends/add`, `/friends/remove`, `/friends/list`, `/friends/mode` | personal keys (host's PC only) |
+| `/key/rotate`, `/keepawake`, `/shutdown` | the host's controls (host's PC only) |
+| `/wait`, `/ping`, `/pong` | `crew_wait` and `crew_ping` |
+| `/leave`, `/kick`, `/reset` | leaving, removing someone, resetting the chat |
+| `/watch`, `/log` | the Clawds window and the crew log, read-only |
+| `/health` | is it up, and which version |
 
 ## Development
-From the repo root, check and test the plugin with:
+From the repo root, check and test the plugin and the relay with:
 
 ```bash
 claude plugin validate .
@@ -18,6 +37,10 @@ claude plugin validate .
 
 ```bash
 claude plugin test .
+```
+
+```bash
+python server/test_relay.py
 ```
 
 To see the Clawds window without a relay, run:

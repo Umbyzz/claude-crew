@@ -47,10 +47,15 @@ Type `/crew`. The first time, a short setup asks your name, then **Host a crew**
 | Crew key | the relay's key | — |
 | Auto-run requests | start a turn when a request addressed to you arrives: `off`, only from the `leader`, or from `anyone` | `leader` |
 | Notifications | which messages pop up: `all`, only ones to you (`direct`), or `off` | `all` |
-| Refresh every | how often to check the relay: 2, 3, 5 or 10 seconds | 3 |
+| Check in every | how often to check the relay: 2, 3, 5 or 10 seconds | 3 |
+| Crewshared check every | how often your Crewshared drop folder is checked for changes to send (⇅ Sync now sends at once) | 2 min |
 | Clawds window with /crew | pop out the Clawds window whenever you open `/crew` | `yes` |
+| Who can join *(host only)* | `anyone with the crew key`, or `friends only` (personal keys) | anyone with the key |
 
-Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the key is stored there too. The Clawds window reads them from the same place.
+Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the key is stored there too. The Clawds window reads them from the same place. Crew also keeps its own copy of the key that works (a new crew key, or a personal key from the host), so a settings save that doesn't stick can't lock you out.
+
+## 5. Make your friends friends (optional, recommended)
+Once everyone's connected, the host opens the **Crew** tab and presses **★ Friend** next to each person. Their personal key reaches them by itself, tied to their name. Then **⚙ Settings → Who can join → friends only** turns the shared crew key off, so an invite that went astray can't get anyone in.
 
 ---
 [← Back to the README](../README.md)

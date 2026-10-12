@@ -18,7 +18,7 @@ claude plugin update crew@claude-crew
 
 If the relay is older than the plugin, `/crew` says so. The host presses **Restart relay** there (after restarting Claude on the new version): the old relay stops and the new one starts, with the same key and chat.
 
-**Maintainer: releasing a new version.** Run the script below. It bumps the version in `plugin.json`, `register.tsx` and `relay.py`, then validates and tests. Then commit and push.
+**Maintainer: releasing a new version.** Run the script below. It bumps the version in `plugin.json`, `register.tsx` and `relay.py`, then validates the plugin and runs both test suites (the plugin's and the relay's), stopping if the relay tests fail. Then commit and push.
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/release.ps1 1.0.1
