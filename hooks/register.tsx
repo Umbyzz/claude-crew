@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.9.8'
+const VERSION = '1.10.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -358,6 +358,17 @@ function inviteCrew($: EngineInterface) {
   void relay($, 'POST', '/send', { to: 'all', kind: 'invite', text: `invites everyone to the project "${projectName}"` })
     .then(() => $.ui.toast(`crew: invited the crew to "${projectName}"`, { timeoutMs: 5000 }))
     .catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
+}
+
+// Members-only projects: members add people (each gets an invite); the leader removes them, or opens a project up.
+async function projectCall($: EngineInterface, path: string, body: unknown, done: string) {
+  try {
+    await relay($, 'POST', path, body)
+    await poll($)
+    $.ui.toast(`crew: ${done}`, { timeoutMs: 6000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
 }
 
 function answerInvite($: EngineInterface, accept: boolean) {
@@ -1359,6 +1370,12 @@ async function pollOnce($: EngineInterface) {
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err)
     // Removed by the leader or host: leave (no rejoining on our own), and say so. Join session brings you back.
+    const shut = /relay 403: (the project .+ is private.*)$/.exec(raw)
+    if (shut && projectName !== 'main') {
+      $.ui.toast(`crew: ${shut[1]}. You're back in main.`, { timeoutMs: 10000 })
+      void switchProject($, 'main').catch(() => {})
+      return
+    }
     const removed = /relay 403: (you were removed from the crew session by .+)$/.exec(raw)
     if (removed) {
       joined = false
@@ -1661,6 +1678,7 @@ function makeBlocks(Box: any, Text: any) {
 function setTab($: EngineInterface, to: Tab) {
   void update($, tab, () => to).then(() => update($, settingsOpen, () => false))
   if (to === 'docs') void loadFolder($).catch(() => {}) // the Project tab: fresh look at the folder
+  if (to === 'crew' && isHosting()) void loadFriends($)
 }
 
 function setChatView($: EngineInterface, view: 'all' | 'people') {
@@ -2216,14 +2234,15 @@ function restartRelayPress($: EngineInterface) {
   void restartRelay($)
 }
 
-function invite(ip: string, key: string) {
+function invite(ip: string, key: string, name = '') {
   return (
     `Join my Claude crew!\n` +
     `1. Install (once): claude plugin marketplace add Umbyzz/claude-crew, then claude plugin install crew@claude-crew, then restart Claude\n` +
     `2. Be on the same Radmin VPN / Tailscale network as me\n` +
     `3. In Claude: /crew > Settings, and save (press Enter in each field):\n` +
     `   Relay URL: http://${ip || '<my IP>'}:7777\n` +
-    `   Crew key: ${key}`
+    `   Crew key: ${key}` +
+    (name ? `\n   Your name: ${name} (exactly this: the key only works with this name)` : '')
   )
 }
 
@@ -2251,8 +2270,46 @@ async function newCrewKey($: EngineInterface, surface: any) {
   }
 }
 
-function copyInvite($: EngineInterface, surface: any, ip: string, key: string) {
-  const text = invite(ip, key)
+// Friends (the host only): each gets a personal key tied to their name, so nobody can pose as them, and removing
+// one stops only their key. "Friends only" then turns the shared crew key off.
+type Friend = { name: string; key: string; seen: number; ip: string; online: boolean }
+const friendsAtom = atom({ plugin: 'crew', key: 'friends' } as const, { list: [] as Friend[], friendsOnly: false })
+
+async function friendCall($: EngineInterface, path: string, body: unknown) {
+  const r = await relay($, 'POST', path, body)
+  await update($, friendsAtom, () => ({ list: r.friends ?? [], friendsOnly: Boolean(r.friendsOnly) }))
+  return r
+}
+
+async function loadFriends($: EngineInterface) {
+  try {
+    await friendCall($, '/friends/list', {})
+  } catch {}
+}
+
+async function addFriend($: EngineInterface, surface: any, raw: string) {
+  const name = raw.trim()
+  if (!name) return
+  try {
+    const r = await friendCall($, '/friends/add', { name })
+    const f = (r.friends ?? []).find((x: Friend) => x.name === name)
+    if (f) copyInvite($, surface, (await read($, hostInfo)).ip, f.key, name)
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+}
+
+async function removeFriend($: EngineInterface, name: string) {
+  try {
+    await friendCall($, '/friends/remove', { name })
+    $.ui.toast(`crew: removed ${name}. Their key no longer works; everyone else is unaffected.`, { timeoutMs: 8000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+}
+
+function copyInvite($: EngineInterface, surface: any, ip: string, key: string, name = '') {
+  const text = invite(ip, key, name)
   void $.ui
     .copy({ text, surface })
     .then(r => $.ui.toast(r.isCopied ? 'crew: invite copied! Paste it to your friends.' : `crew: send your friends this:\n${text}`, { timeoutMs: 10000 }))
@@ -2360,6 +2417,8 @@ function explain(msg: string) {
     return `Can't reach the relay at ${cfg.base}. Is it running? (the host double-clicks server/start-relay.bat)`
   if (/ETIMEDOUT|timed out|EHOSTUNREACH|ENETUNREACH/i.test(msg))
     return `The relay at ${cfg.base} isn't answering. Check you're on the same Radmin/Tailscale network and the IP is right.`
+  const keyNote = /relay 401: (that key belongs to .+|.+ has a personal key.*|this crew is friends-only.*)$/.exec(msg)
+  if (keyNote) return `${keyNote[1][0].toUpperCase()}${keyNote[1].slice(1)}.`
   if (/relay 401/.test(msg))
     return "The relay refused the crew key. The host may have made a new one: paste the key from their new invite in ⚙ Settings → Crew key."
   return msg
@@ -2922,6 +2981,8 @@ export const register: Register = (on, options) => {
     const deletingDoc = await read($, docDeleting)
     const draft = await read($, drafts)
     const justMade = await read($, madeFolder)
+    const thisProject = (s.projects ?? []).find(p => p.name === projectName)
+    const friendList = await read($, friendsAtom)
     const jobs = await read($, folderJobs)
     const rulesLines = rules.project === projectName ? rules.text.split('\n').filter(l => l.trim()) : []
     const showTip = configured && !(await read($, tipSeen)) && !(await $.store.get('tip:doubleClick'))
@@ -3471,8 +3532,36 @@ export const register: Register = (on, options) => {
                 <Text dimColor>
                   Here: {here.length ? here.join(', ') : 'just you'} · Leader of {projectName}: {s.leader ?? 'none yet (Crew tab)'}
                 </Text>
-                {elsewhere.length > 0 && <Button key="invite-here" label="Invite the crew here" onPress={() => inviteCrew($)} />}
+                {elsewhere.length > 0 && !thisProject?.private && <Button key="invite-here" label="Invite the crew here" onPress={() => inviteCrew($)} />}
               </Box>
+              {projectName !== 'main' && thisProject && !thisProject.private && (
+                <Box flexDirection="row" justifyContent="space-between">
+                  <Text dimColor>🔓 Open: everyone in the crew can see this project.</Text>
+                  {(s.leader === me || isHosting()) && (
+                    <Button key="project-lock" label="🔒 Make members-only" dimColor onPress={() => void projectCall($, '/project/private', { private: true }, 'this project is members-only now')} />
+                  )}
+                </Box>
+              )}
+              {thisProject?.private && (
+                <Box flexDirection="column">
+                  <Text>🔒 Members only: {(thisProject.members ?? []).join(', ')}</Text>
+                  <Box flexDirection="row" flexWrap="wrap">
+                    {s.peers
+                      .map(p => p.name)
+                      .filter(n => n !== me && !(thisProject.members ?? []).includes(n))
+                      .map(n => (
+                        <Button key={`member-add-${n}`} label={`+ ${n}`} dimColor onPress={() => void projectCall($, '/project/members', { add: [n] }, `added ${n}: they got an invite`)} />
+                      ))}
+                    {s.leader === me &&
+                      (thisProject.members ?? [])
+                        .filter(n => n !== me)
+                        .map(n => (
+                          <Button key={`member-rm-${n}`} label={`✕ ${n}`} dimColor onPress={() => void projectCall($, '/project/members', { remove: [n] }, `removed ${n} from the project`)} />
+                        ))}
+                  </Box>
+                  <Text dimColor>Only members see this project, its chat, tasks, docs and shared folders. + adds someone (they get an invite).</Text>
+                </Box>
+              )}
               {elsewhere.length > 0 && <Text dimColor>Not here yet: {elsewhere.join(', ')}</Text>}
               {folderMode === 'new' && (
                 <Callout>
@@ -3791,6 +3880,49 @@ export const register: Register = (on, options) => {
                 )
               })()}
             </Card>
+            {isHosting() && s.connected && (
+              <Card title={`Friends${friendList.list.length ? ` (${friendList.list.length})` : ''}`}>
+                <Text dimColor>
+                  Each friend gets a personal key tied to their name: nobody can pose as them, and removing one doesn't touch anyone else.
+                </Text>
+                {friendList.list.map(f => (
+                  <Box flexDirection="row" justifyContent="space-between">
+                    <Text>
+                      {f.online ? '●' : '○'} {f.name}
+                      <Text dimColor>{f.seen ? `  · seen ${hhmm(f.seen)}${f.ip ? ` from ${f.ip}` : ''}` : '  · not connected yet'}</Text>
+                    </Text>
+                    <Box flexDirection="row">
+                      <Button key={`friend-invite-${f.name}`} label="Copy invite" dimColor onPress={() => copyInvite($, e.surface, host.ip, f.key, f.name)} />
+                      <Button key={`friend-rm-${f.name}`} label="Remove" dimColor onPress={() => void removeFriend($, f.name)} />
+                    </Box>
+                  </Box>
+                ))}
+                {Input && (
+                  <Box marginTop={1} width="100%">
+                    <Input
+                      key="friend-add"
+                      placeholder="Add a friend: their crew name, then Enter (their personal invite is copied)"
+                      submitLabel="add"
+                      value={draft['friend-add'] ?? ''}
+                      onInput={(v: string) => setDraft($, 'friend-add', v)}
+                      onSubmit={(v: string) => submitted($, 'friend-add', v, () => addFriend($, e.surface, v))}
+                    />
+                  </Box>
+                )}
+                {Select && (
+                  <Select
+                    key="friends-only"
+                    label="Who can join "
+                    value={friendList.friendsOnly ? 'friends' : 'key'}
+                    options={[
+                      { value: 'key', label: 'anyone with the crew key' },
+                      { value: 'friends', label: 'friends only (personal keys)' },
+                    ]}
+                    onSelect={(v: string) => void friendCall($, '/friends/mode', { friendsOnly: v === 'friends' }).catch(() => {})}
+                  />
+                )}
+              </Card>
+            )}
             {isHosting() && s.connected && (
               <Card title="Invite friends">
                 <Text>You're hosting{host.ip ? ` · friends join at http://${host.ip}:7777` : ''}</Text>

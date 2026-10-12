@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.9.8"
+VERSION = "1.10.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -199,15 +199,32 @@ def unread_in(project, viewer):
                and m["kind"] in ("chat", "request", "image") and m["from"] != viewer and m["to"] in ("all", viewer))
 
 
-def projects_list(now, viewer=None):
+# -- members-only projects: a project made from 1.10 on is private to its members (whoever made it, then whoever a
+# member adds). Older projects have no member list and stay open to the whole crew until their leader locks them.
+# main is always everyone's.
+
+def members_of(project):
+    return None if project == MAIN else state.setdefault("projectMembers", {}).get(project)
+
+
+def can_see(project, viewer):
+    m = members_of(project)
+    return m is None or viewer in m
+
+
+def project_names():
     names = {MAIN} | set(state.get("leaders", {})) | {t.get("project", MAIN) for t in state["tasks"]} \
         | {v.get("project", MAIN) for v in state["shared"].values()} \
         | {m["project"] for m in state["messages"] if m.get("project")} \
-        | {p.get("project", MAIN) for p in peers.values()}
-    names -= set(state.get("deleted", {}))
+        | {p.get("project", MAIN) for p in peers.values()} | set(state.get("projectMembers", {}))
+    return names - set(state.get("deleted", {}))
+
+
+def projects_list(now, viewer=None):
     out = []
-    for n in sorted(names, key=lambda x: (x != MAIN, x.lower())):
-        out.append({"name": n, "leader": leader_of(n),
+    for n in sorted((n for n in project_names() if can_see(n, viewer)), key=lambda x: (x != MAIN, x.lower())):
+        out.append({"name": n, "leader": leader_of(n), "private": members_of(n) is not None,
+                    "members": members_of(n) or [],
                     "openTasks": sum(1 for t in state["tasks"] if task_in(t, n) and t["status"] != "done"),
                     "docs": len(docs_of(n)), "unread": unread_in(n, viewer),
                     "here": sorted(x for x, p in peers.items() if p.get("project", MAIN) == n and is_online(p, now))})
@@ -295,7 +312,7 @@ def update_acting(now):
         save()
 
 
-def peer_list(project=MAIN):
+def peer_list(project=MAIN, viewer=None):
     now = time.time()
     leader, stand_in = leader_of(project), acting.get(project)
     return [
@@ -303,7 +320,7 @@ def peer_list(project=MAIN):
          "activity": p["activity"], "leader": n == leader, "acting": n == stand_in, "since": p["since"],
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
          "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"), "usageDetail": p.get("usageDetail"), "mcp": p.get("mcp"),
-         "project": p.get("project", MAIN)}
+         "project": p.get("project", MAIN) if can_see(p.get("project", MAIN), viewer) or n == viewer else "(private)"}
         for n, p in sorted(peers.items())
     ]
 
@@ -416,16 +433,54 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def host_pc(self):
+        if args.test_remote and self.headers.get("X-Crew-Test-Remote"):
+            return False  # the test suite playing a teammate on another PC
+        return self.client_address[0] in ("127.0.0.1", "::1")
+
     def authed(self, presence=True):
-        if not hmac.compare_digest(self.headers.get("X-Crew-Key") or "", args.key):
+        key = self.headers.get("X-Crew-Key") or ""
+        name = (self.headers.get("X-Crew-Name") or "").strip()[:40]
+        friends = state.setdefault("friends", {})
+        owner = next((n for n, f in friends.items() if hmac.compare_digest(f["key"], key)), None)
+        if owner:  # a friend's own key: good for their name only
+            if name and name != owner:
+                self.reply(401, {"error": f"that key belongs to {owner}, not {name}"})
+                return False
+            name = name or owner
+            friends[owner].update(seen=time.time(), ip=self.client_address[0])
+        elif hmac.compare_digest(key, args.key):
+            if name in friends and not self.host_pc():
+                self.reply(401, {"error": f"{name} has a personal key: use the invite the host sent you"})
+                return False
+            if state.get("friendsOnly") and not self.host_pc():
+                self.reply(401, {"error": "this crew is friends-only: ask the host for your personal invite"})
+                return False
+        else:
             self.reply(401, {"error": "bad or missing crew key"})
             return False
-        name = (self.headers.get("X-Crew-Name") or "").strip()[:40]
         if not name and presence:
             self.reply(400, {"error": "missing X-Crew-Name"})
             return False
         self.name = name
         self.project = project_of(self.headers)
+        if name and self.project != MAIN:
+            with lock:
+                pm = state.setdefault("projectMembers", {})
+                invited = state.setdefault("projectInvites", {}).get(self.project, [])
+                recently_deleted = time.time() - state.get("deleted", {}).get(self.project, {}).get("at", 0) < 120
+                if self.project not in project_names() and self.project not in pm and not recently_deleted:
+                    pm[self.project] = [name]  # a brand-new project: private to whoever made it
+                    state.get("deleted", {}).pop(self.project, None)
+                    save()
+                elif name in invited and self.project in pm and name not in pm[self.project]:
+                    pm[self.project].append(name)  # accepted an invite
+                    invited.remove(name)
+                    save()
+                if not can_see(self.project, name):
+                    self.reply(403, {"error": f"the project '{self.project}' is private: ask one of its members to add you",
+                                     "private": True})
+                    return False
         k = kicked.get(name)
         if k and time.time() < k["until"]:
             # removed by the leader or host: this plugin drops out instead of quietly checking back in
@@ -526,10 +581,11 @@ class Handler(BaseHTTPRequestHandler):
                 viewer = self.name
                 since = int(q.get("since", ["0"])[0])
                 msgs = [m for m in state["messages"] if m["id"] > since
-                        and (m["to"] == "all" or (viewer and viewer in (m["to"], m["from"])))]
+                        and (m["to"] == "all" or (viewer and viewer in (m["to"], m["from"])))
+                        and (not m.get("project") or can_see(m["project"], viewer))]
                 # every project's messages (each tagged with its project), so the log shows the whole crew
                 return self.reply(200, {"messages": msgs[-300:], "leader": state["leader"], "acting": acting.get(MAIN),
-                                        "peers": peer_list(), "cursor": state["next_id"] - 1,
+                                        "peers": peer_list(MAIN, viewer), "cursor": state["next_id"] - 1,
                                         "chatEpoch": state.get("chat_epoch", 0), "now": time.time(),
                                         "version": VERSION})
             if url.path == "/watch":
@@ -538,13 +594,14 @@ class Handler(BaseHTTPRequestHandler):
                 viewer = self.name
 
                 def visible(m):
-                    return m["to"] == "all" or (viewer and viewer in (m["to"], m["from"]))
+                    return (m["to"] == "all" or (viewer and viewer in (m["to"], m["from"]))) \
+                        and (not m.get("project") or can_see(m["project"], viewer))
 
                 recent = [{"id": m["id"], "from": m["from"], "to": m["to"], "kind": m["kind"],
                            "text": m["text"][:80] if visible(m) else "", "at": m["at"]}
                           for m in state["messages"][-30:]
                           if m["kind"] in ("chat", "request", "out", "back", "join", "leave", "image")]
-                self.reply(200, {"peers": peer_list(), "leader": state["leader"], "acting": acting.get(MAIN), "recent": recent,
+                self.reply(200, {"peers": peer_list(MAIN, viewer), "leader": state["leader"], "acting": acting.get(MAIN), "recent": recent,
                                  "now": time.time(), "version": VERSION})
             elif url.path == "/poll":
                 since = int(q.get("since", ["0"])[0])
@@ -552,7 +609,8 @@ class Handler(BaseHTTPRequestHandler):
                 msgs = [m for m in state["messages"] if m["id"] > since and in_project(m, pr)
                         and (m["to"] in ("all", self.name) or m["from"] == self.name)]
                 now = time.time()
-                self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr), "project": pr,
+                self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr, self.name), "project": pr,
+                                 "friendsOnly": bool(state.get("friendsOnly")),
                                  "tasks": [task_view(t, now) for t in state["tasks"] if task_in(t, pr)],
                                  "leader": leader_of(pr), "acting": acting.get(pr),
                                  "shared": sorted(docs_of(pr).keys()), "projects": projects_list(now, self.name),
@@ -602,7 +660,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as err:
             return self.reply(400, {"error": str(err)})
         if path == "/shutdown":  # "Stop hosting" in /crew: only from this PC, with the key
-            if self.client_address[0] not in ("127.0.0.1", "::1"):
+            if not self.host_pc():
                 return self.reply(403, {"error": "only the host's own PC can stop the relay"})
             self.reply(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -617,7 +675,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {"ok": True})
             if path == "/project/delete":  # its leader (or the host) wipes a project: chat, tasks, docs, leader
                 pr = project_of(b.get("name"))
-                host = self.client_address[0] in ("127.0.0.1", "::1")
+                host = self.host_pc()
                 if pr == MAIN:
                     return self.reply(400, {"error": "main can't be deleted"})
                 if self.name != leader_of(pr) and not host:
@@ -626,6 +684,8 @@ class Handler(BaseHTTPRequestHandler):
                 state["tasks"] = [t for t in state["tasks"] if t.get("project", MAIN) != pr]
                 state["shared"] = {k: v for k, v in state["shared"].items() if v.get("project", MAIN) != pr}
                 state["folders"] = {k: v for k, v in state.setdefault("folders", {}).items() if v.get("project", MAIN) != pr}
+                state.setdefault("projectMembers", {}).pop(pr, None)
+                state.setdefault("projectInvites", {}).pop(pr, None)
                 gc_blobs()
                 state.setdefault("leaders", {}).pop(pr, None)
                 state.setdefault("epochs", {}).pop(pr, None)
@@ -634,8 +694,62 @@ class Handler(BaseHTTPRequestHandler):
                 post_message(self.name, "all", f'deleted the project "{pr}"', "deleted", deleted=pr)
                 save()
                 return self.reply(200, {"ok": True})
+            if path == "/project/members":  # a member adds people (they get an invite); the leader removes them
+                pr, pm = self.project, members_of(self.project)
+                if pm is None:
+                    return self.reply(400, {"error": "this project is open to the whole crew; make it members-only first"})
+                for who in [str(x).strip()[:40] for x in b.get("add") or [] if str(x).strip()]:
+                    if who not in pm:
+                        pm.append(who)
+                        post_message(self.name, who, f"added you to the project '{pr}'", "invite", invite=pr)
+                for who in [str(x).strip()[:40] for x in b.get("remove") or []]:
+                    if who != self.name and self.name != leader_of(pr) and not self.host_pc():
+                        return self.reply(403, {"error": "only the project's leader can remove other members"})
+                    if who in pm and len(pm) > 1:
+                        pm.remove(who)
+                        post_message(self.name, "all", f"removed {who} from the project", "update", pr)
+                save()
+                return self.reply(200, {"members": pm})
+            if path == "/project/private":  # the leader locks an open project to its members, or opens it up
+                pr = self.project
+                if pr == MAIN:
+                    return self.reply(400, {"error": "main is always the whole crew's"})
+                if self.name != leader_of(pr) and not self.host_pc():
+                    return self.reply(403, {"error": "only the project's leader can change who sees it"})
+                pm = state.setdefault("projectMembers", {})
+                if b.get("private"):
+                    here = {x for x, p in peers.items() if p.get("project") == pr and is_online(p, time.time())}
+                    pm[pr] = sorted(here | {self.name} | ({leader_of(pr)} if leader_of(pr) else set()))
+                    post_message(self.name, "all", f"made the project members-only: {', '.join(pm[pr])}", "update", pr)
+                else:
+                    pm.pop(pr, None)
+                    post_message(self.name, "all", "opened the project to the whole crew", "update", pr)
+                save()
+                return self.reply(200, {"members": pm.get(pr)})
+            if path.startswith("/friends"):  # personal keys: only from the host's own PC
+                if not self.host_pc():
+                    return self.reply(403, {"error": "only the host's own PC manages friends"})
+                friends = state.setdefault("friends", {})
+                who = str(b.get("name") or "").strip()[:40]
+                if path == "/friends/add":
+                    if not who:
+                        return self.reply(400, {"error": "name the friend"})
+                    friends[who] = {"key": secrets.token_urlsafe(18), "added": time.time(), "by": self.name, "seen": 0, "ip": ""}
+                elif path == "/friends/remove":
+                    if friends.pop(who, None) is not None:
+                        kicked[who] = {"by": self.name, "until": time.time() + KICK_SECONDS}
+                        p = peers.get(who)
+                        if p and not p.get("left"):
+                            p["left"] = True
+                            announce_leave(who, f"is no longer on {self.name}'s friends list")
+                elif path == "/friends/mode":
+                    state["friendsOnly"] = bool(b.get("friendsOnly"))
+                save()
+                return self.reply(200, {"friends": [{"name": n, **f, "online": is_online(peers[n], time.time()) if n in peers else False}
+                                                    for n, f in sorted(friends.items())],
+                                        "friendsOnly": bool(state.get("friendsOnly"))})
             if path == "/key/rotate":  # Settings → New crew key: only from the host's own PC
-                if self.client_address[0] not in ("127.0.0.1", "::1"):
+                if not self.host_pc():
                     return self.reply(403, {"error": "only the host's own PC can change the crew key"})
                 post_message(self.name, "all", f"{self.name} made a new crew key: old invites stop working. "
                                                f"Ask {self.name} for the new invite.", "update")
@@ -650,7 +764,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not name:
                     return self.reply(400, {"error": "name a folder inside the project folder"})
                 f = folders_of(pr).get(name)
-                host = self.client_address[0] in ("127.0.0.1", "::1")
+                host = self.host_pc()
                 if f and self.name != f["by"] and (path != "/folder/delete" or (self.name != leader_of(pr) and not host)):
                     return self.reply(403, {"error": f"{f['by']} shares that folder; only they can change it"})
                 if path == "/folder/manifest":  # the file list of a (new) version; replies with what still needs uploading
@@ -691,7 +805,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {"ok": True})
             if path == "/kick":  # the leader (or the host, from their own PC) removes someone from the session
                 who = str(b.get("name") or "").strip()[:40]
-                host = self.client_address[0] in ("127.0.0.1", "::1")
+                host = self.host_pc()
                 if self.name != leader_of(self.project) and not host:
                     return self.reply(403, {"error": "only the leader or the host can remove someone"})
                 if not who or who == self.name:
@@ -773,6 +887,13 @@ class Handler(BaseHTTPRequestHandler):
                 if b.get("human"):
                     extra["human"] = True
                 if kind == "invite":
+                    to = str(b.get("to") or "all")[:40]
+                    if members_of(self.project) is not None:
+                        if to == "all":
+                            return self.reply(400, {"error": "a members-only project invites people one by one"})
+                        state.setdefault("projectInvites", {}).setdefault(self.project, [])
+                        if to not in state["projectInvites"][self.project]:
+                            state["projectInvites"][self.project].append(to)
                     extra["invite"] = self.project  # the project being invited to  # typed by a person in /crew, not sent by their Claude
                 msg = post_message(self.name, str(b.get("to") or "all")[:40], text, kind, self.project, **extra)
                 save()
@@ -801,7 +922,7 @@ class Handler(BaseHTTPRequestHandler):
                 doc = docs_of(pr).get(name)
                 if not doc:
                     return self.reply(404, {"error": "no such doc in this project"})
-                host = self.client_address[0] in ("127.0.0.1", "::1")
+                host = self.host_pc()
                 if self.name not in (doc["by"], leader_of(pr)) and not host:
                     return self.reply(403, {"error": "only its author, the project's leader or the host can delete a doc"})
                 state["shared"].pop(doc_key(pr, name), None)
@@ -914,6 +1035,7 @@ def main():
     p.add_argument("--port", type=int, default=7777)
     p.add_argument("--data", default="crew_state.json")
     p.add_argument("--verbose", action="store_true")
+    p.add_argument("--test-remote", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args()
     if not args.key and args.key_file:
         try:

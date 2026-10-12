@@ -34,6 +34,10 @@ if ($claude) {
   Write-Host 'claude not found; skipped validate/test'
 }
 
+# the relay's own tests: keys, friends, members-only projects, saves
+python (Join-Path $root 'server\test_relay.py')
+if ($LASTEXITCODE -ne 0) { throw 'relay tests failed' }
+
 Write-Host ""
 Write-Host "Now commit 'Release $Version' and push in GitHub Desktop."
 Write-Host "If server\relay.py changed, the relay host should restart it with the new file."

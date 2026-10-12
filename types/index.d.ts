@@ -73,6 +73,8 @@ export type CrewProject = {
   docs: number
   here: string[] // who's online in it right now
   unread?: number // messages there you haven't seen yet (relay 1.5.3+)
+  private?: boolean // members-only (relay 1.10+)
+  members?: string[] // who's in a members-only project
 }
 
 declare module 'claude-code' {
@@ -109,6 +111,7 @@ declare module 'claude-code' {
       madeFolder: string
       folderJobs: Record<string, string>
       keyAsk: boolean
+      friends: { list: { name: string; key: string; seen: number; ip: string; online: boolean }[]; friendsOnly: boolean }
     }
   }
 }

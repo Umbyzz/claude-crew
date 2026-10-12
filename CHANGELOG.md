@@ -2,6 +2,11 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.10.0
+- **Friends: personal keys.** The host adds friends in the Crew tab; each gets their own invite with a key that only works with their name, so nobody can pose as someone else. **Remove** stops just that friend's key. **Who can join → friends only** turns the shared crew key off (the host's own PC always gets in). Each friend shows when and from where they last connected.
+- **Members-only projects.** New projects are private to whoever made them: only members see them in the list, their chat, tasks, docs, shared folders and Crewshared, and they're kept out of the crew log and the Clawds for everyone else. Members press **+ name** to add someone (they get an invite); the leader removes people with **✕ name**. Projects from before stay open until their leader presses **🔒 Make members-only**. main is always the whole crew's.
+- **Relay tests.** `server/test_relay.py` (12 tests: keys, friends, members-only projects, saves) now runs with every release.
+
 ## 1.9.8
 - **🔑 New crew key** for the host, in the Crew tab's Invite friends card (one confirm). The old key stops working at once and the new invite is copied, for when someone left the crew or an invite went astray.
 - **Crash-safe saves.** The relay writes its state to a temp file and swaps it in, so a crash or power cut mid-save can't wipe the chat, tasks and docs. A damaged state file from before is put aside instead of stopping the relay.

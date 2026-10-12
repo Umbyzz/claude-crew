@@ -1680,3 +1680,34 @@ test("Crewshared: your drop folder is sent when it changes, and teammates' arriv
   expect(posts.some(p => p.url.endsWith('/folder/manifest') && p.body.name === 'Crewshared/alice')).toBe(true)
   expect(posts.some(p => p.url.endsWith('/folder/commit') && p.body.name === 'Crewshared/alice')).toBe(true)
 })
+
+test('a members-only project shows its members, and + adds a teammate (who gets an invite)', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const posts: { url: string; body: any }[] = []
+  const projects = [{ name: 'main', leader: 'alice', openTasks: 0, docs: 0, here: [] }, { name: 'secret', leader: 'alice', openTasks: 0, docs: 0, here: ['alice'], private: true, members: ['alice'] }]
+  const peers = [
+    { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true },
+    { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false },
+  ]
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posts.push({ url: e.url, body: JSON.parse(e.init.body) })
+      return { value: { status: 200, ok: true, headers: {}, text: '{"members": ["alice", "bob"]}' } }
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers, projects, project: 'secret' }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'secret' } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  await settle()
+  expect(await ui.find({ text: /Members only: alice/ } as any)).toBeDefined()
+  expect(await ui.find({ key: 'invite-here' })).toBeUndefined() // no invite-everyone in a private project
+  await ui.press({ key: 'member-add-bob' })
+  await settle()
+  await ui.unmount()
+  expect(posts.find(p => p.url.endsWith('/project/members'))?.body).toEqual({ add: ['bob'] })
+  await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any)
+})

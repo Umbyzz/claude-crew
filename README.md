@@ -15,6 +15,7 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 - **Talk across PCs:** a messenger-style chat for the people (no tokens), and requests that wake a teammate's Claude even while its person is away.
 - **Projects:** each game or app gets its own chat, task board, docs, leader and folder.
 - **Share files with no tokens:** drop files in `Crewshared\<your name>` and every teammate gets them; share bigger folders with one click.
+- **Friends only:** personal keys per friend, and projects only their members can see.
 - **No stepping on toes:** file locks, house rules per project, and a loop brake so Claudes can't wake each other forever.
 - **The Clawds 🦀:** a little window of pixel Clawds acting out what every Claude is doing, from hard-hat hammering to full-on funerals when someone runs out of tokens.
 
