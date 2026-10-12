@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.10.2'
+const VERSION = '1.10.3'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1147,7 +1147,11 @@ function crewExtras(s: CrewSnapshot) {
     text +=
       `\n\nCrew drop folder: anything the crew needs from you (assets, references, exports, notes) goes in ` +
       `${mirrorPath(mySharedName())}; the plugin sends it to every teammate by itself within ~2 minutes (no tokens). ` +
-      `Teammates' drops arrive in ${folderPath}\\${CREWSHARED}\\<their name>.` +
+      `Teammates' drops arrive in ${folderPath}\\${CREWSHARED}\\<their name>. ` +
+      `When your user gives you a goal without saying where its material is (source, assets, references), look in ` +
+      `${mirrorPath(CREWLEADER)} (raw material, only on this PC) and ${folderPath}\\${CREWSHARED} first. If the goal needs ` +
+      `files and both are empty, ask your user where they are (suggest dropping them in ${CREWLEADER}) instead of guessing ` +
+      `or starting from nothing.` +
       (s.leader === cfg.me || s.acting === cfg.me
         ? ` ${mirrorPath(CREWLEADER)} is your private raw-material folder: never synced, only on this PC. When your user ` +
           `puts big raw material there (a whole source tree, every asset) and asks you to share it, sort it for the crew: ` +

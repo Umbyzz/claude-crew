@@ -1735,6 +1735,7 @@ test("Crewleader: the leader's Claude learns to sort raw material, and edits the
   const role = composed.sections.find((s: any) => s.id === 'crew:role').text
   expect(role).toContain('C:\\Games\\Lava\\Crewleader is your private raw-material folder')
   expect(role).toContain('never by reading everything')
+  expect(role).toContain('ask your user where they are (suggest dropping them in Crewleader)')
   await $.tool.call({ tool: 'Write', file_path: 'C:\\Games\\Lava\\Crewleader\\raw\\boss.lua', content: 'x' } as any)
   await $.tool.call({ tool: 'Write', file_path: 'C:\\Games\\Lava\\src\\boss.lua', content: 'x' } as any)
   await settle()
