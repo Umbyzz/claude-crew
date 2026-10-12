@@ -948,8 +948,10 @@ test("the Project tab shows the project's folder, opens it, lists and makes subf
   fakeRelay(on)
   on('ui.toast', async () => ({ value: undefined }))
   const ran: string[][] = []
+  const opened: string[] = []
   on('process.run', async (_$: unknown, e: any) => {
     ran.push([...e.argv])
+    if (e.argv.includes('-EncodedCommand')) opened.push(String(e.init?.env?.CREW_DIR ?? ''))
     const listing = e.argv[0] === 'powershell' && e.argv.join(' ').includes('Get-ChildItem')
     return { value: { exitCode: 0, stdout: listing ? 'art\r\nscripts\r\n' : '', stderr: '' } }
   })
@@ -967,7 +969,7 @@ test("the Project tab shows the project's folder, opens it, lists and makes subf
   await settle()
   await ui.unmount()
   const lines = ran.map(a => a.join(' '))
-  expect(lines).toContain("powershell -NoProfile -Command Invoke-Item -LiteralPath 'C:\\Games\\Lava'")
+  expect(opened).toContain('C:\\Games\\Lava') // brought to the front, or opened if it isn't yet
   expect(lines.some(l => l.includes("New-Item -ItemType Directory -Force -Path 'C:\\Games\\Lava\\levels'"))).toBe(true)
 })
 

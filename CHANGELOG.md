@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.9.6
+- **Open buttons bring the folder to the front.** Windows opened them behind Claude, so every press quietly stacked up another hidden Explorer window. Now a window already showing that folder comes forward, and a new one does too.
+
 ## 1.9.5
 - **See what everyone's Claude is connected to.** The Crew tab shows each teammate's MCP servers (🔌 Roblox Studio, Unity…), and the leader's Claude gives work that needs one to whoever has it connected. (Asked for by CoriZori.)
 - **⇅ Sync now** in the Project tab sends your Crewshared changes and pulls teammates' at once. **Settings → Crewshared check every** sets how often it checks by itself: 30s, 1, 2 or 5 minutes.
