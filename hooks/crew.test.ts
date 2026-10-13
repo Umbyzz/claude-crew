@@ -938,6 +938,8 @@ test('projects: switching moves this session, every request says which project, 
   await settle()
   expect(seen[seen.length - 1].init.headers['X-Crew-Project']).toBe('floor is lava') // cleaned up
   expect(await ui.find({ text: /📂 floor is lava/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /Switching is just for you/ } as any)).toBeUndefined() // the explaining lives under ⓘ now
+  await ui.press({ key: 'section-help' })
   expect(await ui.find({ text: /Switching is just for you/ } as any)).toBeDefined()
   await ui.unmount()
   const listed: any = await $.tool.call({ tool: 'mcp__crew__crew_project' } as any)
@@ -966,6 +968,7 @@ test("the Project tab shows the project's folder, opens it, lists and makes subf
   expect(await ui.find({ text: /C:\\Games\\Lava/ } as any)).toBeDefined()
   expect(await ui.find({ key: 'dir-scripts' })).toBeDefined()
   await ui.press({ key: 'folder-open' })
+  await ui.press({ key: 'folder-change-open' }) // ⋯ holds + Folder, Copy path, Use a different folder…
   await ui.press({ key: 'folder-sub-open' })
   await ui.input({ key: 'folder-new', text: 'levels' })
   await settle()
@@ -1124,6 +1127,7 @@ test('Use a different folder… opens the Windows folder picker and uses what yo
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'tab-docs' })
+  await ui.press({ key: 'folder-change-open' })
   await ui.press({ key: 'folder-browse' })
   await settle(200)
   expect(ran.some(l => l.includes('-STA') && l.includes('FolderBrowserDialog'))).toBe(true)
@@ -1156,6 +1160,7 @@ test('Delete project asks twice, then wipes it on the relay and bins only its ow
   await settle()
   await ui.input({ key: 'new-project', text: 'doomed' })
   await settle()
+  await ui.press({ key: 'section-projects' })
   expect(await ui.find({ text: /▸ doomed \(you\)/ } as any)).toBeDefined() // listed in Projects
   await ui.press({ key: 'proj-more-doomed' })
   await ui.press({ key: 'proj-delete-doomed' })
@@ -1195,6 +1200,7 @@ test('a shared doc can be deleted after a confirm, and the double-click tip goes
   await ui.press({ key: 'tip-ok' })
   expect(await ui.find({ text: /needs a second click/ } as any)).toBeUndefined()
   await ui.press({ key: 'tab-docs' })
+  await ui.press({ key: 'section-docs' })
   await ui.press({ key: 'doc-old-plan' })
   await settle()
   await ui.press({ key: 'doc-delete' })
@@ -1325,6 +1331,7 @@ test('shared docs show who shared them, and open a peek', { options: OPTIONS }, 
   await settle()
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'tab-docs' })
+  await ui.press({ key: 'section-docs' })
   expect(await ui.find({ key: 'doc-plan' })).toBeDefined()
   expect(await ui.find({ text: /bob · \d\d:\d\d · 17 chars/ } as any)).toBeDefined()
   await ui.press({ key: 'doc-plan' })
@@ -1427,7 +1434,7 @@ test('/crew shows one tab at a time; ⚙ Settings is a tab too, and picking anot
     expect(await ui.find({ key: 'say' })).toBeUndefined()
     await ui.press({ key: 'tab-docs' })
     expect(await ui.find({ key: 'opt-relayUrl' })).toBeUndefined()
-    expect(await ui.find({ text: /None yet/ } as any)).toBeDefined()
+    expect(await ui.find({ key: 'section-docs' })).toBeDefined() // the Project tab, its sections folded
     await ui.press({ key: 'tab-chat' })
     expect(await ui.find({ key: 'say' })).toBeDefined()
     await ui.unmount()
@@ -1492,6 +1499,7 @@ test("the leader plans around the crew's models, and every Claude gets the proje
   // anyone adds a rule from the Project tab: it's appended to the doc
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'tab-docs' })
+  await ui.press({ key: 'section-rules' })
   expect(await ui.find({ text: /- bob does the art/ } as any)).toBeDefined()
   await ui.input({ key: 'add-rule', text: 'ask before touching main' })
   await settle()
@@ -1500,7 +1508,7 @@ test("the leader plans around the crew's models, and every Claude gets the proje
 
   // and ✕ removes one again
   const ui2 = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
-  await ui2.press({ key: 'tab-docs' })
+  await ui2.press({ key: 'tab-docs' }) // House rules is still open from before: the open section is remembered
   await ui2.press({ key: 'rule-rm-0' })
   await settle()
   await ui2.unmount()
@@ -1631,6 +1639,8 @@ test("shared folders: a teammate's folder is mirrored by the plugin on Get it, a
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'tab-docs' })
   await settle()
+  expect(await ui.find({ text: /1 to get/ } as any)).toBeDefined() // the folded section says there's one waiting
+  await ui.press({ key: 'section-folders' })
   expect(await ui.find({ text: /source/ } as any)).toBeDefined()
   await ui.press({ key: 'folder-get-source' })
   await settle()
@@ -1707,6 +1717,7 @@ test('a members-only project shows its members, and + adds a teammate (who gets 
   await settle()
   expect(await ui.find({ text: /Members only: alice/ } as any)).toBeDefined()
   expect(await ui.find({ key: 'invite-here' })).toBeUndefined() // no invite-everyone in a private project
+  await ui.press({ key: 'section-members' })
   await ui.press({ key: 'member-add-bob' })
   await settle()
   await ui.unmount()
@@ -1730,6 +1741,7 @@ test("Crewleader: the leader's Claude learns to sort raw material, and edits the
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'tab-docs' }) // loads the project folder
   await settle()
+  await ui.press({ key: 'section-folders' }) // Crewshared and Crewleader live under Shared folders
   expect(await ui.find({ key: 'crewleader-open' })).toBeDefined()
   await ui.unmount()
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
@@ -1920,4 +1932,57 @@ test('an unanswered invite comes back after a restart, and answering it clears i
   await settle()
   await ui.unmount()
   expect(kept.get('invite:http://relay.test:7777')).toBeNull()
+})
+
+// -- the Project tab, folded
+
+test('the Project tab opens folded: sections open one at a time, and the open one is remembered', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  for (const k of ['section-projects', 'section-folders', 'section-rules', 'section-docs', 'section-help']) expect(await ui.find({ key: k })).toBeDefined()
+  expect(await ui.find({ key: 'section-members' })).toBeUndefined() // main is always open to the crew
+  expect(await ui.find({ key: 'add-rule' })).toBeUndefined() // nothing unfolded yet
+  expect(await ui.find({ text: /None yet/ } as any)).toBeUndefined()
+  await ui.press({ key: 'section-rules' })
+  expect(await ui.find({ key: 'add-rule' })).toBeDefined()
+  await ui.press({ key: 'section-docs' }) // opening another folds the first
+  expect(await ui.find({ key: 'add-rule' })).toBeUndefined()
+  expect(await ui.find({ text: /None yet\. Claudes share plans/ } as any)).toBeDefined()
+  await ui.unmount()
+  const again = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await again.press({ key: 'tab-docs' })
+  expect(await again.find({ text: /None yet\. Claudes share plans/ } as any)).toBeDefined() // still open
+  await again.press({ key: 'section-docs' }) // and a second press folds it
+  expect(await again.find({ text: /None yet\. Claudes share plans/ } as any)).toBeUndefined()
+  await again.unmount()
+})
+
+test("the project's folder line shows only Open and ⋯, and its subfolders without Crewshared and Crewleader", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'folder:http://relay.test:7777:main': 'C:\\Games\\Lava' })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => ({
+    value: { status: 200, ok: true, headers: {}, text: JSON.stringify(e.url.endsWith('/shared') ? { docs: [] } : POLL) },
+  }))
+  on('process.run', async (_$: unknown, e: any) => {
+    const listing = e.argv[0] === 'powershell' && e.argv.join(' ').includes('Get-ChildItem')
+    return { value: { exitCode: 0, stdout: listing ? 'art\r\nCrewleader\r\nCrewshared\r\n' : '', stderr: '' } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  await settle()
+  expect(await ui.find({ key: 'folder-open' })).toBeDefined()
+  for (const k of ['folder-copy', 'folder-sub-open', 'folder-browse', 'folder-set']) expect(await ui.find({ key: k })).toBeUndefined()
+  expect(await ui.find({ key: 'dir-art' })).toBeDefined()
+  expect(await ui.find({ key: 'dir-Crewshared' })).toBeUndefined() // those two are under Shared folders
+  expect(await ui.find({ key: 'dir-Crewleader' })).toBeUndefined()
+  await ui.press({ key: 'folder-change-open' }) // ⋯
+  for (const k of ['folder-copy', 'folder-sub-open', 'folder-browse', 'folder-set']) expect(await ui.find({ key: k })).toBeDefined()
+  await ui.press({ key: 'folder-change-open' })
+  expect(await ui.find({ key: 'folder-copy' })).toBeUndefined()
+  await ui.unmount()
 })

@@ -108,6 +108,7 @@ declare module 'claude-code' {
       invite: { from: string; project: string; busy?: boolean }
       deleteStage: { name: string; stage: number }
       projectMenu: string
+      projectSection: '' | 'projects' | 'members' | 'folders' | 'rules' | 'docs' | 'help'
       docDeleting: string
       tipSeen: boolean
       drafts: Record<string, string>

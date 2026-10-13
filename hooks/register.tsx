@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.11.3'
+const VERSION = '1.12.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -469,6 +469,14 @@ const projectMenu = atom({ plugin: 'crew', key: 'projectMenu' } as const, '') //
 
 function setDeleteStage($: EngineInterface, name: string, stage: number) {
   void update($, deleteStage, () => ({ name: stage ? name : '', stage }))
+}
+
+// The Project tab's collapsed sections: one open at a time, and it stays open when you come back to the tab.
+type ProjectSection = '' | 'projects' | 'members' | 'folders' | 'rules' | 'docs' | 'help'
+const projectSection = atom({ plugin: 'crew', key: 'projectSection' } as const, '' as ProjectSection)
+
+function toggleSection($: EngineInterface, id: ProjectSection) {
+  void update($, projectSection, open => (open === id ? '' : id))
 }
 
 function toggleProjectMenu($: EngineInterface, name: string) {
@@ -3244,6 +3252,11 @@ export const register: Register = (on, options) => {
     const showTip = configured && !(await read($, tipSeen)) && !(await $.store.get('tip:doubleClick'))
     const deleting = await read($, deleteStage)
     const menuOpen = await read($, projectMenu)
+    const section = await read($, projectSection)
+    // the project folder's own subfolders: Crewshared and Crewleader show under Shared folders instead
+    const projectDirs = folder.dirs.filter(d => d !== CREWSHARED && d !== CREWLEADER)
+    // teammates' shared folders this PC hasn't taken yet (Crewshared drops arrive by themselves)
+    const toGet = sharedFolders.filter(f => f.by !== me && !f.name.startsWith(`${CREWSHARED}/`) && wantedFolders.get(f.name) !== true).length
     const binnable = deleting.stage > 0 ? await deletableFolder($, deleting.name) : ''
     const keptFolder = deleting.stage > 0 ? String((await $.store.get(`folder:${cfg.base}:${deleting.name}`)) ?? '') : ''
     const elsewhere = s.peers.filter(p => p.online && p.name !== me && (p.project ?? 'main') !== projectName).map(p => p.name)
@@ -3284,6 +3297,18 @@ export const register: Register = (on, options) => {
     // a tab in the row under the header (a plain call, not a component, for the same reason)
     const tabButton = (id: Tab | 'settings', label: string, press: () => void) => (
       <Button key={id === 'settings' ? 'settings' : `tab-${id}`} label={label} variant={current === id ? 'primary' : undefined} dimColor={current !== id} onPress={press} />
+    )
+    // a collapsed section's one-line header in the Project tab: ▸/▾, its name and count, and a dim hint
+    const sectionHead = (id: ProjectSection, label: string, hint = '') => (
+      <Box flexDirection="row">
+        <Button key={`section-${id}`} label={`${section === id ? '▾' : '▸'} ${label}`} plain onPress={() => toggleSection($, id)} />
+        {hint !== '' && (
+          <Text dimColor>
+            {'  '}
+            {hint}
+          </Text>
+        )}
+      </Box>
     )
 
     return (
@@ -3807,18 +3832,18 @@ export const register: Register = (on, options) => {
           </Card>
         )}
 
-        {/* -- Docs */}
+        {/* -- the Project tab: a short summary card, then collapsed sections (one open at a time, remembered) */}
         {inSession && current === 'docs' && (
           <Box flexDirection="column">
             <Card
               title={`📂 ${projectName}`}
               right={<Button key="new-project-open" label="+ New project" dimColor={folderMode !== 'new'} onPress={() => setFolderMode($, folderMode === 'new' ? '' : 'new')} />}
             >
-              {/* -- which project: shared with the crew, switched just for you */}
+              {/* -- which project (switching is just for you), who leads it, who's here, who can see it */}
               {Select && (
                 <Select
                   key="project"
-                  label="You're working on "
+                  label="Working on "
                   value={projectName}
                   options={projectNames.map(n => {
                     const p = (s.projects ?? []).find(x => x.name === n)
@@ -3831,49 +3856,21 @@ export const register: Register = (on, options) => {
                 />
               )}
               <Text dimColor>
-                Switching is just for you. Everyone in a project shares its chat, tasks and docs.
-                {projectNames.length <= 1 ? " Everyone starts in 'main': make a project per game or app to keep its chat, tasks and docs separate." : ''}
+                {[
+                  `led by ${s.leader ?? 'nobody yet (Crew tab)'}`,
+                  here.length ? `here: ${here.join(', ')}` : '',
+                  projectName === 'main' ? '' : thisProject?.private ? `🔒 Members only: ${(thisProject.members ?? []).join(', ')}` : '🔓 open to the crew',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
               </Text>
-              <Box flexDirection="row" justifyContent="space-between">
-                <Text dimColor>
-                  Here: {here.length ? here.join(', ') : 'just you'} · Leader of {projectName}: {s.leader ?? 'none yet (Crew tab)'}
-                </Text>
-                {elsewhere.length > 0 && !thisProject?.private && <Button key="invite-here" label="Invite the crew here" onPress={() => inviteCrew($)} />}
-              </Box>
-              {projectName !== 'main' && thisProject && !thisProject.private && (
+              {projectNames.length <= 1 && <Text dimColor>Everyone starts in 'main': make a project per game or app to keep its chat, tasks and docs apart.</Text>}
+              {elsewhere.length > 0 && (
                 <Box flexDirection="row" justifyContent="space-between">
-                  <Text dimColor>🔓 Open: everyone in the crew can see this project.</Text>
-                  {(s.leader === me || isHosting()) && (
-                    <Button key="project-lock" label="🔒 Make members-only" dimColor onPress={() => void projectCall($, '/project/private', { private: true }, 'this project is members-only now')} />
-                  )}
+                  <Text dimColor>Not here yet: {elsewhere.join(', ')}</Text>
+                  {!thisProject?.private && <Button key="invite-here" label="Invite the crew here" dimColor onPress={() => inviteCrew($)} />}
                 </Box>
               )}
-              {thisProject?.private && (
-                <Box flexDirection="column">
-                  <Text>🔒 Members only: {(thisProject.members ?? []).join(', ')}</Text>
-                  <Box flexDirection="row" flexWrap="wrap">
-                    {s.peers
-                      .map(p => p.name)
-                      .filter(n => n !== me && !(thisProject.members ?? []).includes(n))
-                      .map(n => (
-                        <Button key={`member-add-${n}`} label={`+ ${n}`} dimColor onPress={() => void projectCall($, '/project/members', { add: [n] }, `added ${n}: they got an invite`)} />
-                      ))}
-                    {s.leader === me &&
-                      (thisProject.members ?? [])
-                        .filter(n => n !== me)
-                        .map(n => (
-                          <Button key={`member-rm-${n}`} label={`✕ ${n}`} dimColor onPress={() => void projectCall($, '/project/members', { remove: [n] }, `removed ${n} from the project`)} />
-                        ))}
-                  </Box>
-                  <Box flexDirection="row" justifyContent="space-between">
-                    <Text dimColor>Only members see this project, its chat, tasks, docs and shared folders. + adds someone (they get an invite).</Text>
-                    {(s.leader === me || isHosting()) && (
-                      <Button key="project-unlock" label="🔓 Open to everyone" dimColor onPress={() => void projectCall($, '/project/private', { private: false }, 'this project is open to the whole crew again')} />
-                    )}
-                  </Box>
-                </Box>
-              )}
-              {elsewhere.length > 0 && <Text dimColor>Not here yet: {elsewhere.join(', ')}</Text>}
               {folderMode === 'new' && (
                 <Callout>
                   {Input && (
@@ -3897,247 +3894,305 @@ export const register: Register = (on, options) => {
                 <Input key="projects-home" label="New project folders go in " value={home} placeholder="paste a folder path, then Enter" submitLabel="set" autoFocus onSubmit={(v: string) => folderPress($, () => setProjectsHome($, v).then(() => setFolderMode($, 'new')))} />
               )}
 
-              {/* -- your files for it: on this PC only */}
-              <Box flexDirection="column" marginTop={1}>
-                <Box flexDirection="row" justifyContent="space-between">
-                  <Text bold>Your files for {projectName} (only on this PC)</Text>
-                  {folder.path !== '' && <Button key="folder-refresh" label="↻" dimColor onPress={() => folderPress($, () => loadFolder($))} />}
-                </Box>
-                {folder.path === '' ? (
-                  <Text dimColor>No folder yet: press "Use a different folder…" to pick one.</Text>
-                ) : (
-                  <Text wrap="truncate-middle">{shortPath(folder.path)}</Text>
-                )}
-                {folder.error !== '' && <Text color="error">{folder.error}</Text>}
-                {folder.note !== '' && <Text dimColor>{folder.note}</Text>}
+              {/* -- your folder for it, on this PC only: Open, and everything else behind ⋯ */}
+              <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
+                <Text wrap="truncate-middle">📁 {folder.path === '' ? 'No folder yet: ⋯ → Use a different folder…' : shortPath(folder.path)}</Text>
                 <Box flexDirection="row">
-                  {folder.path !== '' && <Button key="folder-open" label="Open folder" variant="primary" onPress={() => openInExplorer($, folder.path)} />}
-                  {folder.path !== '' && <Button key="folder-copy" label="Copy path" onPress={() => copyPath($, e.surface, folder.path)} />}
-                  {folder.path !== '' && <Button key="folder-sub-open" label="+ Folder" dimColor={folderMode !== 'sub'} onPress={() => setFolderMode($, folderMode === 'sub' ? '' : 'sub')} />}
-                  <Button key="folder-browse" label="Use a different folder…" onPress={() => folderPress($, () => browseProjectFolder($))} />
-                  <Button key="folder-change-open" label="…" dimColor onPress={() => setFolderMode($, folderMode === 'change' ? '' : 'change')} />
+                  {folder.path !== '' && <Button key="folder-open" label="Open" variant={folderMode === 'new' ? undefined : 'primary'} onPress={() => openInExplorer($, folder.path)} />}
+                  <Button
+                    key="folder-change-open"
+                    label="⋯"
+                    dimColor={folderMode !== 'change' && folderMode !== 'sub'}
+                    onPress={() => setFolderMode($, folderMode === 'change' || folderMode === 'sub' ? '' : 'change')}
+                  />
                 </Box>
-                {folderMode === 'sub' && Input && (
-                  <Input key="folder-new" label="New folder " placeholder="name, then Enter" submitLabel="make" autoFocus onSubmit={(v: string) => folderPress($, () => newFolder($, v))} />
-                )}
-                {folderMode === 'change' && (
-                  <Box flexDirection="column">
-                    {Input && (
-                      <Input key="folder-set" label="Folder " placeholder="paste a folder path, then Enter" submitLabel="use" autoFocus onSubmit={(v: string) => folderPress($, () => setFolder($, v).then(() => setFolderMode($, '')))} />
-                    )}
-                    {sessionCwd !== '' && folder.path !== sessionCwd && (
-                      <Button key="folder-use-chat" label="Use the folder this chat is open in" onPress={() => folderPress($, () => useChatFolder($).then(() => setFolderMode($, '')))} />
-                    )}
-                  </Box>
-                )}
-                <Text dimColor>
-                  Each person has their own copy; share files with crew_share or git. Your Claude works in this folder.
-                </Text>
-                {justMade !== '' && justMade.startsWith(`${folder.path}\\`) && (
-                  <Box flexDirection="row">
-                    <Text dimColor>Made "{justMade.split('\\').pop()}" by mistake? </Text>
-                    <Button key="folder-undo" label="↶ Undo" dimColor onPress={() => folderPress($, () => undoFolder($))} />
-                  </Box>
-                )}
-                {folder.dirs.length > 0 && (
+              </Box>
+              {(folderMode === 'change' || folderMode === 'sub') && (
+                <Box flexDirection="column">
                   <Box flexDirection="row" flexWrap="wrap">
-                    {folder.dirs.slice(0, 6).map(d => (
-                      <Button key={`dir-${d}`} label={`📁 ${d}`} plain onPress={() => openInExplorer($, `${folder.path}\\${d}`)} />
-                    ))}
-                    {folder.dirs.length > 6 && <Text dimColor> +{folder.dirs.length - 6} more</Text>}
+                    {folder.path !== '' && <Button key="folder-copy" label="Copy path" dimColor onPress={() => copyPath($, e.surface, folder.path)} />}
+                    {folder.path !== '' && <Button key="folder-sub-open" label="+ Folder" dimColor={folderMode !== 'sub'} onPress={() => setFolderMode($, folderMode === 'sub' ? 'change' : 'sub')} />}
+                    <Button key="folder-browse" label="Use a different folder…" dimColor onPress={() => folderPress($, () => browseProjectFolder($))} />
+                    {folder.path !== '' && <Button key="folder-refresh" label="↻ Refresh" dimColor onPress={() => folderPress($, () => loadFolder($))} />}
                   </Box>
-                )}
-              </Box>
-
-            </Card>
-
-            {/* -- every project: switch with one press; ⋯ for more (delete: its leader or the host, never main) */}
-            <Card title={`Projects (${projectRows.length})`}>
-              {projectRows.map(p => {
-                const mine = p.name === projectName
-                const lead = mine ? s.leader : p.leader // the project you're in: the leader the pane already has
-                const canDelete = p.name !== 'main' && (lead === me || isHosting())
-                const bits = [
-                  p.unread && !mine ? `${p.unread} new` : '',
-                  p.here.length ? `${p.here.join(', ')} here` : '',
-                  p.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : '',
-                  lead ? `led by ${lead}` : '',
-                ].filter(Boolean)
-                return (
-                  <Box flexDirection="column">
-                    <Box flexDirection="row" justifyContent="space-between">
-                      <Text bold={mine}>
-                        {mine ? '▸ ' : '  '}
-                        {p.name}
-                        {mine ? ' (you)' : ''}
-                        {bits.length ? `  · ${bits.join(' · ')}` : ''}
-                      </Text>
-                      <Box flexDirection="row">
-                        {!mine && <Button key={`proj-open-${p.name}`} label="Switch" dimColor onPress={() => switchProjectPress($, p.name)} />}
-                        {canDelete && <Button key={`proj-more-${p.name}`} label="⋯" dimColor onPress={() => toggleProjectMenu($, p.name)} />}
-                      </Box>
-                    </Box>
-                    {menuOpen === p.name && deleting.name !== p.name && renamingName !== p.name && (
-                      <Box flexDirection="row" justifyContent="flex-end">
-                        <Button key={`proj-rename-${p.name}`} label="Rename…" onPress={() => void update($, renaming, () => p.name)} />
-                        <Button key={`proj-delete-${p.name}`} label="Delete project…" onPress={() => setDeleteStage($, p.name, 1)} />
-                      </Box>
-                    )}
-                    {renamingName === p.name && Input && (
-                      <Box flexDirection="row">
-                        <Input
-                          key={`proj-rename-input-${p.name}`}
-                          label="New name "
-                          value={p.name}
-                          submitLabel="rename"
-                          autoFocus
-                          onSubmit={(v: string) => void renameProject($, p.name, v)}
-                        />
-                        <Button key={`proj-rename-cancel-${p.name}`} label="Cancel" dimColor onPress={() => void update($, renaming, () => '')} />
-                      </Box>
-                    )}
-                    {deleting.name === p.name && deleting.stage === 1 && (
-                      <Callout>
-                        <Text bold>Delete "{p.name}"? You sure?</Text>
-                        <Text dimColor>This wipes its chat, tasks, docs and leader on the relay, for the whole crew. Everyone in it goes back to main.</Text>
-                        <Box flexDirection="row">
-                          <Button key="delete-sure" label="Yes, I'm sure…" onPress={() => setDeleteStage($, p.name, 2)} />
-                          <Button key="delete-cancel" label="Cancel" variant="primary" onPress={() => setDeleteStage($, '', 0)} />
-                        </Box>
-                      </Callout>
-                    )}
-                    {deleting.name === p.name && deleting.stage === 2 && (
-                      <Callout>
-                        <Text bold color="error">VERY sure?? This can't be undone on the relay.</Text>
-                        {binnable ? (
-                          <Text>Its folder {shortPath(binnable)}, with everything in it, goes to your Recycle Bin (only on this PC; restore it from there if you change your mind).</Text>
-                        ) : (
-                          <Text dimColor>
-                            {keptFolder ? `Your folder ${shortPath(keptFolder)} is left alone: only a folder crew made for this project inside your projects home gets binned.` : 'There is no folder for it on this PC to remove.'}
-                          </Text>
-                        )}
-                        <Text dimColor>Teammates' copies on their own PCs stay where they are.</Text>
-                        <Box flexDirection="row">
-                          <Button key="delete-very-sure" label={`Delete "${p.name}" for good`} onPress={() => deleteProjectPress($, p.name)} />
-                          <Button key="delete-cancel-2" label="No, keep it" variant="primary" onPress={() => setDeleteStage($, '', 0)} />
-                        </Box>
-                      </Callout>
-                    )}
-                  </Box>
-                )
-              })}
-            </Card>
-
-          <Card title={`Shared folders${sharedFolders.length ? ` (${sharedFolders.length})` : ''}`}>
-            {sharedFolders.length === 0 && (
-              <Text dimColor>
-                None yet. Share a folder of this project (source, assets, references) and every teammate's crew copies it onto their PC: no tokens, kept in sync.
-              </Text>
-            )}
-            {sharedFolders.map(f => {
-              const mine = f.by === me
-              const want = wantedFolders.get(f.name) === true
-              const job = jobs[f.name] ?? ''
-              return (
-                <Box flexDirection="row" justifyContent="space-between">
-                  <Text>
-                    📂 {f.name} <Text dimColor>· {mine ? 'you' : f.by} · {f.files} files · {mb(f.bytes)}{job ? ` · ${job}` : mine ? ' · shared' : want ? ' · ✓ on this PC' : ''}</Text>
-                  </Text>
-                  <Box flexDirection="row">
-                    {mine && <Button key={`folder-update-${f.name}`} label="Update" dimColor onPress={() => void shareFolderPress($, f.name)} />}
-                    {mine && <Button key={`folder-unshare-${f.name}`} label="Stop sharing" dimColor onPress={() => void unshareFolder($, f.name)} />}
-                    {!mine && !want && <Button key={`folder-get-${f.name}`} label="Get it" onPress={() => void wantFolder($, f.name, true)} />}
-                    {!mine && want && folderPath !== '' && <Button key={`folder-open-${f.name}`} label="Open" dimColor onPress={() => openInExplorer($, mirrorPath(f.name))} />}
-                    {!mine && want && <Button key={`folder-stop-${f.name}`} label="Stop syncing" dimColor onPress={() => void wantFolder($, f.name, false)} />}
-                  </Box>
-                </Box>
-              )
-            })}
-            {folderPath !== '' && (
-              <Text dimColor>
-                Drop files in {CREWSHARED}\{mySharedName().split('/')[1]} and the crew gets them by itself; teammates' land in {CREWSHARED}\their name.
-                Huge raw material goes in {CREWLEADER} instead: it stays on this PC, and the leader's Claude copies over only what the crew needs.
-              </Text>
-            )}
-            {folderPath !== '' && (
-              <Box flexDirection="row" flexWrap="wrap">
-                <Button key="crewshared-mine" label={`📥 Open my ${CREWSHARED}`} onPress={() => folderPress($, () => makeDir($, mirrorPath(mySharedName())).then(() => openInExplorer($, mirrorPath(mySharedName()))))} />
-                <Button key="crewshared-all" label={`Open ${CREWSHARED}`} dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWSHARED)).then(() => openInExplorer($, mirrorPath(CREWSHARED))))} />
-                <Button key="crewleader-open" label={`📦 Open my ${CREWLEADER}`} dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWLEADER)).then(() => openInExplorer($, mirrorPath(CREWLEADER))))} />
-                <Button key="folder-sync-now" label="⇅ Sync now" dimColor onPress={() => folderPress($, () => syncNow($))} />
-                <Button key="folder-share-pick" label="Share another folder…" dimColor onPress={() => folderPress($, () => pickSharedFolder($))} />
-              </Box>
-            )}
-          </Card>
-
-          <Card title="House rules">
-            {rulesLines.length === 0 && (
-              <Text dimColor>None yet. Every Claude in this project follows these, like "Pluh does the art" or "ask before touching main".</Text>
-            )}
-            {rulesLines.slice(0, 8).map((l, i) => (
-              <Box flexDirection="row" justifyContent="space-between">
-                <Text wrap="truncate-end">{l}</Text>
-                <Button key={`rule-rm-${i}`} label="✕" dimColor onPress={() => void removeRule($, l)} />
-              </Box>
-            ))}
-            {rulesLines.length > 8 && <Text dimColor>…{rulesLines.length - 8} more (the {RULES_DOC} doc below has them all)</Text>}
-            {Input && (
-              <Box marginTop={1} width="100%">
-                <Input
-                  key="add-rule"
-                  placeholder="Add a rule for every Claude in this project, like 'Sonnet does the UI', then Enter"
-                  submitLabel="add"
-                  value={draft['add-rule'] ?? ''}
-                  onInput={(v: string) => setDraft($, 'add-rule', v)}
-                  onSubmit={(v: string) => submitted($, 'add-rule', v, () => addRule($, v))}
-                />
-              </Box>
-            )}
-          </Card>
-
-          <Card title={`Shared docs${docs.length ? ` (${docs.length})` : ''}`}>
-            {docs.length === 0 && <Text dimColor>None yet. Claudes share plans, findings and patches here with crew_share.</Text>}
-            {docs.slice(0, Math.min(docRows, 5)).map(d => (
-              <Box flexDirection="column">
-                <Box flexDirection="row">
-                  <Button key={`doc-${d.name}`} label={`${peek.name === d.name ? '▾' : '▸'} ${d.name}`} plain onPress={() => openDocPress($, d.name)} />
-                  {d.by !== '' && (
-                    <Text dimColor>
-                      {'  '}
-                      {d.by} · {hhmm(d.at)} · {d.size >= 1000 ? `${(d.size / 1000).toFixed(1)}k` : d.size} chars
-                    </Text>
+                  {folderMode === 'sub' && Input && (
+                    <Input key="folder-new" label="New folder " placeholder="name, then Enter" submitLabel="make" autoFocus onSubmit={(v: string) => folderPress($, () => newFolder($, v))} />
+                  )}
+                  {folderMode === 'change' && Input && (
+                    <Input key="folder-set" label="Or paste a folder " placeholder="a folder path, then Enter" submitLabel="use" onSubmit={(v: string) => folderPress($, () => setFolder($, v).then(() => setFolderMode($, '')))} />
+                  )}
+                  {folderMode === 'change' && sessionCwd !== '' && folder.path !== sessionCwd && (
+                    <Button key="folder-use-chat" label="Use the folder this chat is open in" dimColor onPress={() => folderPress($, () => useChatFolder($).then(() => setFolderMode($, '')))} />
                   )}
                 </Box>
-                {peek.name === d.name && (
-                  <Callout>
-                    {peek.error !== '' && <Text color="error">{peek.error}</Text>}
-                    {peek.error === '' && peek.head.length === 0 && <Text dimColor>Opening…</Text>}
-                    {peek.head.map(l => (
-                      <Text dimColor wrap="truncate-end">
-                        {l || ' '}
-                      </Text>
-                    ))}
-                    {peek.more > 0 && <Text dimColor>…{peek.more} more lines</Text>}
-                    <Box flexDirection="row">
-                      <Button key="doc-copy" label="Copy it all" onPress={() => copyDoc($, e.surface, d.name)} />
-                      <Button key="doc-close" label="Close" dimColor onPress={() => openDocPress($, d.name)} />
-                      {(d.by === me || s.leader === me || isHosting()) && deletingDoc !== d.name && (
-                        <Button key="doc-delete" label="Delete…" dimColor onPress={() => askDeleteDoc($, d.name)} />
+              )}
+              {folder.error !== '' && <Text color="error">{folder.error}</Text>}
+              {folder.note !== '' && <Text dimColor>{folder.note}</Text>}
+              {justMade !== '' && justMade.startsWith(`${folder.path}\\`) && (
+                <Box flexDirection="row">
+                  <Text dimColor>Made "{justMade.split('\\').pop()}" by mistake? </Text>
+                  <Button key="folder-undo" label="↶ Undo" dimColor onPress={() => folderPress($, () => undoFolder($))} />
+                </Box>
+              )}
+              {/* its subfolders; Crewshared and Crewleader live under Shared folders below */}
+              {projectDirs.length > 0 && (
+                <Box flexDirection="row" flexWrap="wrap">
+                  {projectDirs.slice(0, 6).map(d => (
+                    <Button key={`dir-${d}`} label={`📁 ${d}`} plain onPress={() => openInExplorer($, `${folder.path}\\${d}`)} />
+                  ))}
+                  {projectDirs.length > 6 && <Text dimColor> +{projectDirs.length - 6} more</Text>}
+                </Box>
+              )}
+            </Card>
+
+            {/* -- the rest, one line each until you open it */}
+            <Box flexDirection="column" borderStyle="round" paddingX={1} marginTop={1}>
+              {sectionHead('projects', `Projects (${projectRows.length})`, 'switch, rename or delete')}
+              {section === 'projects' &&
+                projectRows.map(p => {
+                  const mine = p.name === projectName
+                  const lead = mine ? s.leader : p.leader // the project you're in: the leader the pane already has
+                  const canDelete = p.name !== 'main' && (lead === me || isHosting())
+                  const bits = [
+                    p.unread && !mine ? `${p.unread} new` : '',
+                    p.here.length ? `${p.here.join(', ')} here` : '',
+                    p.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : '',
+                    lead ? `led by ${lead}` : '',
+                  ].filter(Boolean)
+                  return (
+                    <Box flexDirection="column" paddingLeft={2}>
+                      <Box flexDirection="row" justifyContent="space-between">
+                        <Text bold={mine}>
+                          {mine ? '▸ ' : '  '}
+                          {p.name}
+                          {mine ? ' (you)' : ''}
+                          <Text dimColor>{bits.length ? `  · ${bits.join(' · ')}` : ''}</Text>
+                        </Text>
+                        <Box flexDirection="row">
+                          {!mine && <Button key={`proj-open-${p.name}`} label="Switch" dimColor onPress={() => switchProjectPress($, p.name)} />}
+                          {canDelete && <Button key={`proj-more-${p.name}`} label="⋯" dimColor onPress={() => toggleProjectMenu($, p.name)} />}
+                        </Box>
+                      </Box>
+                      {menuOpen === p.name && deleting.name !== p.name && renamingName !== p.name && (
+                        <Box flexDirection="row" justifyContent="flex-end">
+                          <Button key={`proj-rename-${p.name}`} label="Rename…" onPress={() => void update($, renaming, () => p.name)} />
+                          <Button key={`proj-delete-${p.name}`} label="Delete project…" onPress={() => setDeleteStage($, p.name, 1)} />
+                        </Box>
+                      )}
+                      {renamingName === p.name && Input && (
+                        <Box flexDirection="row">
+                          <Input
+                            key={`proj-rename-input-${p.name}`}
+                            label="New name "
+                            value={p.name}
+                            submitLabel="rename"
+                            autoFocus
+                            onSubmit={(v: string) => void renameProject($, p.name, v)}
+                          />
+                          <Button key={`proj-rename-cancel-${p.name}`} label="Cancel" dimColor onPress={() => void update($, renaming, () => '')} />
+                        </Box>
+                      )}
+                      {deleting.name === p.name && deleting.stage === 1 && (
+                        <Callout>
+                          <Text bold>Delete "{p.name}"? You sure?</Text>
+                          <Text dimColor>This wipes its chat, tasks, docs and leader on the relay, for the whole crew. Everyone in it goes back to main.</Text>
+                          <Box flexDirection="row">
+                            <Button key="delete-sure" label="Yes, I'm sure…" onPress={() => setDeleteStage($, p.name, 2)} />
+                            <Button key="delete-cancel" label="Cancel" variant="primary" onPress={() => setDeleteStage($, '', 0)} />
+                          </Box>
+                        </Callout>
+                      )}
+                      {deleting.name === p.name && deleting.stage === 2 && (
+                        <Callout>
+                          <Text bold color="error">VERY sure?? This can't be undone on the relay.</Text>
+                          {binnable ? (
+                            <Text>Its folder {shortPath(binnable)}, with everything in it, goes to your Recycle Bin (only on this PC; restore it from there if you change your mind).</Text>
+                          ) : (
+                            <Text dimColor>
+                              {keptFolder ? `Your folder ${shortPath(keptFolder)} is left alone: only a folder crew made for this project inside your projects home gets binned.` : 'There is no folder for it on this PC to remove.'}
+                            </Text>
+                          )}
+                          <Text dimColor>Teammates' copies on their own PCs stay where they are.</Text>
+                          <Box flexDirection="row">
+                            <Button key="delete-very-sure" label={`Delete "${p.name}" for good`} onPress={() => deleteProjectPress($, p.name)} />
+                            <Button key="delete-cancel-2" label="No, keep it" variant="primary" onPress={() => setDeleteStage($, '', 0)} />
+                          </Box>
+                        </Callout>
                       )}
                     </Box>
-                    {deletingDoc === d.name && (
-                      <Box flexDirection="row">
-                        <Text bold>Delete "{d.name}" for the whole project? </Text>
-                        <Button key="doc-delete-yes" label="Yes, delete" onPress={() => void deleteDoc($, d.name)} />
-                        <Button key="doc-delete-no" label="Cancel" variant="primary" onPress={() => askDeleteDoc($, '')} />
+                  )
+                })}
+
+              {projectName !== 'main' &&
+                thisProject &&
+                sectionHead('members', 'Members & access', thisProject.private ? `🔒 ${(thisProject.members ?? []).length} members` : '🔓 everyone in the crew')}
+              {projectName !== 'main' && thisProject && section === 'members' && (
+                <Box flexDirection="column" paddingLeft={2}>
+                  {!thisProject.private && (
+                    <Box flexDirection="row" justifyContent="space-between">
+                      <Text dimColor>Everyone in the crew can see this project.</Text>
+                      {(s.leader === me || isHosting()) && (
+                        <Button key="project-lock" label="🔒 Make members-only" dimColor onPress={() => void projectCall($, '/project/private', { private: true }, 'this project is members-only now')} />
+                      )}
+                    </Box>
+                  )}
+                  {thisProject.private && (
+                    <Box flexDirection="column">
+                      <Text dimColor>Only members see its chat, tasks, docs and shared folders. + adds someone (they get an invite).</Text>
+                      <Box flexDirection="row" flexWrap="wrap">
+                        {s.peers
+                          .map(p => p.name)
+                          .filter(n => n !== me && !(thisProject.members ?? []).includes(n))
+                          .map(n => (
+                            <Button key={`member-add-${n}`} label={`+ ${n}`} dimColor onPress={() => void projectCall($, '/project/members', { add: [n] }, `added ${n}: they got an invite`)} />
+                          ))}
+                        {s.leader === me &&
+                          (thisProject.members ?? [])
+                            .filter(n => n !== me)
+                            .map(n => (
+                              <Button key={`member-rm-${n}`} label={`✕ ${n}`} dimColor onPress={() => void projectCall($, '/project/members', { remove: [n] }, `removed ${n} from the project`)} />
+                            ))}
+                        {(s.leader === me || isHosting()) && (
+                          <Button key="project-unlock" label="🔓 Open to everyone" dimColor onPress={() => void projectCall($, '/project/private', { private: false }, 'this project is open to the whole crew again')} />
+                        )}
                       </Box>
-                    )}
-                  </Callout>
-                )}
-              </Box>
-            ))}
-            {docs.length > Math.min(docRows, 5) && <Text dimColor>…and {docs.length - Math.min(docRows, 5)} older (crew_read_shared lists them all)</Text>}
-          </Card>
+                    </Box>
+                  )}
+                </Box>
+              )}
+
+              {sectionHead('folders', `Shared folders (${sharedFolders.length})`, toGet > 0 ? `${toGet} to get` : 'Crewshared drops, Crewleader')}
+              {section === 'folders' && (
+                <Box flexDirection="column" paddingLeft={2}>
+                  {folderPath !== '' && (
+                    <Box flexDirection="column">
+                      <Box flexDirection="row" justifyContent="space-between">
+                        <Text>📥 Drop files in {CREWSHARED}\{mySharedName().split('/')[1]}: every teammate gets them</Text>
+                        <Button key="crewshared-mine" label="Open" dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(mySharedName())).then(() => openInExplorer($, mirrorPath(mySharedName()))))} />
+                      </Box>
+                      <Box flexDirection="row" justifyContent="space-between">
+                        <Text>📂 Teammates' drops land in {CREWSHARED}\their name</Text>
+                        <Button key="crewshared-all" label="Open" dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWSHARED)).then(() => openInExplorer($, mirrorPath(CREWSHARED))))} />
+                      </Box>
+                      <Box flexDirection="row" justifyContent="space-between">
+                        <Text>📦 Big raw material goes in {CREWLEADER} (stays on this PC)</Text>
+                        <Button key="crewleader-open" label="Open" dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWLEADER)).then(() => openInExplorer($, mirrorPath(CREWLEADER))))} />
+                      </Box>
+                    </Box>
+                  )}
+                  {sharedFolders.length === 0 && <Text dimColor>No shared folders yet: "Share another folder…" gives every teammate a synced copy, with no tokens.</Text>}
+                  {sharedFolders.map(f => {
+                    const mine = f.by === me
+                    const want = wantedFolders.get(f.name) === true
+                    const job = jobs[f.name] ?? ''
+                    return (
+                      <Box flexDirection="row" justifyContent="space-between">
+                        <Text>
+                          📂 {f.name} <Text dimColor>· {mine ? 'you' : f.by} · {f.files} files · {mb(f.bytes)}{job ? ` · ${job}` : mine ? ' · shared' : want ? ' · ✓ on this PC' : ''}</Text>
+                        </Text>
+                        <Box flexDirection="row">
+                          {mine && <Button key={`folder-update-${f.name}`} label="Update" dimColor onPress={() => void shareFolderPress($, f.name)} />}
+                          {mine && <Button key={`folder-unshare-${f.name}`} label="Stop sharing" dimColor onPress={() => void unshareFolder($, f.name)} />}
+                          {!mine && !want && <Button key={`folder-get-${f.name}`} label="Get it" onPress={() => void wantFolder($, f.name, true)} />}
+                          {!mine && want && folderPath !== '' && <Button key={`folder-open-${f.name}`} label="Open" dimColor onPress={() => openInExplorer($, mirrorPath(f.name))} />}
+                          {!mine && want && <Button key={`folder-stop-${f.name}`} label="Stop syncing" dimColor onPress={() => void wantFolder($, f.name, false)} />}
+                        </Box>
+                      </Box>
+                    )
+                  })}
+                  {folderPath !== '' && (
+                    <Box flexDirection="row" flexWrap="wrap">
+                      <Button key="folder-share-pick" label="Share another folder…" dimColor onPress={() => folderPress($, () => pickSharedFolder($))} />
+                      <Button key="folder-sync-now" label="⇅ Sync now" dimColor onPress={() => folderPress($, () => syncNow($))} />
+                    </Box>
+                  )}
+                </Box>
+              )}
+
+              {sectionHead('rules', `House rules (${rulesLines.length})`, rulesLines.length ? '' : 'every Claude here follows them')}
+              {section === 'rules' && (
+                <Box flexDirection="column" paddingLeft={2}>
+                  {rulesLines.length === 0 && <Text dimColor>None yet, like "Pluh does the art" or "ask before touching main".</Text>}
+                  {rulesLines.slice(0, 8).map((l, i) => (
+                    <Box flexDirection="row" justifyContent="space-between">
+                      <Text wrap="truncate-end">{l}</Text>
+                      <Button key={`rule-rm-${i}`} label="✕" dimColor onPress={() => void removeRule($, l)} />
+                    </Box>
+                  ))}
+                  {rulesLines.length > 8 && <Text dimColor>…{rulesLines.length - 8} more (the {RULES_DOC} doc has them all)</Text>}
+                  {Input && (
+                    <Box width="100%">
+                      <Input
+                        key="add-rule"
+                        placeholder="Add a rule for every Claude in this project, like 'Sonnet does the UI', then Enter"
+                        submitLabel="add"
+                        value={draft['add-rule'] ?? ''}
+                        onInput={(v: string) => setDraft($, 'add-rule', v)}
+                        onSubmit={(v: string) => submitted($, 'add-rule', v, () => addRule($, v))}
+                      />
+                    </Box>
+                  )}
+                </Box>
+              )}
+
+              {sectionHead('docs', `Shared docs (${docs.length})`, docs.length ? `newest: ${docs[0].name}` : '')}
+              {section === 'docs' && (
+                <Box flexDirection="column" paddingLeft={2}>
+                  {docs.length === 0 && <Text dimColor>None yet. Claudes share plans, findings and patches here with crew_share.</Text>}
+                  {docs.slice(0, Math.min(docRows, 5)).map(d => (
+                    <Box flexDirection="column">
+                      <Box flexDirection="row">
+                        <Button key={`doc-${d.name}`} label={`${peek.name === d.name ? '▾' : '▸'} ${d.name}`} plain onPress={() => openDocPress($, d.name)} />
+                        {d.by !== '' && (
+                          <Text dimColor>
+                            {'  '}
+                            {d.by} · {hhmm(d.at)} · {d.size >= 1000 ? `${(d.size / 1000).toFixed(1)}k` : d.size} chars
+                          </Text>
+                        )}
+                      </Box>
+                      {peek.name === d.name && (
+                        <Callout>
+                          {peek.error !== '' && <Text color="error">{peek.error}</Text>}
+                          {peek.error === '' && peek.head.length === 0 && <Text dimColor>Opening…</Text>}
+                          {peek.head.map(l => (
+                            <Text dimColor wrap="truncate-end">
+                              {l || ' '}
+                            </Text>
+                          ))}
+                          {peek.more > 0 && <Text dimColor>…{peek.more} more lines</Text>}
+                          <Box flexDirection="row">
+                            <Button key="doc-copy" label="Copy it all" onPress={() => copyDoc($, e.surface, d.name)} />
+                            <Button key="doc-close" label="Close" dimColor onPress={() => openDocPress($, d.name)} />
+                            {(d.by === me || s.leader === me || isHosting()) && deletingDoc !== d.name && (
+                              <Button key="doc-delete" label="Delete…" dimColor onPress={() => askDeleteDoc($, d.name)} />
+                            )}
+                          </Box>
+                          {deletingDoc === d.name && (
+                            <Box flexDirection="row">
+                              <Text bold>Delete "{d.name}" for the whole project? </Text>
+                              <Button key="doc-delete-yes" label="Yes, delete" onPress={() => void deleteDoc($, d.name)} />
+                              <Button key="doc-delete-no" label="Cancel" variant="primary" onPress={() => askDeleteDoc($, '')} />
+                            </Box>
+                          )}
+                        </Callout>
+                      )}
+                    </Box>
+                  ))}
+                  {docs.length > Math.min(docRows, 5) && <Text dimColor>…and {docs.length - Math.min(docRows, 5)} older (crew_read_shared lists them all)</Text>}
+                </Box>
+              )}
+
+              {sectionHead('help', 'ⓘ How projects work')}
+              {section === 'help' && (
+                <Box flexDirection="column" paddingLeft={2}>
+                  <Text dimColor>• Switching is just for you. Everyone in a project shares its chat, tasks, docs and house rules.</Text>
+                  <Text dimColor>• Your folder is only on this PC, and your Claude works in it. Each teammate has their own copy.</Text>
+                  <Text dimColor>• To pass files around: drop them in {CREWSHARED}\{mySharedName().split('/')[1]}, share a folder, crew_share a doc, or use git.</Text>
+                  <Text dimColor>• {CREWLEADER} is for big raw material: it stays here, and the leader's Claude copies over only what the crew needs.</Text>
+                  <Text dimColor>• A members-only project (🔒) is invisible to everyone else in the crew.</Text>
+                </Box>
+              )}
+            </Box>
           </Box>
         )}
 

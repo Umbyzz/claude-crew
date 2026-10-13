@@ -16,15 +16,16 @@ Reads like a messenger: your messages on the right, everyone else's on the left,
 A small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
 
 ## 📂 Project (named after your project)
-- **You're working on [project ▾]** switches project, **just for you**; everyone in a project shares its chat, tasks and docs. It also shows who's here and the project's leader.
-- **+ New project** asks for a name. The first time, it also asks where new project folders go (one click for `Documents\Crew projects`, or **Choose…**). Every new project gets its own folder there, **whoever makes it leads it**, and it's **members-only**.
-- **Members:** *🔒 Members only: …* with **+ name** to add someone (they get an invite) and, for the leader, **✕ name** to remove them. An older, open project shows *🔓 Open* and, for its leader, **🔒 Make members-only**. **Invite the crew here** is only offered in open projects.
-- **Your files for it (only on this PC):** the project's folder, with **Open folder**, **Copy path**, **+ Folder** (and **↶ Undo** while the new one is still empty) and **Use a different folder…**, plus its subfolders.
-- **Shared folders:** what's shared in the project, who shares it, how many files and how big. Yours have **Update** and **Stop sharing**; a teammate's has **Get it**, then **Open** and **Stop syncing**. Below: **📥 Open my Crewshared**, **Open Crewshared**, **📦 Open my Crewleader**, **⇅ Sync now** and **Share another folder…**.
-- **House rules:** the project's rules, each with **✕**, and a box to add one.
-- **Shared docs:** the plans, findings and patches the Claudes shared, newest first. Press one for a peek, **Copy it all**, or **Delete…** (its author, the project's leader or the host).
-- **Projects** lists every project you may see (yours marked ▸) with how many messages are **new**, who's in it, open tasks and its leader: **Switch** with one press, **⋯ → Rename…**, and **⋯ → Delete project…** (both for its leader or the host; never `main`), which asks **"You sure?"** and then **"VERY sure??"**. It wipes the project on the relay for everyone, and sends its folder to **your Recycle Bin** if crew made it inside your projects home.
-
+A short summary on top, and everything else folded away, one click from open. (Design and build: CoriZori's Claude.)
+- **Working on ▾** switches project (just for you), with one dim line underneath: who leads it, who's here, and 🔒 members-only or 🔓 open. **+ New project** sits top right. Whoever makes a project leads it, and it's members-only. **Invite the crew here** shows only in open projects when someone is elsewhere.
+- **📁 the project's folder** on this PC, with **Open** and **⋯**: Copy path, + Folder (and ↶ Undo while it's still empty), Use a different folder…, ↻ Refresh, paste a path, or use the folder this chat is open in. Its subfolders are listed underneath.
+- **Folded sections**, one open at a time (the open one is remembered):
+  - **▸ Projects:** every project you may see, with new messages, who's in it, open tasks and its leader. **Switch**, and **⋯ → Rename…** / **Delete project…** (its leader or the host; delete asks **"You sure?"** and then **"VERY sure??"**).
+  - **▸ Members & access:** 🔒 members with **+ name** and, for the leader, **✕ name**; **🔒 Make members-only** / **🔓 Open to everyone**.
+  - **▸ Shared folders:** first your **📥 Crewshared** drop folder and your **📦 Crewleader**, each with Open, plus **⇅ Sync now**. Then every shared folder: **Update** / **Stop sharing** for yours, **Get it** / **Open** / **Stop syncing** for teammates'. Plus **Share another folder…**.
+  - **▸ House rules:** each rule with ✕, and a box to add one.
+  - **▸ Shared docs:** newest first. Press one for a peek, **Copy it all**, or **Delete…**.
+  - **▸ ⓘ How projects work:** the full explanation, for when you need it.
 The project belongs to the Claude Code chat: switch in one chat and the others stay where they are; reopen a chat and it's still in its project. Switching gives your Claude a catch-up on the project it moved into.
 
 ## Crew

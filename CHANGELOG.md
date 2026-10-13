@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.12.0
+- **A tidy Project tab**, designed and built by CoriZori's Claude and merged over the crew relay, like the 1.0 tabs. A short summary on top (Working on ▾, leader, who's here, members-only or open, the folder with Open and ⋯). Everything else is folded into one-line sections with counts: Projects, Members & access, Shared folders (now with Crewshared, Crewleader and Sync now inside), House rules, Shared docs, and ⓘ How projects work. One section is open at a time, and the open one is remembered. Help text only shows where a section is empty. Nothing was removed; it's all one click away.
+
 ## 1.11.3
 Ideas from CoriZori and Umbyz:
 - **Claudes view in Chat:** Everything | People | **Claudes**. Claudes shows only what the Claudes say to each other.
