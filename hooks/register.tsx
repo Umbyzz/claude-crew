@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.13.3'
+const VERSION = '1.13.4'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -895,7 +895,8 @@ function usageNow() {
   return limits.length ? String(Math.round(Math.max(...limits.map(l => l.percentUsed)))) : ''
 }
 
-// Soft file locks: each edit is reported to the relay by its path inside the project folder. A Claude about to edit
+// Soft file locks: each edit is reported to the relay by its path inside the project folder (or a Studio script's
+// place in the game tree). A Claude about to edit
 // a file a teammate's Claude changed in the last few minutes is stopped once and told who, so it checks with them;
 // trying the same edit again goes through. All plugin-side: no tokens unless it actually stops an edit.
 const LOCK_MINUTES = 5
@@ -917,11 +918,25 @@ function editingNow(name: string) {
   return othersEditing.filter(t => t.name === name && now - t.at < LOCK_MINUTES * 60).sort((a, b) => b.at - a.at)[0]
 }
 
+// A script edited live in Roblox Studio through its MCP has no file: it's locked by its place in the game tree, which
+// is the same for everyone in a Team Create place.
+const STUDIO_EDIT = /^mcp__.*roblox.*__multi_edit$/i
+
+function lockPath(e: any) {
+  const tool = String(e.tool)
+  if (STUDIO_EDIT.test(tool)) {
+    const script = String(e.file_path ?? '').trim().replace(/^game\./i, '')
+    return script ? `${script} (Studio)` : ''
+  }
+  if (!TYPING_TOOLS.has(tool)) return ''
+  const rel = relPath(String(e.file_path ?? e.notebook_path ?? '')) // outside the project folder: not crew work
+  return /^crewleader\//i.test(rel) ? '' : rel // the private raw-material folder: not even its file names go out
+}
+
 function fileLock($: EngineInterface, e: any) {
-  if (!joined || !TYPING_TOOLS.has(String(e.tool))) return null
-  const rel = relPath(String(e.file_path ?? e.notebook_path ?? ''))
-  if (!rel) return null // outside the project folder: not crew work
-  if (/^crewleader\//i.test(rel)) return null // the private raw-material folder: not even its file names go out
+  if (!joined) return null
+  const rel = lockPath(e)
+  if (!rel) return null
   const key = rel.toLowerCase()
   const now = Date.now()
   const other = othersEditing.find(t => t.path.toLowerCase() === key && now / 1000 - t.at < LOCK_MINUTES * 60)

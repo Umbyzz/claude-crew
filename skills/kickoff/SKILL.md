@@ -30,7 +30,7 @@ You lead the crew. Before anyone builds, put everyone on one plan so no two Clau
 Every task names what it owns, in its title or note: `Enemy AI - owns: Scripts/Enemy/`. In a live engine, use a path in the game tree: `Enemy AI - owns: ServerScriptService/EnemyAI`.
 
 - Shared files (the main scene, config, project settings, the entry script; in Roblox, shared modules like ReplicatedStorage/Shared and the main server script) are yours; teammates ask you for changes.
-- crew's file locks only see files on disk, not edits made through an engine's MCP tools, so in a live engine ownership is the only guard: keep it strict.
+- crew's file locks cover files on disk and Roblox Studio scripts edited through its MCP, but not changes made by running code in the engine (like execute_luau) or through other engines' tools, so in a live engine ownership is the main guard: keep it strict.
 - No two open tasks own the same path.
 - Your first task is the skeleton: the folders, empty scenes and stub scripts with the agreed names, so everyone builds on the same base. Order the rest so nobody waits.
 - Size tasks to the teammate: heavy or tricky work to the most capable models, UI, art and level design to quicker ones, small chores to the lightest. Live engine work goes to whoever has the engine's tool connected; anyone past 80% usage gets small tasks.

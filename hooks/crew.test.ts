@@ -1597,6 +1597,39 @@ test("a file a teammate's Claude just edited is locked once: the edit is stopped
   expect(touched).toEqual(['src/player.lua', 'src/other.lua'])
 })
 
+test("a Roblox Studio script a teammate's Claude just edited through the MCP is locked by its place in the game tree", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('tool.register', async () => ({ value: undefined }) as any)
+  on('command.register', async () => ({ value: undefined }) as any)
+  on('ui.invalidate', async () => ({ value: undefined }) as any)
+  on('session.start', async (_$: unknown, e: any) => e)
+  const touched: string[] = []
+  const now = Date.now() / 1000
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.endsWith('/touch')) {
+      touched.push(JSON.parse(e.init.body).path)
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true}' } }
+    }
+    const editing = [{ path: 'ServerScriptService.EnemyAI (Studio)', name: 'bob', at: now - 60 }]
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, editing }) } }
+  })
+  const EDIT = 'mcp__Roblox_Studio__multi_edit'
+  on('tool.call', { tool: EDIT }, async () => ({ result: 'edited' }) as any)
+  on('tool.call', { tool: 'mcp__Roblox_Studio__execute_luau' }, async () => ({ result: 'ran' }) as any)
+  await $.session.start({ source: 'startup', cwd: 'C:\\Games\\Lava' } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const first: any = await $.tool.call({ tool: EDIT, file_path: 'game.ServerScriptService.EnemyAI', edits: [] } as any)
+  expect(first.deny).toContain("bob's Claude edited ServerScriptService.EnemyAI (Studio)")
+  const second: any = await $.tool.call({ tool: EDIT, file_path: 'game.ServerScriptService.EnemyAI', edits: [] } as any)
+  expect(second.deny).toBeUndefined()
+  await $.tool.call({ tool: EDIT, file_path: 'ReplicatedStorage.Shared.Config', edits: [] } as any)
+  await $.tool.call({ tool: 'mcp__Roblox_Studio__execute_luau', code: 'print(1)' } as any) // arbitrary code: nothing to lock
+  await settle()
+  expect(touched).toEqual(['ServerScriptService.EnemyAI (Studio)', 'ReplicatedStorage.Shared.Config (Studio)'])
+})
+
 test("teammates' usage shows in the Crew tab, and the leader's Claude hands big tasks to whoever has room", { options: OPTIONS }, async ($, on) => {
   mock.store(on)
   on('ui.status', async () => ({ value: undefined }))

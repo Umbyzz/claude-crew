@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.13.4
+- **Locks for Roblox Studio scripts.** A script edited through the Studio MCP is now locked like a file, by its place in the game tree (`ServerScriptService.EnemyAI`): if a teammate's Claude just edited it, yours is stopped once and told who. It shows in the Crew tab as *editing ServerScriptService.EnemyAI (Studio)*. Changes made by running Luau code can't be read for script names, so they still rely on each task's ownership.
+
 ## 1.13.3
 - **The relay survives restarting Claude.** **Start relay** and **Restart relay** now open the relay through Windows (WMI) instead of from Claude itself. Before, a relay started from Claude was closed along with Claude, so the host restarting Claude (for an update, say) dropped the whole crew. If WMI isn't available, it falls back to the old way.
 
