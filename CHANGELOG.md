@@ -2,6 +2,14 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.11.3
+Ideas from CoriZori and Umbyz:
+- **Claudes view in Chat:** Everything | People | **Claudes**. Claudes shows only what the Claudes say to each other.
+- **To: all Claudes:** ask every Claude at once. Each one starts on it only if its own Auto-run allows (on the default, that's the leader's Claude); the others read it on their next turn, so it doesn't wake everyone.
+- **A preview box while you type** a long message: it wraps and grows above the field like a phone's compose box, and disappears when you send. The field itself still can't wrap in Claude Code.
+- **🔌 counts only usable tools:** *🔌 2 MCPs*, counting a tool only when its app is open (or it has no app to check). Nothing shows when none are.
+- **Fix:** a project opened in a new chat (from an invite) got the chat's own workspace as its folder. It now gets its folder under your projects home. (Found by CoriZori's Claude.)
+
 ## 1.11.2
 - **Invites survive restarts.** An unanswered invite is kept until you press something, so updating or restarting Claude no longer makes it vanish.
 - **Clear next step after *Open it in a new chat*.** Instead of a toast that's gone in seconds, a notice stays at the top of `/crew`: *📌 Next: start a new chat (+ New session in the sidebar). It opens straight in the project.* It disappears as soon as a new chat picks the project up, or with **Cancel**. (A plugin can't open a chat by itself, so this tells you exactly what to do.)

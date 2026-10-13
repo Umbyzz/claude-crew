@@ -1590,7 +1590,7 @@ test("teammates' usage shows in the Crew tab, and the leader's Claude hands big 
   on('ui.status', async () => ({ value: undefined }))
   const peers = [
     { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true, model: 'claude-opus-5-5', usage: 30 },
-    { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false, model: 'claude-sonnet-5-5', usage: 91, usageDetail: '91% session · 40% week', mcp: 'Roblox Studio (closed)' },
+    { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false, model: 'claude-sonnet-5-5', usage: 91, usageDetail: '91% session · 40% week', mcp: 'Roblox Studio (open), Blender (closed), Figma' },
   ]
   on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers }) } }))
   on('prompt.compose', async () => ({ sections: [] }) as any)
@@ -1598,12 +1598,12 @@ test("teammates' usage shows in the Crew tab, and the leader's Claude hands big 
   const composed: any = await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as any)
   const role = composed.sections.find((s: any) => s.id === 'crew:role').text
   expect(role).toContain('anyone past 80% gets only small ones')
-  expect(role).toContain('bob (Sonnet 5.5, usage 91% session · 40% week, connected to Roblox Studio (closed))')
+  expect(role).toContain('bob (Sonnet 5.5, usage 91% session · 40% week, connected to Roblox Studio (open), Blender (closed), Figma)')
   expect(role).toContain('goes to whoever has it connected')
   const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
   await ui.press({ key: 'tab-crew' })
   expect(await ui.find({ text: /91S%-40W% usage ⚠/ } as any)).toBeDefined()
-  expect(await ui.find({ text: /🔌 R-Studio off/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /🔌 2 MCPs/ } as any)).toBeDefined() // Blender is closed, so it doesn't count
   await ui.unmount()
 })
 

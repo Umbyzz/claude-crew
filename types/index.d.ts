@@ -100,7 +100,7 @@ declare module 'claude-code' {
       docList: { names: string; docs: { name: string; by: string; at: number; size: number }[] }
       docOpen: { name: string; head: string[]; more: number; error: string }
       tab: 'chat' | 'tasks' | 'docs' | 'crew'
-      chatView: 'all' | 'people'
+      chatView: 'all' | 'people' | 'claudes'
       project: string
       folder: { path: string; chosen: boolean; dirs: string[]; error: string; note: string }
       kickPending: string
@@ -118,6 +118,7 @@ declare module 'claude-code' {
       renaming: string
       stopAsk: boolean
       nextChat: string
+      typing: Record<string, string>
       friends: { list: { name: string; key: string; seen: number; ip: string; online: boolean }[]; friendsOnly: boolean }
     }
   }

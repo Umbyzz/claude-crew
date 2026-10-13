@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.11.2'
+const VERSION = '1.11.3'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -52,8 +52,9 @@ const askTo = atom({ plugin: 'crew', key: 'askTo' } as const, '') // the chat's 
 // /crew's tabs: one card at a time instead of everything stacked. Settings is the ⚙ tab (settingsOpen).
 type Tab = 'chat' | 'tasks' | 'docs' | 'crew'
 const tab = atom({ plugin: 'crew', key: 'tab' } as const, 'chat' as Tab)
-// The Chat tab's two views: 'all' is every crew message, Claude↔Claude included; 'people' only what humans typed.
-const chatView = atom({ plugin: 'crew', key: 'chatView' } as const, 'all' as 'all' | 'people')
+// The Chat tab's views: 'all' is every crew message, 'people' only what humans typed, 'claudes' only the Claudes' talk.
+type ChatView = 'all' | 'people' | 'claudes'
+const chatView = atom({ plugin: 'crew', key: 'chatView' } as const, 'all' as ChatView)
 const briefed = atom({ plugin: 'crew', key: 'briefed' } as const, 0) // newest message id (+1) this session's Claude was caught up to
 const confirmClear = atom({ plugin: 'crew', key: 'confirmClear' } as const, false) // "remove every open task?" awaiting a yes
 const confirmLeave = atom({ plugin: 'crew', key: 'confirmLeave' } as const, false) // "leave the crew session?" awaiting a yes
@@ -854,6 +855,11 @@ function shortUsage(p: { usage?: number | null; usageDetail?: string | null }) {
   return `${parts.length ? parts.join('-') : `${p.usage}%`} usage`
 }
 
+// "🔌 2 MCPs": only tools usable right now (an app that's open, or a tool with no app to check). None: nothing shown.
+function liveMcps(mcp: string) {
+  return mcp.split(', ').filter(t => t.trim() && !/\(closed\)$/.test(t.trim())).length
+}
+
 function shortTools(mcp: string) {
   return mcp
     .split(', ')
@@ -1458,7 +1464,8 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
     // waiting on it would hold up the check-ins, and the relay would think we'd dropped off.
     // Only an idle Claude needs a prompt to start on it: a busy one reads the request in its current turn,
     // and a queued prompt would then run it a second time once it goes idle.
-    if (direct && m.kind === 'request' && trusted && !working && !(await loopBrake($, m))) {
+    const forMe = direct || (m.to === 'all' && m.kind === 'request' && m.human === true)
+    if (forMe && m.kind === 'request' && trusted && !working && !(await loopBrake($, m))) {
       queuedRequests.set(m.id, m.from)
       void autoSubmit($, {
           text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : m.from === actingLeader ? ` (acting leader while ${leader} is away)` : ''}${m.human ? ', typed by them in /crew' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
@@ -1595,9 +1602,24 @@ function fastTick($: EngineInterface) {
 // empties). Typing itself never redraws: a redraw per keystroke races the typing and jumbles the letters.
 const drafts = atom({ plugin: 'crew', key: 'drafts' } as const, {} as Record<string, string>)
 
-function setDraft(_$: EngineInterface, _field: string, _value: string) {} // typing stays in the field, untouched
+// What's being typed, for the wrapped preview above the field. The field itself is never redrawn while typing (that
+// jumbled letters once); only the preview is, at most four times a second.
+const typingAtom = atom({ plugin: 'crew', key: 'typing' } as const, {} as Record<string, string>)
+const typed: Record<string, string> = {}
+let typingTimer: ReturnType<typeof setTimeout> | null = null
+
+function setDraft($: EngineInterface, field: string, value: string) {
+  typed[field] = value
+  if (typingTimer) return
+  typingTimer = setTimeout(() => {
+    typingTimer = null
+    void update($, typingAtom, () => ({ ...typed }))
+  }, 250)
+}
 
 function submitted($: EngineInterface, field: string, value: string, run: () => unknown) {
+  typed[field] = ''
+  void update($, typingAtom, t => ({ ...t, [field]: '' }))
   void (async () => {
     await update($, drafts, d => ({ ...d, [field]: value }))
     await new Promise(r => setTimeout(r, 60))
@@ -1636,10 +1658,10 @@ function ask($: EngineInterface, target: string, value: string) {
     return
   }
   chatUntil = lastTalk = Date.now() + 8000
-  chatTo = target
-  void relay($, 'POST', '/send', { text, to: target, kind: 'request', human: true })
+  chatTo = target === '*' ? '' : target
+  void relay($, 'POST', '/send', { text, to: target === '*' ? 'all' : target, kind: 'request', human: true })
     .then(() => poll($))
-    .then(() => $.ui.toast(`crew: asked ${target}'s Claude`, { timeoutMs: 4000 }))
+    .then(() => $.ui.toast(target === '*' ? 'crew: asked every Claude' : `crew: asked ${target}'s Claude`, { timeoutMs: 4000 }))
     .catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
 
@@ -1861,13 +1883,18 @@ function setTab($: EngineInterface, to: Tab) {
   if (to === 'crew' && isHosting()) void loadFriends($)
 }
 
-function setChatView($: EngineInterface, view: 'all' | 'people') {
+function setChatView($: EngineInterface, view: ChatView) {
   void update($, chatView, () => view)
 }
 
 // The People view: only what humans typed in /crew (chat, and asks to a Claude).
 function peopleOnly(feed: CrewMessage[]) {
   return feed.filter(m => m.human)
+}
+
+// The Claudes view: what the Claudes say to each other (requests, replies, updates, images), nothing people typed.
+function claudesOnly(feed: CrewMessage[]) {
+  return feed.filter(m => !m.human && ['chat', 'request', 'update', 'image'].includes(m.kind))
 }
 
 // -- the task manager in /crew: the same board the Claudes use through crew_task
@@ -2856,7 +2883,9 @@ export const register: Register = (on, options) => {
     if (pending) await $.store.set(`nextChat:${base}`, null).catch(() => {})
     projectName = own || pending || String((await $.store.get(`project:${base}:${sessionCwd}`)) ?? '') || 'main'
     await update($, projectAtom, () => projectName)
-    void loadFolder($).catch(() => {}) // so this Claude knows the project's folder from the start
+    // so this Claude knows the project's folder from the start: one under the projects home if it has none yet, not the
+    // chat's own workspace (a chat opened for a project from an invite used to end up there)
+    void homeFolderFor($).catch(() => {})
     const kept = (await $.store.get(`invite:${base}`).catch(() => undefined)) as { from?: string; project?: string } | null | undefined
     if (kept?.project && kept.project !== projectName) {
       const busy = (await $.session.turns().catch(() => 0)) > 0
@@ -3206,6 +3235,7 @@ export const register: Register = (on, options) => {
     const invite = await read($, inviteAtom)
     const deletingDoc = await read($, docDeleting)
     const draft = await read($, drafts)
+    const typingNow = await read($, typingAtom)
     const justMade = await read($, madeFolder)
     const thisProject = (s.projects ?? []).find(p => p.name === projectName)
     const friendList = await read($, friendsAtom)
@@ -3239,7 +3269,7 @@ export const register: Register = (on, options) => {
     // the chat also keeps rows for its To: and message fields (3) and a read receipt (1)
     const room = Math.max(6, body - 4 - (confirming ? 7 : 0))
     const bubbleCols = Math.floor((e.viewport?.columns ?? 80) * 0.65)
-    const feed = view === 'people' ? peopleOnly(s.feed) : s.feed
+    const feed = view === 'people' ? peopleOnly(s.feed) : view === 'claudes' ? claudesOnly(s.feed) : s.feed
     const chat = fitChat(chatItems(feed, me), room, bubbleCols)
     const lastMine = [...chat].reverse().find(i => i.type === 'group' && i.mine)
     const seen = lastMine?.type === 'group' ? receipt(lastMine.msgs[lastMine.msgs.length - 1], s, me) : ''
@@ -3621,6 +3651,7 @@ export const register: Register = (on, options) => {
                 <Box flexDirection="row">
                   <Button key="view-all" label="Everything" variant={view === 'all' ? 'primary' : undefined} dimColor={view !== 'all'} onPress={() => setChatView($, 'all')} />
                   <Button key="view-people" label="People" variant={view === 'people' ? 'primary' : undefined} dimColor={view !== 'people'} onPress={() => setChatView($, 'people')} />
+                  <Button key="view-claudes" label="Claudes" variant={view === 'claudes' ? 'primary' : undefined} dimColor={view !== 'claudes'} onPress={() => setChatView($, 'claudes')} />
                   <Button key="save-chat" label="Save" dimColor onPress={() => saveChatPress($)} />
                   <Button key="reset-chat" label="Reset" dimColor onPress={() => askReset($, true)} />
                 </Box>
@@ -3642,7 +3673,13 @@ export const register: Register = (on, options) => {
               </Callout>
             )}
             {feed.length === 0 && (
-              <Text dimColor>{view === 'people' && s.feed.length ? 'Nothing from people yet. Everything shows the Claudes too.' : 'No messages yet. Say hi!'}</Text>
+              <Text dimColor>
+                {view === 'people' && s.feed.length
+                  ? 'Nothing from people yet. Everything shows the Claudes too.'
+                  : view === 'claudes' && s.feed.length
+                    ? "The Claudes haven't said anything yet."
+                    : 'No messages yet. Say hi!'}
+              </Text>
             )}
             {chat.map(item =>
               item.type === 'more' ? (
@@ -3690,16 +3727,26 @@ export const register: Register = (on, options) => {
                   value={askTarget}
                   options={[
                     { value: '', label: "the people (Claudes don't read it)" },
+                    { value: '*', label: 'all Claudes (each starts only if its Auto-run allows)' },
                     ...others.map(n => ({ value: n, label: n === s.leader ? `${n}'s Claude ★ leader` : `${n}'s Claude` })),
                   ]}
                   onSelect={(v: string) => setAskTo($, v)}
                 />
               )}
+              {(() => {
+                const now = typingNow[askTarget ? 'ask' : 'say'] ?? ''
+                return now.length > 40 ? (
+                  <Callout>
+                    <Text wrap="wrap">{now}</Text>
+                    <Text dimColor>{now.length} characters · Enter sends</Text>
+                  </Callout>
+                ) : null
+              })()}
               {Input &&
                 (askTarget ? (
                   <Input
                     key="ask"
-                    placeholder={`Ask ${askTarget}'s Claude (it starts right away if their Auto-run allows)`}
+                    placeholder={askTarget === '*' ? 'Ask every Claude at once' : `Ask ${askTarget}'s Claude (it starts right away if their Auto-run allows)`}
                     submitLabel="ask"
                     value={draft.ask ?? ''}
                     onInput={(v: string) => setDraft($, 'ask', v)}
@@ -4133,7 +4180,7 @@ export const register: Register = (on, options) => {
                     {p.model ? `  · ${modelLabel(p.model)}` : ''}
                     {p.usage != null ? `  · ${shortUsage(p)}${p.usage >= 80 ? ' ⚠' : ''}` : ''}
                     {p.online && editingNow(p.name) ? `  · ✎ ${editingNow(p.name)?.path}` : ''}
-                    {p.mcp ? `  · 🔌 ${shortTools(p.mcp)}` : ''}
+                    {p.mcp && liveMcps(p.mcp) ? `  · 🔌 ${liveMcps(p.mcp)} MCP${liveMcps(p.mcp) === 1 ? '' : 's'}` : ''}
                     {p.friend ? '  · friend' : ''}
                     {isHosting() && p.online && p.ip && p.name !== me ? `  · from ${p.ip}` : ''}
                     {p.version ? `  · v${p.version}${versionMark(p.version)}` : ''}
