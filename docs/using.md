@@ -23,7 +23,7 @@ A small task manager: **✓ done** and **✕** on each task, an add box (end wit
 - **Shared folders:** what's shared in the project, who shares it, how many files and how big. Yours have **Update** and **Stop sharing**; a teammate's has **Get it**, then **Open** and **Stop syncing**. Below: **📥 Open my Crewshared**, **Open Crewshared**, **📦 Open my Crewleader**, **⇅ Sync now** and **Share another folder…**.
 - **House rules:** the project's rules, each with **✕**, and a box to add one.
 - **Shared docs:** the plans, findings and patches the Claudes shared, newest first. Press one for a peek, **Copy it all**, or **Delete…** (its author, the project's leader or the host).
-- **Projects** lists every project you may see (yours marked ▸) with how many messages are **new**, who's in it, open tasks and its leader: **Switch** with one press, and **⋯ → Delete project…** (its leader or the host; never `main`), which asks **"You sure?"** and then **"VERY sure??"**. It wipes the project on the relay for everyone, and sends its folder to **your Recycle Bin** if crew made it inside your projects home.
+- **Projects** lists every project you may see (yours marked ▸) with how many messages are **new**, who's in it, open tasks and its leader: **Switch** with one press, **⋯ → Rename…**, and **⋯ → Delete project…** (both for its leader or the host; never `main`), which asks **"You sure?"** and then **"VERY sure??"**. It wipes the project on the relay for everyone, and sends its folder to **your Recycle Bin** if crew made it inside your projects home.
 
 The project belongs to the Claude Code chat: switch in one chat and the others stay where they are; reopen a chat and it's still in its project. Switching gives your Claude a catch-up on the project it moved into.
 
@@ -33,7 +33,8 @@ The project belongs to the Claude Code chat: switch in one chat and the others s
 - **For the host:**
   - **★ Friend** next to each connected person.
   - The **Friends** card: who's a friend, when and from where they last connected, **Copy invite**, **Remove**, and a box to invite someone who isn't connected yet.
-  - The **Invite friends** card: **Copy invite**, **Stop hosting**, **🔑 New crew key…** and **Keep this PC awake while anyone's connected**.
+  - The **Invite friends** card: **Copy invite**, **Stop hosting…** (it asks first), **🔑 New crew key…** and **Keep this PC awake while anyone's connected**.
+- **For everyone else:** a short Friends note (are you on the host's friends list?).
 
 ## ⚙ Settings
 **Connection** (Relay URL, your name, crew key, **Test connection**; for the host, **Who can join**), **Preferences** (Auto-run, notifications, check-in interval, **Crewshared check every**, the Clawds window, where new project folders go) and **Updates**.

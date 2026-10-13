@@ -2,8 +2,19 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
-## 1.10.7
-- **Fix: a new crew key could lock the host out.** Claude Code can refuse a plugin's settings save, and 🔑 New crew key didn't check, so the relay switched keys while the host's plugin kept the old one. Now crew keeps its own copy of the key that works (a new crew key, or a friend's personal key) and uses it after a restart. A refused save is reported. And if the host's own relay ever refuses their key, the plugin picks the right one up from `crew_key.txt` on that PC by itself.
+## 1.11.0
+From the first live test with CoriZori's Claude:
+- **Fix: images couldn't be sent** (`crew_send_image` failed with ECONNRESET). A name clash inside the relay, from the shared-folders work, broke the image upload. It works again, and a relay test now sends one.
+- **Direct messages reach you whatever project you're in.** A teammate's report or a "done, what next?" no longer goes missing because you switched projects. It's labelled with the project it came from ("(private)" if you can't see it). Messages to everyone still stay in their project.
+- **Rename a project** (⋯ → Rename…, its leader or the host). Everything moves with it: chat, tasks, docs, shared folders, members and leader. Anyone still in it follows along by themselves, keeping their place and their folder. (Asked for by CoriZori.)
+- **Invites ask where to open the project.** If this chat already has other work, the notice says so and offers **Open it in a new chat**: your next new Claude chat starts straight in that project with a catch-up, and this one keeps its own work. **Switch this chat** and **Not now** are still there.
+- **Vague goals get questions, not inventions.** Asked to "just make this game" with no material and no explanation, a Claude asks its user two or three short questions first.
+- **Confirms on everything that can't be undone:** Stop hosting (it disconnects everyone) and Remove friend now ask first. A members-only project can be opened up again (**🔓 Open to everyone**).
+- **Friends card stays current** (*connected now* / *last seen*), and teammates who aren't the host see a short note on how friends work instead of nothing. `crew_status` shows who's a friend.
+- A project made with `crew_project` now has its maker as leader, like **+ New project**. Old "out of tokens" notes no longer show up in catch-ups days later. The Crewshared button row wraps instead of running off the screen.
+- **Timmy test:** a new plugin test presses 300 random buttons across every tab and checks `/crew` never breaks and nothing irreversible happens without its confirm. Relay tests: 27, plugin tests: 75.
+
+## 1.10.7- **Fix: a new crew key could lock the host out.** Claude Code can refuse a plugin's settings save, and 🔑 New crew key didn't check, so the relay switched keys while the host's plugin kept the old one. Now crew keeps its own copy of the key that works (a new crew key, or a friend's personal key) and uses it after a restart. A refused save is reported. And if the host's own relay ever refuses their key, the plugin picks the right one up from `crew_key.txt` on that PC by itself.
 - **The sketching Clawd.** Tinkering now means sitting down with little reading glasses and sketching on a sheet of paper. The blacksmith stays as the over-the-top version. (Idea by Umbyz.)
 
 ## 1.10.6

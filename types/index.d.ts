@@ -105,7 +105,7 @@ declare module 'claude-code' {
       folder: { path: string; chosen: boolean; dirs: string[]; error: string; note: string }
       kickPending: string
       folderMode: '' | 'new' | 'home' | 'sub' | 'change'
-      invite: { from: string; project: string }
+      invite: { from: string; project: string; busy?: boolean }
       deleteStage: { name: string; stage: number }
       projectMenu: string
       docDeleting: string
@@ -114,6 +114,9 @@ declare module 'claude-code' {
       madeFolder: string
       folderJobs: Record<string, string>
       keyAsk: boolean
+      friendRm: string
+      renaming: string
+      stopAsk: boolean
       friends: { list: { name: string; key: string; seen: number; ip: string; online: boolean }[]; friendsOnly: boolean }
     }
   }

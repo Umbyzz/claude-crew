@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.10.7'
+const VERSION = '1.11.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -216,6 +216,35 @@ function cleanProject(name: string) {
 
 // Move this session to another crew project (a new name starts a fresh one). Its chat, tasks, docs and leader
 // replace what /crew shows, and this Claude gets a catch-up on that project, so it knows where things stand.
+// The project was renamed (by its leader, maybe on another PC): carry on in the new name, same place, same folder.
+async function followRename($: EngineInterface, from: string, to: string) {
+  if (projectName !== from) return
+  const cursor = await $.store.get(cursorKey())
+  const folder = await $.store.get(`folder:${cfg.base}:${from}`)
+  projectName = to
+  await update($, projectAtom, () => to)
+  if (sessionCwd) await $.store.set(`project:${cfg.base}:${sessionCwd}`, to)
+  if (cursor != null) await $.store.set(cursorKey(), cursor)
+  if (folder) await $.store.set(`folder:${cfg.base}:${to}`, folder)
+  $.ui.toast(`crew: the project "${from}" is now called "${to}"`, { timeoutMs: 8000 })
+}
+
+const renaming = atom({ plugin: 'crew', key: 'renaming' } as const, '')
+
+async function renameProject($: EngineInterface, from: string, raw: string) {
+  const to = cleanProject(raw)
+  await update($, renaming, () => '')
+  if (!raw.trim() || to === from) return
+  try {
+    await relay($, 'POST', '/project/rename', { from, to })
+    if (projectName === from) await followRename($, from, to)
+    await poll($)
+    $.ui.toast(`crew: "${from}" is now "${to}" for everyone`, { timeoutMs: 6000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 })
+  }
+}
+
 async function switchProject($: EngineInterface, raw: string) {
   const name = cleanProject(raw)
   if (name === projectName) return
@@ -402,10 +431,20 @@ async function projectCall($: EngineInterface, path: string, body: unknown, done
   }
 }
 
+// "Open it in a new chat": the next new Claude chat starts straight in that project, with its catch-up, and this
+// chat keeps its own work.
+async function inviteInNewChat($: EngineInterface) {
+  const inv = await read($, inviteAtom)
+  await update($, inviteAtom, () => ({ from: '', project: '', busy: false }))
+  if (!inv.project) return
+  await $.store.set(`nextChat:${cfg.base}`, { project: inv.project, at: Date.now() })
+  $.ui.toast(`crew: start a new Claude chat (+ New session) and it opens straight in "${inv.project}" with a catch-up. This chat stays where it is.`, { timeoutMs: 12000 })
+}
+
 function answerInvite($: EngineInterface, accept: boolean) {
   void (async () => {
     const inv = await read($, inviteAtom)
-    await update($, inviteAtom, () => ({ from: '', project: '' }))
+    await update($, inviteAtom, () => ({ from: '', project: '', busy: false }))
     if (accept && inv.project) await switchProject($, inv.project)
   })().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
@@ -1236,7 +1275,9 @@ function crewExtras(s: CrewSnapshot) {
       `When your user gives you a goal without saying where its material is (source, assets, references), look in ` +
       `${mirrorPath(CREWLEADER)} (raw material, only on this PC) and ${folderPath}\\${CREWSHARED} first. If the goal needs ` +
       `files and both are empty, ask your user where they are (suggest dropping them in ${CREWLEADER}) instead of guessing ` +
-      `or starting from nothing.` +
+      `or starting from nothing. If the goal is vague ("just make this game") and nothing there or in the shared docs explains ` +
+      `it, ask your user two or three short questions first (what exactly, which engine or platform, how big) instead of ` +
+      `inventing a big plan.` +
       (s.leader === cfg.me || s.acting === cfg.me
         ? ` ${mirrorPath(CREWLEADER)} is your private raw-material folder: never synced, only on this PC. When your user ` +
           `puts big raw material there (a whole source tree, every asset) and asks you to share it, sort it for the crew: ` +
@@ -1356,7 +1397,10 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
       continue
     }
     if (m.kind === 'invite') {
-      if (m.invite && m.invite !== projectName) await update($, inviteAtom, () => ({ from: m.from, project: m.invite ?? '' }))
+      if (m.invite && m.invite !== projectName) {
+        const busy = (await $.session.turns().catch(() => 0)) > 0 // this chat already has work of its own
+        await update($, inviteAtom, () => ({ from: m.from, project: m.invite ?? '', busy }))
+      }
       continue
     }
     if (m.kind === 'update' || m.kind === 'join') continue
@@ -1380,9 +1424,14 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
             type: 'text',
             text:
               `<crew-message from="${m.from}"${m.from === leader ? ' role="leader"' : ''} to="${m.to}" kind="${m.kind}" id="${m.id}" ` +
+              (m.project && m.project !== projectName ? `project="${m.project}" ` : '') +
+              `` +
               `sent="${stamp(m.at)}" delivered="${stamp(Date.now() / 1000)}"${m.notify ? ' for-human="yes"' : ''}${m.human ? ' human="yes"' : ''}>\n${body}\n</crew-message>` +
               (m.notify ? `\n(${m.from} flagged this for your user: make sure they see it.)` : '') +
-              (crewNote(m, leader) ? `\n${crewNote(m, leader)}` : ''),
+              (crewNote(m, leader) ? `\n${crewNote(m, leader)}` : '') +
+              (m.project && m.project !== projectName && m.project !== '(private)'
+                ? `\n(Sent from the crew project "${m.project}"; this session is in "${projectName}". A crew_send reply still reaches ${m.from} wherever they are.)`
+                : ''),
           },
         ],
       },
@@ -1425,11 +1474,15 @@ function poll($: EngineInterface): Promise<void> {
 async function pollOnce($: EngineInterface) {
   try {
     await syncProject($)
-    const asked = projectName
+    let asked = projectName
     const prev = await read($, snapshot)
     const stored = Number((await $.store.get(cursorKey())) ?? -1)
     const since = prev.cursor || Math.max(stored, 0)
     const data = await relay($, 'GET', `/poll?since=${since}`)
+    if (typeof data.renamedFrom === 'string' && data.renamedFrom === asked && data.project && data.project !== asked) {
+      await followRename($, asked, String(data.project))
+      asked = projectName
+    }
     if (projectName !== asked) return // switched projects meanwhile: this answer is about the old one
     const msgs: CrewMessage[] = data.messages ?? []
     const leader: string | null = data.leader ?? null
@@ -1468,6 +1521,10 @@ async function pollOnce($: EngineInterface) {
       $.ui.toast("crew: you're now on the host's friends list. Your personal key is saved; nothing else to do.", { timeoutMs: 10000 })
     }
     othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
+    if (isHosting() && Date.now() - friendsLoadedAt > 10000) {
+      friendsLoadedAt = Date.now()
+      void loadFriends($) // keeps "seen" and "connected now" current in the Friends card
+    }
     sharedFolders = Array.isArray(data.folders) ? data.folders : []
     void autoSyncFolders($).catch(() => {})
     void autoSendCrewshared($).catch(() => {})
@@ -2319,7 +2376,10 @@ async function stopHosting($: EngineInterface) {
   await poll($).catch(() => {})
 }
 
+const stopAsk = atom({ plugin: 'crew', key: 'stopAsk' } as const, false)
+
 function stopHostingPress($: EngineInterface) {
+  void update($, stopAsk, () => false)
   void stopHosting($)
 }
 
@@ -2423,7 +2483,11 @@ async function makeFriend($: EngineInterface, name: string, ip: string) {
   }
 }
 
+const friendRm = atom({ plugin: 'crew', key: 'friendRm' } as const, '') // whose "remove?" is showing
+let friendsLoadedAt = 0
+
 async function removeFriend($: EngineInterface, name: string) {
+  await update($, friendRm, () => '')
   try {
     await friendCall($, '/friends/remove', { name })
     $.ui.toast(`crew: removed ${name}. Their key no longer works; everyone else is unaffected.`, { timeoutMs: 8000 })
@@ -2475,7 +2539,10 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
   const data = await relay($, 'GET', '/poll?since=0')
   const tasks: CrewTask[] = (data.tasks ?? []).filter((t: CrewTask) => t.status !== 'done')
   // people's /crew chat stays out of the briefing too, like it stays out of live delivery
-  const all: CrewMessage[] = (data.messages ?? []).filter((m: CrewMessage) => !['join', 'leave', 'invite', 'deleted'].includes(m.kind) && !(m.human && m.kind === 'chat'))
+  const stale = (m: CrewMessage) => ['out', 'back'].includes(m.kind) && Date.now() / 1000 - m.at > 6 * 3600
+  const all: CrewMessage[] = (data.messages ?? []).filter(
+    (m: CrewMessage) => !['join', 'leave', 'invite', 'deleted'].includes(m.kind) && !(m.human && m.kind === 'chat') && !stale(m),
+  )
   // Back after a break: only what happened since we last looked. First time here: the recent history.
   const fresh = lastSeen > 0 ? all.filter(m => m.id > lastSeen) : all
   const msgs = fresh.slice(-30)
@@ -2771,8 +2838,12 @@ export const register: Register = (on, options) => {
     }
     // Which project: this session's own (survives reloads), else the one last used in this folder, else main.
     sessionCwd = String((e as any).cwd ?? '')
-    projectName =
-      (await read($, projectAtom)) || String((await $.store.get(`project:${base}:${sessionCwd}`)) ?? '') || 'main'
+    const own = await read($, projectAtom)
+    // "Open it in a new chat" from an invite: a brand-new chat (opened within the hour) starts in that project.
+    const planned = (await $.store.get(`nextChat:${base}`).catch(() => undefined)) as { project?: string; at?: number } | undefined
+    const pending = !own && planned?.project && Date.now() - Number(planned.at ?? 0) < 3600000 ? String(planned.project) : ''
+    if (pending) await $.store.set(`nextChat:${base}`, null).catch(() => {})
+    projectName = own || pending || String((await $.store.get(`project:${base}:${sessionCwd}`)) ?? '') || 'main'
     await update($, projectAtom, () => projectName)
     void loadFolder($).catch(() => {}) // so this Claude knows the project's folder from the start
     // In the crew or not? This session's answer wins (it survives reloads); a brand-new Claude
@@ -2935,6 +3006,7 @@ export const register: Register = (on, options) => {
       (p.model ? ` · ${modelLabel(p.model)}` : '') +
       (p.usageDetail ? ` · usage ${p.usageDetail}` : p.usage != null ? ` · ${p.usage}% usage used` : '') +
       (p.mcp ? ` · connected to ${p.mcp}` : '') +
+      (p.friend ? ' · friend (personal key)' : '') +
       (editingNow(p.name) ? ` · editing ${editingNow(p.name)?.path}` : '')
     const openTasks = s.tasks.filter(t => t.status !== 'done')
     const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
@@ -3026,7 +3098,13 @@ export const register: Register = (on, options) => {
     if (!joined) return ok("You're not in the crew session right now; ask the user to join it from /crew.")
     const name = typeof e.name === 'string' ? e.name.trim() : ''
     if (name) {
+      const before = ((await relay($, 'GET', '/projects')).projects ?? []).map((p: any) => p.name)
       await switchProject($, name)
+      if (!before.includes(projectName)) {
+        await relay($, 'POST', '/leader', { name: me }).catch(() => {})
+        await poll($)
+        return ok(`Made the crew project "${projectName}" and moved this session into it. You lead it, and it's members-only: only you see it until you add people (the + buttons in /crew → Project).`)
+      }
       return ok(`This session is now in crew project "${projectName}". A catch-up on it follows in the conversation.`)
     }
     await syncProject($)
@@ -3077,6 +3155,9 @@ export const register: Register = (on, options) => {
     const member = (await read($, membership)) || (configured ? 'joined' : '')
     const host = await read($, hostInfo)
     const askingKey = await read($, keyAsk)
+    const removingFriend = await read($, friendRm)
+    const renamingName = await read($, renaming)
+    const stoppingHost = await read($, stopAsk)
     const keepAwake = s.keepAwake !== false
     const confirming = await read($, confirmReset)
     const note = await read($, updateNote)
@@ -3233,9 +3314,17 @@ export const register: Register = (on, options) => {
         {inSession && invite.project !== '' && invite.project !== projectName && (
           <Callout>
             <Text bold>{invite.from} invites you to the project "{invite.project}"</Text>
-            <Text dimColor>Switching is just for you: you'll see that project's chat, tasks and docs, and your Claude gets a catch-up.</Text>
+            {invite.busy ? (
+              <Text dimColor>
+                ⚠ This chat already has other work. Switching moves its Claude into "{invite.project}" (with a catch-up); a new chat keeps the two apart.
+              </Text>
+            ) : (
+              <Text dimColor>Switching is just for you: you'll see that project's chat, tasks and docs, and your Claude gets a catch-up.</Text>
+            )}
             <Box flexDirection="row">
-              <Button key="invite-accept" label={`Switch to ${invite.project}`} variant="primary" onPress={() => answerInvite($, true)} />
+              {invite.busy && <Button key="invite-newchat" label="Open it in a new chat" variant="primary" onPress={() => void inviteInNewChat($)} />}
+              <Button key="invite-accept" label={invite.busy ? 'Switch this chat' : `Switch to ${invite.project}`} variant={invite.busy ? undefined : 'primary'} onPress={() => answerInvite($, true)} />
+              {!invite.busy && <Button key="invite-newchat" label="Open it in a new chat" dimColor onPress={() => void inviteInNewChat($)} />}
               <Button key="invite-dismiss" label="Not now" onPress={() => answerInvite($, false)} />
             </Box>
           </Callout>
@@ -3702,7 +3791,12 @@ export const register: Register = (on, options) => {
                           <Button key={`member-rm-${n}`} label={`✕ ${n}`} dimColor onPress={() => void projectCall($, '/project/members', { remove: [n] }, `removed ${n} from the project`)} />
                         ))}
                   </Box>
-                  <Text dimColor>Only members see this project, its chat, tasks, docs and shared folders. + adds someone (they get an invite).</Text>
+                  <Box flexDirection="row" justifyContent="space-between">
+                    <Text dimColor>Only members see this project, its chat, tasks, docs and shared folders. + adds someone (they get an invite).</Text>
+                    {(s.leader === me || isHosting()) && (
+                      <Button key="project-unlock" label="🔓 Open to everyone" dimColor onPress={() => void projectCall($, '/project/private', { private: false }, 'this project is open to the whole crew again')} />
+                    )}
+                  </Box>
                 </Box>
               )}
               {elsewhere.length > 0 && <Text dimColor>Not here yet: {elsewhere.join(', ')}</Text>}
@@ -3809,9 +3903,23 @@ export const register: Register = (on, options) => {
                         {canDelete && <Button key={`proj-more-${p.name}`} label="⋯" dimColor onPress={() => toggleProjectMenu($, p.name)} />}
                       </Box>
                     </Box>
-                    {menuOpen === p.name && deleting.name !== p.name && (
+                    {menuOpen === p.name && deleting.name !== p.name && renamingName !== p.name && (
                       <Box flexDirection="row" justifyContent="flex-end">
+                        <Button key={`proj-rename-${p.name}`} label="Rename…" onPress={() => void update($, renaming, () => p.name)} />
                         <Button key={`proj-delete-${p.name}`} label="Delete project…" onPress={() => setDeleteStage($, p.name, 1)} />
+                      </Box>
+                    )}
+                    {renamingName === p.name && Input && (
+                      <Box flexDirection="row">
+                        <Input
+                          key={`proj-rename-input-${p.name}`}
+                          label="New name "
+                          value={p.name}
+                          submitLabel="rename"
+                          autoFocus
+                          onSubmit={(v: string) => void renameProject($, p.name, v)}
+                        />
+                        <Button key={`proj-rename-cancel-${p.name}`} label="Cancel" dimColor onPress={() => void update($, renaming, () => '')} />
                       </Box>
                     )}
                     {deleting.name === p.name && deleting.stage === 1 && (
@@ -3878,7 +3986,7 @@ export const register: Register = (on, options) => {
               </Text>
             )}
             {folderPath !== '' && (
-              <Box flexDirection="row">
+              <Box flexDirection="row" flexWrap="wrap">
                 <Button key="crewshared-mine" label={`📥 Open my ${CREWSHARED}`} onPress={() => folderPress($, () => makeDir($, mirrorPath(mySharedName())).then(() => openInExplorer($, mirrorPath(mySharedName()))))} />
                 <Button key="crewshared-all" label={`Open ${CREWSHARED}`} dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWSHARED)).then(() => openInExplorer($, mirrorPath(CREWSHARED))))} />
                 <Button key="crewleader-open" label={`📦 Open my ${CREWLEADER}`} dimColor onPress={() => folderPress($, () => makeDir($, mirrorPath(CREWLEADER)).then(() => openInExplorer($, mirrorPath(CREWLEADER))))} />
@@ -4036,18 +4144,32 @@ export const register: Register = (on, options) => {
                   Press ★ Friend next to someone connected (in the list above) and their personal key reaches them by itself. It's tied
                   to their name, so nobody can pose as them, and removing one friend doesn't touch anyone else. Who can join: ⚙ Settings.
                 </Text>
-                {friendList.list.map(f => (
-                  <Box flexDirection="row" justifyContent="space-between">
-                    <Text>
-                      {f.online ? '●' : '○'} {f.name}
-                      <Text dimColor>{f.seen ? `  · seen ${hhmm(f.seen)}${f.ip ? ` from ${f.ip}` : ''}` : '  · not connected yet'}</Text>
-                    </Text>
-                    <Box flexDirection="row">
-                      <Button key={`friend-invite-${f.name}`} label="Copy invite" dimColor onPress={() => copyInvite($, e.surface, host.ip, f.key, f.name)} />
-                      <Button key={`friend-rm-${f.name}`} label="Remove" dimColor onPress={() => void removeFriend($, f.name)} />
+                {friendList.list.map(f => {
+                  const here = s.peers.some(p => p.name === f.name && p.online)
+                  return (
+                    <Box flexDirection="column">
+                      <Box flexDirection="row" justifyContent="space-between">
+                        <Text>
+                          {here ? '●' : '○'} {f.name}
+                          <Text dimColor>
+                            {here ? `  · connected now${f.ip ? ` from ${f.ip}` : ''}` : f.seen ? `  · last seen ${hhmm(f.seen)}${f.ip ? ` from ${f.ip}` : ''}` : '  · not connected yet'}
+                          </Text>
+                        </Text>
+                        <Box flexDirection="row">
+                          <Button key={`friend-invite-${f.name}`} label="Copy invite" dimColor onPress={() => copyInvite($, e.surface, host.ip, f.key, f.name)} />
+                          {removingFriend !== f.name && <Button key={`friend-rm-${f.name}`} label="Remove" dimColor onPress={() => void update($, friendRm, () => f.name)} />}
+                        </Box>
+                      </Box>
+                      {removingFriend === f.name && (
+                        <Box flexDirection="row">
+                          <Text bold>Remove {f.name}? Their key stops working and they drop out of the session. </Text>
+                          <Button key={`friend-rm-yes-${f.name}`} label="Yes, remove" onPress={() => void removeFriend($, f.name)} />
+                          <Button key={`friend-rm-no-${f.name}`} label="Cancel" variant="primary" onPress={() => void update($, friendRm, () => '')} />
+                        </Box>
+                      )}
                     </Box>
-                  </Box>
-                ))}
+                  )
+                })}
                 {Input && (
                   <Box marginTop={1} width="100%">
                     <Input
@@ -4062,6 +4184,15 @@ export const register: Register = (on, options) => {
                 )}
               </Card>
             )}
+            {!isHosting() && s.connected && (
+              <Card title="Friends">
+                <Text dimColor>
+                  {s.peers.find(p => p.name === me)?.friend
+                    ? "You're on the host's friends list ✓ Your personal key is saved; nothing to do."
+                    : 'Friends are managed by the host: they press ★ Friend next to your name, and your personal key arrives by itself.'}
+                </Text>
+              </Card>
+            )}
             {isHosting() && s.connected && (
               <Card title="Invite friends">
                 <Text>You're hosting{host.ip ? ` · friends join at http://${host.ip}:7777` : ''}</Text>
@@ -4069,7 +4200,7 @@ export const register: Register = (on, options) => {
                 {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
                 <Box flexDirection="row">
                   <Button key="invite" label="Copy invite" variant="primary" onPress={() => copyInvite($, e.surface, host.ip, host.key || key)} />
-                  <Button key="stop-host" label="Stop hosting" onPress={() => stopHostingPress($)} />
+                  {!stoppingHost && <Button key="stop-host" label="Stop hosting…" onPress={() => void update($, stopAsk, () => true)} />}
                   {!askingKey && <Button key="key-new" label="🔑 New crew key…" dimColor onPress={() => askNewKey($, true)} />}
                 </Box>
                 {Select && (
@@ -4088,6 +4219,16 @@ export const register: Register = (on, options) => {
                         .catch(err => $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
                     }
                   />
+                )}
+                {stoppingHost && (
+                  <Callout>
+                    <Text bold>Stop hosting?</Text>
+                    <Text dimColor>The relay stops, so everyone in the crew is disconnected until you start it again. Nothing is lost.</Text>
+                    <Box flexDirection="row">
+                      <Button key="stop-host-yes" label="Yes, stop" onPress={() => stopHostingPress($)} />
+                      <Button key="stop-host-no" label="Cancel" variant="primary" onPress={() => void update($, stopAsk, () => false)} />
+                    </Box>
+                  </Callout>
                 )}
                 {askingKey && (
                   <Callout>

@@ -286,6 +286,53 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.r.call("POST", "/keepawake", "host", body={"on": False}, remote=False)[0], 200)
         self.assertFalse(self.poll("cori")[1]["keepAwake"])
 
+    # -- renaming a project
+
+    def test_a_rename_moves_everything_and_the_old_name_still_finds_it(self):
+        self.r.call("POST", "/leader", "umbyz", project="lava", body={"name": "umbyz"})
+        self.r.call("POST", "/project/members", "umbyz", project="lava", body={"add": ["cori"]})
+        self.r.call("POST", "/send", "umbyz", project="lava", body={"text": "the plan"})
+        self.r.call("POST", "/tasks", "umbyz", project="lava", body={"action": "add", "title": "jump"})
+        self.r.call("POST", "/shared", "umbyz", project="lava", body={"name": "map", "content": "x"})
+        self.assertEqual(self.r.call("POST", "/project/rename", "cori", project="lava", body={"from": "lava", "to": "magma"})[0], 403)
+        code, r = self.r.call("POST", "/project/rename", "umbyz", project="lava", body={"from": "lava", "to": "magma"})
+        self.assertEqual((code, r.get("name")), (200, "magma"))
+        code, r = self.poll("cori", project="magma")
+        self.assertEqual(code, 200)
+        self.assertTrue(any(m["text"] == "the plan" for m in r["messages"]))
+        self.assertEqual([t["title"] for t in r["tasks"]], ["jump"])
+        self.assertEqual(r["shared"], ["map"])
+        self.assertEqual(r["leader"], "umbyz")
+        code, r = self.poll("cori", project="lava")  # a plugin still on the old name lands in the new one, and is told
+        self.assertEqual((code, r["project"], r.get("renamedFrom")), (200, "magma", "lava"))
+        self.assertEqual(self.poll("stranger", project="magma")[0], 403)  # still members-only
+        names = [p["name"] for p in self.poll("umbyz")[1]["projects"]]
+        self.assertIn("magma", names)
+        self.assertNotIn("lava", names)
+
+    def test_a_rename_never_takes_an_existing_name_or_main(self):
+        self.r.call("POST", "/leader", "umbyz", project="a", body={"name": "umbyz"})
+        self.r.call("POST", "/leader", "umbyz", project="b", body={"name": "umbyz"})
+        self.assertEqual(self.r.call("POST", "/project/rename", "umbyz", project="a", body={"from": "a", "to": "b"})[0], 409)
+        self.assertEqual(self.r.call("POST", "/project/rename", "umbyz", project="a", body={"from": "a", "to": "main"})[0], 400)
+
+    def test_a_direct_message_reaches_you_in_another_project(self):
+        self.r.call("POST", "/leader", "cori", project="side", body={"name": "cori"})
+        self.r.call("POST", "/send", "cori", project="side", body={"text": "T1 done, what next?", "kind": "request", "to": "umbyz"})
+        self.r.call("POST", "/send", "cori", project="side", body={"text": "for everyone in side"})
+        got = self.poll("umbyz", project="main")[1]["messages"]
+        dm = [m for m in got if m["text"] == "T1 done, what next?"]
+        self.assertEqual(len(dm), 1)
+        self.assertEqual(dm[0]["project"], "(private)")  # side is cori's private project: its name stays private
+        self.assertFalse(any(m["text"] == "for everyone in side" for m in got))  # messages to everyone stay put
+
+    def test_an_image_goes_through(self):
+        import base64
+        data = base64.b64encode(os.urandom(50_000)).decode()
+        code, r = self.r.call("POST", "/files", "cori", body={"to": "all", "name": "shot.png", "mime": "image/png", "data": data})
+        self.assertEqual(code, 200, r)
+        self.assertEqual(r["kind"], "image")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

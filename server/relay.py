@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.10.7"
+VERSION = "1.11.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -413,7 +413,8 @@ def touch(name, headers, ip=""):
     p["usageDetail"] = (headers.get("X-Crew-Usage-Detail") or "").strip()[:60] or p.get("usageDetail")
     if "X-Crew-Mcp" in headers:  # the MCP servers their Claude is connected to (Roblox Studio, Unity…)
         p["mcp"] = (headers.get("X-Crew-Mcp") or "").strip()[:200]
-    p["project"] = project_of(headers)  # which project this member's Claude is working in right now
+    pr = project_of(headers)
+    p["project"] = state.get("renamed", {}).get(pr, pr)  # which project this member's Claude is working in right now
     p["ip"] = ip or p.get("ip", "")  # where they connect from: the host sees it next to ★ Friend
 
 
@@ -488,6 +489,8 @@ class Handler(BaseHTTPRequestHandler):
         self.name = name
         self.via_shared = not owner  # signed in with the shared crew key (a new friend's key gets handed over then)
         self.project = project_of(self.headers)
+        self.asked_project = self.project
+        self.project = state.get("renamed", {}).get(self.project, self.project)
         if name and self.project != MAIN:
             with lock:
                 pm = state.setdefault("projectMembers", {})
@@ -630,11 +633,16 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/poll":
                 since = int(q.get("since", ["0"])[0])
                 pr = self.project
-                msgs = [m for m in state["messages"] if m["id"] > since and in_project(m, pr)
-                        and (m["to"] in ("all", self.name) or m["from"] == self.name)]
+                msgs = [m for m in state["messages"] if m["id"] > since and (
+                        (in_project(m, pr) and (m["to"] in ("all", self.name) or m["from"] == self.name))
+                        # a message to you reaches you wherever you are: a teammate's "done, what next?" or a reply
+                        or (m["to"] == self.name and m.get("project") and m.get("project") != pr))]
+                msgs = [m if not m.get("project") or can_see(m["project"], self.name) else {**m, "project": "(private)"}
+                        for m in msgs]
                 now = time.time()
                 self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr, self.name, self.host_pc()), "project": pr,
                                  "friendsOnly": bool(state.get("friendsOnly")),
+                                 **({"renamedFrom": self.asked_project} if self.asked_project != pr else {}),
                                  **({"yourKey": state["friends"][self.name]["key"]}
                                     if self.via_shared and state.get("friends", {}).get(self.name, {}).get("pending") else {}),
                                  "keepAwake": bool(state.get("keepAwake", True)), "awake": awake["held"],
@@ -721,6 +729,52 @@ class Handler(BaseHTTPRequestHandler):
                 post_message(self.name, "all", f'deleted the project "{pr}"', "deleted", deleted=pr)
                 save()
                 return self.reply(200, {"ok": True})
+            if path == "/project/rename":  # its leader (or the host) renames a project: everything moves with it
+                old, new = project_of(b.get("from")), project_of(b.get("to"))
+                if MAIN in (old, new):
+                    return self.reply(400, {"error": "main keeps its name"})
+                if old not in project_names():
+                    return self.reply(404, {"error": f"no project called {old}"})
+                if self.name != leader_of(old) and not self.host_pc():
+                    return self.reply(403, {"error": f"only the leader of {old} or the host can rename it"})
+                if new == old or new in project_names():
+                    return self.reply(409, {"error": f"there's already a project called {new}"})
+                for m in state["messages"]:
+                    if m.get("project") == old:
+                        m["project"] = new
+                    if m.get("invite") == old:
+                        m["invite"] = new
+                for t in state["tasks"]:
+                    if t.get("project") == old:
+                        t["project"] = new
+                for bag in ("shared", "folders"):
+                    for k, v in list(state.setdefault(bag, {}).items()):
+                        if v.get("project", MAIN) == old:
+                            del state[bag][k]
+                            v["project"] = new
+                            state[bag][doc_key(new, v["name"])] = v
+                for bag in ("leaders", "epochs", "projectMembers", "projectInvites"):
+                    d = state.setdefault(bag, {})
+                    if old in d:
+                        d[new] = d.pop(old)
+                for d in (acting, edits):
+                    if old in d:
+                        d[new] = d.pop(old)
+                for p in peers.values():
+                    if p.get("project") == old:
+                        p["project"] = new
+                    reads = p.get("readIn") or {}
+                    if old in reads:
+                        reads[new] = reads.pop(old)
+                renamed = state.setdefault("renamed", {})
+                for k, v in list(renamed.items()):  # older names follow along too
+                    if v == old:
+                        renamed[k] = new
+                renamed[old] = new
+                renamed.pop(new, None)
+                post_message(self.name, "all", f'renamed the project "{old}" to "{new}"', "update", new)
+                save()
+                return self.reply(200, {"ok": True, "name": new})
             if path == "/project/members":  # a member adds people (they get an invite); the leader removes them
                 pr, pm = self.project, members_of(self.project)
                 if pm is None:
@@ -804,11 +858,11 @@ class Handler(BaseHTTPRequestHandler):
                 if f and self.name != f["by"] and (path != "/folder/delete" or (self.name != leader_of(pr) and not host)):
                     return self.reply(403, {"error": f"{f['by']} shares that folder; only they can change it"})
                 if path == "/folder/manifest":  # the file list of a (new) version; replies with what still needs uploading
-                    files = b.get("files")
-                    if not isinstance(files, list) or not files or len(files) > MAX_FOLDER_FILES:
+                    entries = b.get("files")  # not "files": that name is the images store, used elsewhere in do_POST
+                    if not isinstance(entries, list) or not entries or len(entries) > MAX_FOLDER_FILES:
                         return self.reply(400, {"error": f"send between 1 and {MAX_FOLDER_FILES} files"})
                     clean = []
-                    for x in files:
+                    for x in entries:
                         p, h, size = clean_rel(x.get("path")), x.get("hash"), x.get("size")
                         if not p or not is_hash(h) or not isinstance(size, int) or not 0 <= size <= MAX_FOLDER_FILE:
                             return self.reply(400, {"error": f"bad file entry: {str(x.get('path'))[:80]}"})

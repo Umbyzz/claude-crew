@@ -496,7 +496,7 @@ test("a host whose relay is down sees it, and Start relay opens start-relay.bat"
   expect((await ui.find({ key: 'host-settings' }))?.text).toContain('Hosting ✓')
   await ui.unmount()
 })
-test('one press of Stop hosting stops the relay and /crew shows it straight away', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
+test('Stop hosting asks first, then stops the relay and /crew shows it straight away', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
   mock.store(on)
   on('clock.sleep', async () => ({ value: undefined }) as any)
   on('ui.status', async () => ({ value: undefined }))
@@ -519,6 +519,8 @@ test('one press of Stop hosting stops the relay and /crew shows it straight away
   await ui.press({ key: 'tab-crew' }) // the invite and Stop hosting live on the Crew tab while the relay runs
   expect(await ui.find({ key: 'stop-host' })).toBeDefined()
   await ui.press({ key: 'stop-host' })
+  expect(await ui.find({ text: /Stop hosting\?/ } as any)).toBeDefined() // it disconnects everyone, so it asks
+  await ui.press({ key: 'stop-host-yes' })
   await settle(200)
   expect(await ui.find({ text: /relay isn't running/ } as any)).toBeDefined()
   expect(await ui.find({ key: 'stop-host' })).toBeUndefined()
@@ -1815,4 +1817,88 @@ test("the host's own relay refusing its key heals itself from crew_key.txt", { o
   expect(saved).toContainEqual({ key: 'crew.key', value: 'new-key' })
   expect(keys[keys.length - 1]).toBe('new-key')
   await new Promise(r => setTimeout(r, 300))
+})
+
+test('Timmy presses everything: 300 random button presses on every tab never break /crew', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
+  mock.store(on, { 'folder:http://127.0.0.1:7777:main': 'C:\\Games\\Lava' })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('ui.copy', async () => ({ value: { isCopied: true } }) as any)
+  on('ui.open', async () => ({ value: undefined }) as any)
+  on('config.set', async (_$: unknown, e: any) => ({ value: e.value }) as any)
+  on('env.get', async () => ({ value: 'C:\\Users\\timmy' }) as any)
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  const peers = [
+    { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true, model: 'claude-opus-5-5', usage: 30, mcp: 'Roblox Studio (closed)' },
+    { name: 'bob', online: true, lastSeen: 0, activity: 'working', leader: false, friend: true, ip: '26.1.2.3' },
+  ]
+  const projects = [
+    { name: 'main', leader: 'alice', openTasks: 1, docs: 1, here: ['alice', 'bob'] },
+    { name: 'secret', leader: 'alice', openTasks: 0, docs: 0, here: [], private: true, members: ['alice'] },
+  ]
+  const tasks = [{ id: 1, title: 'Fix the jump', note: '', status: 'open', owner: null, assignee: 'bob', by: 'alice', at: 0 }]
+  const folders = [{ name: 'Crewshared/bob', by: 'bob', at: 5, files: 1, bytes: 10, ready: true }]
+  const posted: string[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posted.push(e.url.replace('http://127.0.0.1:7777', ''))
+      const body = { ok: true, id: 5, to: 'all', members: ['alice', 'bob'], friends: [{ name: 'bob', key: 'kb', seen: 1, ip: '26.1.2.3', online: true }], friendsOnly: false, key: 'fresh' }
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+    }
+    const body = e.url.endsWith('/health')
+      ? { ok: true, version: '9.9.9' }
+      : e.url.endsWith('/shared')
+        ? { docs: [{ name: 'crew-rules', by: 'alice', at: 1, size: 9 }] }
+        : e.url.includes('/shared?name=')
+          ? { name: 'crew-rules', by: 'alice', at: 1, content: '- be nice' }
+          : { ...POLL, peers, projects, tasks, folders, shared: ['crew-rules'] }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  let seed = 7
+  const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2147483648), seed % n)
+  const pressed: string[] = []
+  for (let i = 0; i < 300; i++) {
+    const buttons = (await ui.findAll({ type: 'Button' } as any)).filter((b: any) => b.key)
+    expect(buttons.length).toBeGreaterThan(0) // /crew always has something to press
+    const b: any = buttons[rnd(buttons.length)]
+    pressed.push(b.key)
+    await ui.press({ key: b.key })
+    if (i % 25 === 0) await settle()
+  }
+  await settle()
+  // Anything that can't be undone only happens after its confirm was pressed first
+  if (posted.includes('/project/delete')) expect(pressed.some(k => k.startsWith('proj-delete-yes'))).toBe(true)
+  if (posted.includes('/shutdown')) expect(pressed).toContain('stop-host-yes')
+  if (posted.includes('/key/rotate')) expect(pressed).toContain('key-new-yes')
+  if (posted.includes('/friends/remove')) expect(pressed.some(k => k.startsWith('friend-rm-yes'))).toBe(true)
+  if (posted.includes('/reset')) expect(pressed).toContain('reset-yes')
+  expect(await ui.findAll({ type: 'Button' } as any)).not.toHaveLength(0)
+  await ui.unmount()
+  await new Promise(r => setTimeout(r, 300))
+})
+
+test('an invite in a chat that already has work offers a new chat, and the next new chat starts in that project', { options: OPTIONS }, async ($, on) => {
+  const kept = new Map<string, unknown>([['cursor:http://relay.test:7777', 1]])
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('session.turns', async () => ({ value: 4 }) as any) // this chat already has work of its own
+  let polls = 0
+  on('http.fetch', async () => {
+    polls += 1
+    const messages = polls === 1 ? [{ id: 9701, from: 'bob', to: 'alice', kind: 'invite', invite: 'water-game', text: "added you to the project 'water-game'", at: 0 }] : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 9701 }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /This chat already has other work/ } as any)).toBeDefined()
+  await ui.press({ key: 'invite-newchat' })
+  await settle()
+  expect(await ui.find({ key: 'invite-newchat' })).toBeUndefined()
+  await ui.unmount()
+  expect((kept.get('nextChat:http://relay.test:7777') as any)?.project).toBe('water-game')
 })
