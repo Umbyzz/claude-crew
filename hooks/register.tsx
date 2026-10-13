@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.11.1'
+const VERSION = '1.11.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -439,7 +439,15 @@ async function inviteInNewChat($: EngineInterface) {
   await $.store.set(`invite:${cfg.base}`, null).catch(() => {})
   if (!inv.project) return
   await $.store.set(`nextChat:${cfg.base}`, { project: inv.project, at: Date.now() })
-  $.ui.toast(`crew: start a new Claude chat (+ New session) and it opens straight in "${inv.project}" with a catch-up. This chat stays where it is.`, { timeoutMs: 12000 })
+  await update($, nextChatAtom, () => inv.project)
+}
+
+// The project the next new chat will open in, shown at the top of /crew until a new chat picks it up.
+const nextChatAtom = atom({ plugin: 'crew', key: 'nextChat' } as const, '')
+
+async function cancelNextChat($: EngineInterface) {
+  await update($, nextChatAtom, () => '')
+  await $.store.set(`nextChat:${cfg.base}`, null).catch(() => {})
 }
 
 function answerInvite($: EngineInterface, accept: boolean) {
@@ -3164,6 +3172,8 @@ export const register: Register = (on, options) => {
     const host = await read($, hostInfo)
     const askingKey = await read($, keyAsk)
     const removingFriend = await read($, friendRm)
+    void (await read($, nextChatAtom)) // pressing the button redraws; the saved mark decides, so a new chat that took it clears this one too
+    const nextChat = String(((await $.store.get(`nextChat:${cfg.base}`).catch(() => null)) as any)?.project ?? '')
     const renamingName = await read($, renaming)
     const stoppingHost = await read($, stopAsk)
     const keepAwake = s.keepAwake !== false
@@ -3319,6 +3329,15 @@ export const register: Register = (on, options) => {
         )}
 
         {/* -- notices, only when they apply */}
+        {nextChat !== '' && (
+          <Callout>
+            <Text bold>📌 Next: start a new chat (+ New session in the sidebar)</Text>
+            <Text dimColor>It opens straight in "{nextChat}" with a catch-up on the project. This chat stays where it is, with its own work.</Text>
+            <Box flexDirection="row">
+              <Button key="nextchat-cancel" label="Cancel" dimColor onPress={() => void cancelNextChat($)} />
+            </Box>
+          </Callout>
+        )}
         {inSession && invite.project !== '' && invite.project !== projectName && (
           <Callout>
             <Text bold>{invite.from} invites you to the project "{invite.project}"</Text>

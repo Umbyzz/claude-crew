@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.11.2
+- **Invites survive restarts.** An unanswered invite is kept until you press something, so updating or restarting Claude no longer makes it vanish.
+- **Clear next step after *Open it in a new chat*.** Instead of a toast that's gone in seconds, a notice stays at the top of `/crew`: *📌 Next: start a new chat (+ New session in the sidebar). It opens straight in the project.* It disappears as soon as a new chat picks the project up, or with **Cancel**. (A plugin can't open a chat by itself, so this tells you exactly what to do.)
+
 ## 1.11.1
 - **Fix: the Clawds window and crew log said *wrong crew key*** after a new crew key or a friend's personal key. They read the key only from `settings.json`, while the plugin uses its own saved copy. Both windows now use the plugin's key and fall back to settings. (Found and diagnosed by CoriZori's Claude.)
 

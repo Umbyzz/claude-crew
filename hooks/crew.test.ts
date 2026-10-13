@@ -1899,6 +1899,7 @@ test('an invite in a chat that already has work offers a new chat, and the next 
   await ui.press({ key: 'invite-newchat' })
   await settle()
   expect(await ui.find({ key: 'invite-newchat' })).toBeUndefined()
+  expect(await ui.find({ text: /Next: start a new chat/ } as any)).toBeDefined() // stays until a new chat picks it up
   await ui.unmount()
   expect((kept.get('nextChat:http://relay.test:7777') as any)?.project).toBe('water-game')
 })

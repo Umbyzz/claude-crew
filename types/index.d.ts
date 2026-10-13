@@ -117,6 +117,7 @@ declare module 'claude-code' {
       friendRm: string
       renaming: string
       stopAsk: boolean
+      nextChat: string
       friends: { list: { name: string; key: string; seen: number; ip: string; online: boolean }[]; friendsOnly: boolean }
     }
   }
