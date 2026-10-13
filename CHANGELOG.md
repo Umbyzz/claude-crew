@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.12.1
+- **Leaner catch-ups.** Switching projects no longer replays messages this chat was already handed, and long messages read as their first few lines (`crew_status` has them in full). That saves tokens on every switch and rejoin.
+- **Clean-up:** removed the last unused code (an old key generator, the pre-count tool labels, an unused relay list) and stale notes about versions from before 1.0. An audit of the plugin, relay and both windows now finds nothing unused.
+
 ## 1.12.0
 - **A tidy Project tab**, designed and built by CoriZori's Claude and merged over the crew relay, like the 1.0 tabs. A short summary on top (Working on ▾, leader, who's here, members-only or open, the folder with Open and ⋯). Everything else is folded into one-line sections with counts: Projects, Members & access, Shared folders (now with Crewshared, Crewleader and Sync now inside), House rules, Shared docs, and ⓘ How projects work. One section is open at a time, and the open one is remembered. Help text only shows where a section is empty. Nothing was removed; it's all one click away.
 

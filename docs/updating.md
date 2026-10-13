@@ -4,8 +4,6 @@ When a newer version is on GitHub, `/crew` shows an update notice (it checks by 
 
 If it fails, the notice says which step and why, and every step is logged in `%TEMP%\crew-update.log`. A marketplace install then falls back to the claude CLI; a desktop upload says to reinstall from the GitHub zip.
 
-> **On a version older than 0.9.4?** Its updater can fail on some PCs, so update once by hand: download the repo zip from GitHub and upload it again (or run the commands below). From then on, Install update does it for you.
-
 The manual way, two terminal commands (**Copy commands** copies them):
 
 ```bash

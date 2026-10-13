@@ -55,7 +55,7 @@ export type CrewSnapshot = {
   error: string
   cursor: number
   leader: string | null
-  acting?: string | null // the acting leader while the true leader is away (relay 0.9.9+)
+  acting?: string | null // the acting leader while the true leader is away
   latest: string | null
   relayVersion: string | null
   feed: CrewMessage[]
@@ -63,10 +63,10 @@ export type CrewSnapshot = {
   tasks: CrewTask[]
   shared: string[]
   chatEpoch?: number // the relay's chat-reset count: when it changes, the chat starts over
-  reads?: Record<string, number> // read receipts: the newest message id each member's plugin has (relay 0.9.5+)
+  reads?: Record<string, number> // read receipts: the newest message id each member's plugin has
   project?: string // the crew project this session is in ('main' unless switched)
-  projects?: CrewProject[] // every project on the relay (relay 1.1+)
-  keepAwake?: boolean // the host keeps their PC awake while anyone's connected (relay 1.10.1+)
+  projects?: CrewProject[] // every project on the relay
+  keepAwake?: boolean // the host keeps their PC awake while anyone's connected
 }
 
 export type CrewProject = {
@@ -75,8 +75,8 @@ export type CrewProject = {
   openTasks: number
   docs: number
   here: string[] // who's online in it right now
-  unread?: number // messages there you haven't seen yet (relay 1.5.3+)
-  private?: boolean // members-only (relay 1.10+)
+  unread?: number // messages there you haven't seen yet
+  private?: boolean // members-only
   members?: string[] // who's in a members-only project
 }
 

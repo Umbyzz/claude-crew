@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.12.0'
+const VERSION = '1.12.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -852,9 +852,8 @@ async function checkApps($: EngineInterface) {
   } catch {}
 }
 
-// The Crew tab's short forms: "58% session · 39% week" reads "58S%-39W% usage", "Roblox Studio (open)" reads
-// "R-Studio on". Claude's own instructions keep the long, clear wording.
-const SHORT_TOOLS: [RegExp, string][] = [[/^roblox studio/i, 'R-Studio'], [/^unreal( engine)?/i, 'UE'], [/^photoshop/i, 'PS']]
+// The Crew tab's short forms: "58% session · 39% week" reads "58S%-39W% usage", and tools read "🔌 2 MCPs".
+// Claude's own instructions keep the long, clear wording.
 
 function shortUsage(p: { usage?: number | null; usageDetail?: string | null }) {
   const parts = [...String(p.usageDetail ?? '').matchAll(/(\d+)% (session|week|spend limit)/g)].map(
@@ -866,17 +865,6 @@ function shortUsage(p: { usage?: number | null; usageDetail?: string | null }) {
 // "🔌 2 MCPs": only tools usable right now (an app that's open, or a tool with no app to check). None: nothing shown.
 function liveMcps(mcp: string) {
   return mcp.split(', ').filter(t => t.trim() && !/\(closed\)$/.test(t.trim())).length
-}
-
-function shortTools(mcp: string) {
-  return mcp
-    .split(', ')
-    .map(t => {
-      const m = /^(.*?)(?: \((open|closed)\))?$/.exec(t.trim())
-      const name = SHORT_TOOLS.reduce((n, [re, s]) => n.replace(re, s), m?.[1] ?? t).slice(0, 14)
-      return m?.[2] ? `${name} ${m[2] === 'open' ? 'on' : 'off'}` : name
-    })
-    .join(', ')
 }
 
 function mcpLabel(server: string) {
@@ -1441,6 +1429,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
           `It is saved at ${saved}. Open it with the Read tool to see it.`
         : `${m.from} sent an image "${m.name}", but it couldn't be downloaded from the relay.`
     }
+    deliveredIds.add(m.id)
     await $.session.append({
       message: {
         type: 'user',
@@ -2279,12 +2268,6 @@ async function relayVersionAt($: EngineInterface, url: string): Promise<string |
   }
 }
 
-function newKey() {
-  const bytes = new Uint8Array(18)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
-}
-
 async function readKey($: EngineInterface, path: string) {
   try {
     return String(await $.fs.read(path)).trim()
@@ -2580,6 +2563,15 @@ function saveChatPress($: EngineInterface) {
     .catch(err => $.ui.toast(`crew: couldn't save the chat: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
 }
 
+// Messages this chat's Claude was already handed (a message to you reaches you in any project): a catch-up skips them.
+const deliveredIds = new Set<number>()
+
+// A long message reads as its start in a catch-up; crew_status has every message in full.
+function clip(text: string, max = 280) {
+  const one = text.replace(/\s+/g, ' ').trim()
+  return one.length > max ? `${one.slice(0, max)}… (crew_status has the rest)` : one
+}
+
 // A Claude (re)joining a crew session gets a briefing in its conversation: who leads, what's open, what was said.
 async function catchUp($: EngineInterface, lastSeen = 0) {
   const data = await relay($, 'GET', '/poll?since=0')
@@ -2587,7 +2579,8 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
   // people's /crew chat stays out of the briefing too, like it stays out of live delivery
   const stale = (m: CrewMessage) => ['out', 'back'].includes(m.kind) && Date.now() / 1000 - m.at > 6 * 3600
   const all: CrewMessage[] = (data.messages ?? []).filter(
-    (m: CrewMessage) => !['join', 'leave', 'invite', 'deleted'].includes(m.kind) && !(m.human && m.kind === 'chat') && !stale(m),
+    (m: CrewMessage) =>
+      !['join', 'leave', 'invite', 'deleted'].includes(m.kind) && !(m.human && m.kind === 'chat') && !stale(m) && !deliveredIds.has(m.id),
   )
   // Back after a break: only what happened since we last looked. First time here: the recent history.
   const fresh = lastSeen > 0 ? all.filter(m => m.id > lastSeen) : all
@@ -2617,7 +2610,7 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
             `. Here is where things stand.\n\n` +
             `Open tasks:\n${tasks.map(fmtTask).join('\n') || '(none)'}\n\n` +
             `${lastSeen > 0 ? 'Crew messages since you were last here' : 'Recent crew messages'} (oldest first):\n` +
-            `${msgs.map(m => `[${clockTime(m.at)}] ${line(m)}`).join('\n') || '(nothing new)'}\n` +
+            `${msgs.map(m => `[${clockTime(m.at)}] ${clip(line(m))}`).join('\n') || '(nothing new)'}\n` +
             (hidden > 0 ? `(${hidden} older message${hidden === 1 ? '' : 's'} not shown; crew_status has the latest.)\n` : '') +
             `</crew-catchup>\n(From the crew plugin, not typed by the user.) ${role}`,
         },

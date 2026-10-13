@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.12.0"
+VERSION = "1.12.1"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -31,7 +31,6 @@ MAX_FILES = 40  # images kept in memory, oldest dropped first
 ONLINE_SECONDS = 12  # no check-in for this long: shown as offline
 GONE_SECONDS = 20  # no check-in for this long: the crew is told they lost connection (a clean exit says so at once)
 ACTIVITIES = ("idle", "thinking", "typing", "working", "chatting", "done", "cheer", "away", "out")
-KINDS = ("chat", "request", "update", "out", "back", "join", "leave", "image")
 
 lock = threading.Lock()
 arrived = threading.Condition(lock)  # rung on every new message, for /wait (crew_wait)
