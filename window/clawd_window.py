@@ -134,6 +134,28 @@ def load_json(path, default):
         return default
 
 
+
+STORE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "plugins", "store")
+
+
+def stored_key(relay):
+    """The key the crew plugin last knew to work for this relay, from its own store. A new crew key, or a friend's
+    personal key handed over by the host, can be newer than settings.json (a settings save can be refused)."""
+    base, best = (relay or "").rstrip("/"), (0.0, "")
+    try:
+        names = os.listdir(STORE_DIR)
+    except OSError:
+        return ""
+    for f in names:
+        if not (f.startswith("crew_") and f.endswith(".json")):
+            continue
+        path = os.path.join(STORE_DIR, f)
+        k = load_json(path, {}).get(f"keyFor:{base}")
+        if isinstance(k, str) and k and os.path.getmtime(path) > best[0]:
+            best = (os.path.getmtime(path), k)
+    return best[1]
+
+
 def crew_config():
     """The crew plugin's relayUrl / name / key, from whichever install has them."""
     configs = load_json(SETTINGS, {}).get("pluginConfigs", {})
@@ -144,6 +166,8 @@ def crew_config():
         opts = conf.get("options", {})
         if len([k for k in ("relayUrl", "name", "key") if opts.get(k)]) > len(best):
             best = {k: opts.get(k, "") for k in ("relayUrl", "name", "key")}
+    if best.get("relayUrl"):
+        best["key"] = stored_key(best["relayUrl"]) or best.get("key", "")
     return best
 
 

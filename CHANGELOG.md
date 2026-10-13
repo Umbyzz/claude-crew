@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.11.1
+- **Fix: the Clawds window and crew log said *wrong crew key*** after a new crew key or a friend's personal key. They read the key only from `settings.json`, while the plugin uses its own saved copy. Both windows now use the plugin's key and fall back to settings. (Found and diagnosed by CoriZori's Claude.)
+
 ## 1.11.0
 From the first live test with CoriZori's Claude:
 - **Fix: images couldn't be sent** (`crew_send_image` failed with ECONNRESET). A name clash inside the relay, from the shared-folders work, broke the image upload. It works again, and a relay test now sends one.
