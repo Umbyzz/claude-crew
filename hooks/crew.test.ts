@@ -1902,3 +1902,21 @@ test('an invite in a chat that already has work offers a new chat, and the next 
   await ui.unmount()
   expect((kept.get('nextChat:http://relay.test:7777') as any)?.project).toBe('water-game')
 })
+
+test('an unanswered invite comes back after a restart, and answering it clears it for good', { options: OPTIONS }, async ($, on) => {
+  const kept = new Map<string, unknown>([['invite:http://relay.test:7777', { from: 'bob', project: 'water-game' }]])
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('session.turns', async () => ({ value: 0 }) as any)
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }))
+  await startSession(on, $) // a restart: the invite was never answered
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /bob invites you to the project "water-game"/ } as any)).toBeDefined()
+  await ui.press({ key: 'invite-dismiss' })
+  await settle()
+  await ui.unmount()
+  expect(kept.get('invite:http://relay.test:7777')).toBeNull()
+})

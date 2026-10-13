@@ -436,6 +436,7 @@ async function projectCall($: EngineInterface, path: string, body: unknown, done
 async function inviteInNewChat($: EngineInterface) {
   const inv = await read($, inviteAtom)
   await update($, inviteAtom, () => ({ from: '', project: '', busy: false }))
+  await $.store.set(`invite:${cfg.base}`, null).catch(() => {})
   if (!inv.project) return
   await $.store.set(`nextChat:${cfg.base}`, { project: inv.project, at: Date.now() })
   $.ui.toast(`crew: start a new Claude chat (+ New session) and it opens straight in "${inv.project}" with a catch-up. This chat stays where it is.`, { timeoutMs: 12000 })
@@ -445,6 +446,7 @@ function answerInvite($: EngineInterface, accept: boolean) {
   void (async () => {
     const inv = await read($, inviteAtom)
     await update($, inviteAtom, () => ({ from: '', project: '', busy: false }))
+  await $.store.set(`invite:${cfg.base}`, null).catch(() => {})
     if (accept && inv.project) await switchProject($, inv.project)
   })().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
@@ -1400,6 +1402,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
       if (m.invite && m.invite !== projectName) {
         const busy = (await $.session.turns().catch(() => 0)) > 0 // this chat already has work of its own
         await update($, inviteAtom, () => ({ from: m.from, project: m.invite ?? '', busy }))
+        await $.store.set(`invite:${cfg.base}`, { from: m.from, project: m.invite ?? '' }).catch(() => {}) // survives a restart
       }
       continue
     }
@@ -2846,6 +2849,11 @@ export const register: Register = (on, options) => {
     projectName = own || pending || String((await $.store.get(`project:${base}:${sessionCwd}`)) ?? '') || 'main'
     await update($, projectAtom, () => projectName)
     void loadFolder($).catch(() => {}) // so this Claude knows the project's folder from the start
+    const kept = (await $.store.get(`invite:${base}`).catch(() => undefined)) as { from?: string; project?: string } | null | undefined
+    if (kept?.project && kept.project !== projectName) {
+      const busy = (await $.session.turns().catch(() => 0)) > 0
+      await update($, inviteAtom, () => ({ from: String(kept.from ?? ''), project: String(kept.project), busy }))
+    }
     // In the crew or not? This session's answer wins (it survives reloads); a brand-new Claude
     // session that was in the crew last time asks first instead of silently rejoining.
     let m = await read($, membership)
