@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.12.2
+- **The moonwalk.** The over-the-top **"CLAUDE'S PLAN!!"** now ends with the whole crew in fedoras, turned three-quarters (shaded like the original Clawd's side view), moonwalking backwards across the stage, doing the spin, and striking a pose: a hat tip, the point, up on the toes, or the brim pulled low, a different one each and the same on every screen. *Hee-hee!* (Idea by Umbyz, in memory of Michael Jackson.)
+
 ## 1.12.1
 - **Leaner catch-ups.** Switching projects no longer replays messages this chat was already handed, and long messages read as their first few lines (`crew_status` has them in full). That saves tokens on every switch and rejoin.
 - **Clean-up:** removed the last unused code (an old key generator, the pre-count tool labels, an unused relay list) and stale notes about versions from before 1.0. An audit of the plugin, relay and both windows now finds nothing unused.

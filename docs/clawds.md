@@ -24,7 +24,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | thinking | strikes a pose: the 🤔 (one eyebrow up, finger on the chin) or a smug sip of tea, then shouts *"EUREKA!!!"* when it's done |
 | typing | becomes a hacker: pink sunglasses, a toy laptop, green Matrix code raining behind it, *"I'm in."* |
 | out of tokens | **a whole funeral.** Storm clouds, rain and lightning, a tombstone rises, a ghost with a halo floats above it, and the mourners kneel and weep. Each one walks up and lays a flower on the grave, and after a while they sigh *"they'll be back"* and high-five (or hug) the ghost before getting back to work. When the tokens come back: *"I HAVE RISEN FROM THE GRAVE!!!"* |
-| done | a confetti cannon and a bigger, bouncier **"CLAUDE'S PLAN!!"** huddle |
+| done | a confetti cannon, a bigger, bouncier **"CLAUDE'S PLAN!!"** huddle, and then, in memory of the King, the whole crew puts on **fedoras**, turns three-quarters and **moonwalks**, does the **spin**, and strikes a pose: a hat tip, the point (*"OW!"*), up on the toes, or the brim pulled low. *Hee-hee!* |
 | new prompt | rocket jumps: *"LET'S GOOOOOO!!!"* |
 | chatting | sprints over and yells in ALL CAPS |
 | using tools | the blacksmith: a hard hat, a hammer and a mini gear, sparks on every *CLANG* |

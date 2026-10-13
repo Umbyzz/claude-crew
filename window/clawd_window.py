@@ -769,7 +769,8 @@ class World:
             return
         n = len(crew)
         mid = max(8 + 5.5 * (n - 1), min(self.cols - 8 - 5.5 * (n - 1), c.x))
-        self.huddle = {"start": now, "until": now + (7.0 if dramatic else 5.5), "x": mid, "dramatic": dramatic,
+        # the over-the-top one: 7 s of huddle, then 7 s of moonwalk
+        self.huddle = {"start": now, "until": now + (14.0 if dramatic else 5.5), "x": mid, "dramatic": dramatic,
                        "spots": {o.name: mid + (i - (n - 1) / 2) * 11 for i, o in enumerate(crew)}}
 
     def in_huddle(self, c, now):
@@ -780,6 +781,8 @@ class World:
             return False
         t = now - h["start"]
         spot = h["spots"][c.name]
+        if h["dramatic"] and t >= 7.0:
+            return self.moonwalk(c, t - 7.0, now, h["start"])
         if t < 1.8 and abs(c.x - spot) > 0.5:
             c.walk_to(spot, 0.75)  # everybody in!
             c.mood = "happy"
@@ -794,6 +797,38 @@ class World:
             self.burst(h["x"], self.ground - 24, "confetti", 2)
         return True
 
+    def moonwalk(self, c, mt, now, start):
+        """The King's own move: fedora on, turned three-quarters, gliding backwards; then the spin; then a pose."""
+        c.look = 0
+        if mt < 4.0:  # the moonwalk: facing left, eyes toward us a little, gliding backwards
+            c.facing, c.look, c.mood = -1, -1, "moon"
+            c.x = min(self.cols - 8, c.x + 0.16)
+            c.legs = 1 if int(now * 3.2) % 2 else 2  # heel up, slide, the other heel up
+            c.arm = [0, 0]
+            if random.random() < 0.004:
+                c.say(random.choice(["hee-hee!", "shamone!", "*smooth*"]), 1.4)
+            return True
+        if mt < 5.2:  # the spin
+            c.mood = "moon"
+            c.facing = 1 if int(now * 12) % 2 else -1
+            c.arm = [1, 1]
+            if random.random() < 0.3:
+                self.emit(c.x + random.uniform(-6, 6), self.ground - random.uniform(2, 14), "spark", "✦", "#f0eee6")
+            return True
+        # the pose: everyone their own, the same on every screen
+        pose = random.Random(seed(c.name, "pose", int(start))).choice(("tip", "point", "toes", "brim"))
+        c.facing = -1
+        if pose == "tip":
+            c.mood, c.arm = "moontip", [3, 0]
+        elif pose == "point":
+            c.mood, c.arm = "moon", [3, 0]
+        elif pose == "toes":
+            c.mood, c.arm, c.bob, c.legs = "moon", [1, 1], 1.2, 1
+        else:
+            c.mood, c.arm = "moonbrim", [2, 0]
+        if 5.2 <= mt < 5.32 and random.random() < 0.6:
+            c.say({"tip": "hee-hee!", "point": "OW!", "toes": "*freeze*", "brim": "…smooth."}[pose], 1.8)
+        return True
     def in_meeting(self, c, now):
         """Plays c's part in the meetup, if there is one. Returns True while it does."""
         m = self.meeting
@@ -1602,13 +1637,19 @@ class Painter:
                        [(arm_row - 3, w0 - 1, w0 - 1), (arm_row - 2, w0 - 2, w0 - 1)], color)
             self.cells(x0, y_body, [(arm_row - ar, w1 + 1, w1 + 2), (arm_row - ar + 1, w1 + 1, w1 + 2)] if ar < 3 else
                        [(arm_row - 3, w1 + 1, w1 + 1), (arm_row - 2, w1 + 1, w1 + 2)], color)
+        if c.mood in ("moon", "moontip", "moonbrim"):
+            # turned three-quarters, like the original Clawd's side view: the far side of the body in shade
+            back = w1 if c.facing < 0 else w0
+            self.cells(x0, y_body, [(r, back, back) for r in range(h)], ORANGE_DARK)
+            self.fedora(c, x0, y_body, c.mood == "moontip", c.mood == "moonbrim")
         # status props
         if c.activity == "thinking" and c.online:
             self.thought(c, x0, y_body, now)
         if c.worried and c.activity != "out":
             self.cells(x0, y_body, [(0, w0 - 1, w0 - 1), (1, w0 - 1, w0 - 1)], "#6A9BCC")  # sweat drop
         if c.leader:
-            self.cv.create_text((c.x) * self.px, (y_body - 2.2) * self.px, text="★", fill="#E3B23C",
+            star_y = y_body - (7.5 if c.mood in ("moon", "moontip", "moonbrim") else 2.2)  # above the fedora, if there is one
+            self.cv.create_text((c.x) * self.px, star_y * self.px, text="★", fill="#E3B23C",
                                 font=("Segoe UI Symbol", max(7, int(self.px * 1.8))))
 
     def face(self, c, x0, y, now):
@@ -1702,6 +1743,16 @@ class Painter:
         else:
             self.cells(x0, y, [(arm_row, w1 + 1, w1 + 2), (arm_row + 1, w1 + 1, w1 + 2)], color)
 
+    def fedora(self, c, x0, y, tipped, brim_down=False):
+        """Black felt, a white band, a wide brim. Tipped: lifted and tilted in the raised hand. Brim down: pulled low
+        over the eyes, the cool one."""
+        lift, shift = (3, -2) if tipped else (-2, 0) if brim_down else (0, 0)
+        top = y - 3 - lift
+        # charcoal, not pure black, with a lighter top edge, so it reads on a dark desktop too
+        self.cells(x0 + shift, top - 1, [(0, 5, 8)], "#6b6b72")  # the crown's top edge, catching the light
+        self.cells(x0 + shift, top, [(0, 4, 9)], "#3b3b40")  # the crown
+        self.cells(x0 + shift, top + 1, [(0, 4, 9)], "#f0eee6")  # the band
+        self.cells(x0 + shift, top + 2, [(0, 2, 10), (-1, 11, 11)] if tipped else [(0, 2, 11)], "#3b3b40")  # the brim
     def drafting(self, c, x0, y, h, w0, w1, ground, now, color):
         """A sheet of paper on the floor in front, filling up with scribbles, and a pencil in hand."""
         f = c.facing or 1
@@ -2245,7 +2296,7 @@ class App:
         for c in sorted(clawds, key=lambda c: -(c.bubble[1] if c.bubble else 0)):
             self.painter.bubble(c, g, now, placed)
         huddle = getattr(self.world, "huddle", None)
-        if huddle and now - huddle["start"] > 1.6:
+        if huddle and now - huddle["start"] > 1.6 and not (huddle["dramatic"] and now - huddle["start"] >= 7.0):
             self.painter.banner("CLAUDE'S PLAN!!", huddle["x"], g - 23, now, huddle["dramatic"])
         if self.world.flash:
             cv.create_rectangle(0, 0, w, g * p, fill="#f0eee6", stipple="gray25", width=0)
