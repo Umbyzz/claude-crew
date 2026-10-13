@@ -23,12 +23,14 @@ You lead the crew. Before anyone builds, put everyone on one plan so no two Clau
 - **How the pieces connect**: the names one part uses from another (scripts, events, functions, scenes), data formats and naming conventions. Decide these now; most clashes are two Claudes guessing differently.
 - **Done means**: it runs without errors, its owner tested it, and you checked it.
 - **Where the code lives**: one git repo with a branch per person and you merging is best for code. Without git, each owner shares their folder through Crewshared and you assemble. Nobody pushes without their own user's OK.
+  In a live engine edited through MCP (like Roblox Studio), everyone opens the same Team Create place, so all edits land in one game; without it, each Claude builds a separate copy that never comes together. Shared folders and Crewshared then carry only raw files (references, sounds, notes).
 
 ## 3. Split by ownership
 
-Every task names what it owns, in its title or note: `Enemy AI - owns: Scripts/Enemy/`.
+Every task names what it owns, in its title or note: `Enemy AI - owns: Scripts/Enemy/`. In a live engine, use a path in the game tree: `Enemy AI - owns: ServerScriptService/EnemyAI`.
 
-- Shared files (the main scene, config, project settings, the entry script) are yours; teammates ask you for changes.
+- Shared files (the main scene, config, project settings, the entry script; in Roblox, shared modules like ReplicatedStorage/Shared and the main server script) are yours; teammates ask you for changes.
+- crew's file locks only see files on disk, not edits made through an engine's MCP tools, so in a live engine ownership is the only guard: keep it strict.
 - No two open tasks own the same path.
 - Your first task is the skeleton: the folders, empty scenes and stub scripts with the agreed names, so everyone builds on the same base. Order the rest so nobody waits.
 - Size tasks to the teammate: heavy or tricky work to the most capable models, UI, art and level design to quicker ones, small chores to the lightest. Live engine work goes to whoever has the engine's tool connected; anyone past 80% usage gets small tasks.
@@ -38,7 +40,7 @@ Every task names what it owns, in its title or note: `Enemy AI - owns: Scripts/E
 
 Read `crew-rules` with `crew_read_shared`. Keep every existing line and add any of these it doesn't cover (one `- rule` per line), then `crew_share` it back:
 
-- Only edit files your task owns; ask the owner or the leader for anything else.
+- Only edit what your task owns (its files, or its part of the game tree); ask the owner or the leader for anything else.
 - Read the plan doc before claiming a task. If the plan is wrong, say so instead of working around it.
 - Mark a task done only after testing it; the leader checks it before others build on it.
 - After each finished task, one crew_send line: what changed and which files.

@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.13.2
+- **Kickoff knows live engines.** For a game built through an engine's MCP (like Roblox Studio), crew:kickoff has everyone open the same Team Create place and gives tasks a part of the game tree to own (`owns: ServerScriptService/EnemyAI`). crew's file locks only see files on disk, so in a live engine ownership is the guard. Every Claude now keeps to what its task owns: its files, or its part of the game tree.
+
 ## 1.13.1
 - **Game projects share cleanly.** Shared folders and Crewshared now leave out the caches every PC rebuilds for itself: `.git`, `.godot`, `.vs`, `node_modules`, and Unity's or Unreal's `Library`, `Temp`, `Intermediate`, `Saved` and similar folders, only inside an actual Unity or Unreal project. Before, sharing a Unity project would also send its gigabytes of `Library` cache, and a scan kept restarting while Unity wrote to it.
 

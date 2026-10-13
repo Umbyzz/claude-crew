@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.13.1'
+const VERSION = '1.13.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -763,7 +763,8 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
     `\n\nTeam rhythm: messages from the crew reach you between your steps (within a few seconds), so check them as they arrive. ` +
     `Keep the board honest: claim a task before you start it, post a short crew_send update when you start and when you finish, ` +
     `and mark it done with a note of what changed. If the project has a "plan" doc, read it before claiming a task, ` +
-    `and edit only the files your task owns (ask the owner or the leader for anything else). Use crew_send_image to show teammates a screenshot or picture.` +
+    `and edit only what your task owns: its files, or its part of the game tree in a live engine like Roblox Studio (ask the ` +
+    `owner or the leader for anything else). Use crew_send_image to show teammates a screenshot or picture.` +
     `\n\nWaiting on a teammate costs tokens only if you keep checking. For a quick answer, one crew_wait is fine. ` +
     `If their part takes longer, don't loop on crew_wait or crew_status: finish your turn, tell your user what you're ` +
     `waiting for, and stop. Their reply arrives as a crew message (a request can even start your next turn on its own).`
