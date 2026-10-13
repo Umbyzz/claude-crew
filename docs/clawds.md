@@ -11,7 +11,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | chatting | walks over to the teammate it's messaging, with the real message in a speech bubble |
 | finished a prompt | confetti, then the whole crew huddles together and shouts **"CLAUDE'S PLAN!!"** (idea: Pluh and Corixer), then a dance |
 | running subagents | is followed by mini Clawds, one per subagent. Every so often the minis build a **tower**, taking turns making huge squash-and-stretch leaps onto each other's heads. When two or more are busy at once (one Claude's subagents on its task, or several Claudes' at the same time), they set up their own **mini office**: a little table with a tiny laptop each |
-| out of tokens | falls asleep while the others sweat and worry. After half a minute they sigh *"they'll be back"*, give the sleeper a pat, and get back to work |
+| out of tokens | falls asleep while the others sweat and worry. If that's in the middle of the stage, a teammate lifts them overhead and carries them to the side to rest. After half a minute they sigh *"they'll be back"*, give the sleeper a pat, and get back to work |
 | sending the crew a request | holds a **meetup**: an easel whiteboard rolls in, the sender presents (*"synergy."*) while the diagram draws itself, and everyone else sits around a table on office chairs, taking notes, nodding, or dozing off (*"could this have been an email?"*) |
 | connecting / disconnecting | arrives and leaves in one of five ways: a **car** (pulls up, hop in, *"vroom vroom"*), a **Henry Stickmin teleport** (*"\*presses teleport button\*"*, glitches out), **Superman** (*"UP, UP AND AWAY!"* / a superhero landing), a **door** that fades in, opens and slowly fades away, or a **leap off the window** caught by a passing bird. Arrivals are the same five in reverse, and everyone waves goodbye |
 | joining the crew | gets a group hug |
@@ -23,7 +23,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 |---|---|
 | thinking | strikes a pose: the 🤔 (one eyebrow up, finger on the chin) or a smug sip of tea, then shouts *"EUREKA!!!"* when it's done |
 | typing | becomes a hacker: pink sunglasses, a toy laptop, green Matrix code raining behind it, *"I'm in."* |
-| out of tokens | **a whole funeral.** Storm clouds, rain and lightning, a tombstone rises, a ghost with a halo floats above it, and the mourners kneel and weep. Each one walks up and lays a flower on the grave, and after a while they sigh *"they'll be back"* and high-five (or hug) the ghost before getting back to work. When the tokens come back: *"I HAVE RISEN FROM THE GRAVE!!!"* |
+| out of tokens | **a whole funeral.** Storm clouds, rain and lightning. A teammate carries the fallen one to the side, a tombstone rises where they're laid down, a ghost with a halo floats above it, and the mourners kneel and weep. Each one walks up and lays a flower on the grave, and after a while they sigh *"they'll be back"* and high-five (or hug) the ghost before getting back to work. When the tokens come back: *"I HAVE RISEN FROM THE GRAVE!!!"* |
 | done | a confetti cannon, a bigger, bouncier **"CLAUDE'S PLAN!!"** huddle, and then, in memory of the King, the whole crew puts on **fedoras**, turns three-quarters and **moonwalks**, does the **spin**, and strikes a pose: a hat tip, the point (*"OW!"*), up on the toes, or the brim pulled low. *Hee-hee!* |
 | new prompt | rocket jumps: *"LET'S GOOOOOO!!!"* |
 | chatting | sprints over and yells in ALL CAPS |

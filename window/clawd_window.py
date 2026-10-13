@@ -370,6 +370,7 @@ class World:
         self.started = clock()
         self.first = True
         self.funeral = None  # {"name", "x", "start"} while a dramatic out-of-tokens is being mourned
+        self.carry = None  # {"who", "by", "to", "phase", "t"}: a sleeper being carried off the middle of the stage
         self.meeting = None  # {"host", "start", "until", "text", "board", "stand", "seats"} during a whiteboard meetup
         self.flash = 0  # frames of lightning left
         self.desk = None  # the subagents' mini office: {"x", "width", "seats", "by"}
@@ -464,6 +465,7 @@ class World:
             for o in self.others(c):
                 o.worried = True
                 o.say(random.choice(["oh no, our pookie!", "nooo!", "pookie?!"]), 3.5)
+            self.start_carry(c)
         if prev == "out":
             if self.funeral and self.funeral["name"] == c.name:  # back, even if not dramatically
                 self.funeral, self.flash = None, 3
@@ -488,6 +490,8 @@ class World:
             c.say("tell my tokens… I loved them…", 3)
             self.funeral = {"name": c.name, "x": c.x, "start": clock(), "flowers": [], "placed": set(),
                             "arrived": {}}
+            if self.start_carry(c):  # carried to the side first: the grave rises where they're set down
+                self.funeral.update(pending=True, start=clock() + 9999)
             for o in self.others(c):
                 o.worried, o.dramatic = True, True
                 o.say(random.choice(["NOOOOOOOO!!!", "POOKIE, STAY WITH US!", "WHY THEM?!"]), 3)
@@ -829,6 +833,66 @@ class World:
         if 5.2 <= mt < 5.32 and random.random() < 0.6:
             c.say({"tip": "hee-hee!", "point": "OW!", "toes": "*freeze*", "brim": "…smooth."}[pose], 1.8)
         return True
+    def start_carry(self, s):
+        """s just ran out of tokens. In the middle of the stage, a teammate carries them to the nearer side to rest."""
+        edge = 10 if s.x < self.cols / 2 else self.cols - 10
+        if abs(s.x - edge) < 20:
+            return False  # already out of the way
+        helpers = sorted((o for o in self.clawds.values() if o is not s and o.online and not o.hidden and not o.trip
+                          and o.activity != "out"), key=lambda o: o.name)  # the same helper in every window
+        if not helpers:
+            return False
+        self.carry = {"who": s.name, "by": helpers[0].name, "to": edge, "phase": "fetch", "t": clock()}
+        return True
+
+    def end_carry(self, s):
+        """Set down (or the carry was cut short): a waiting funeral starts where they now lie."""
+        f = self.funeral
+        if s and f and f.get("pending") and f["name"] == s.name:
+            f.update(x=s.x, start=clock())
+            f.pop("pending", None)
+        self.carry = None
+
+    def carry_step(self, c, now):
+        """Plays the carrier's or the carried one's part, if there's a carry. Returns True while it does."""
+        k = self.carry
+        if not k or c.name not in (k["who"], k["by"]):
+            return False
+        s, h = self.clawds.get(k["who"]), self.clawds.get(k["by"])
+        if not s or not h or s.activity != "out" or not h.online or h.trip or h.activity == "out":
+            self.end_carry(s)  # someone left, woke up or ran out too: put down right here
+            return False
+        side = 1 if k["to"] > s.x or k["phase"] in ("carry", "drop") and k["to"] > h.x else -1
+        if c is s:  # asleep (or fainted), lifted overhead while carried
+            fainted = bool(self.funeral and self.funeral["name"] == s.name)
+            c.mood, c.sit = ("xx", 2) if fainted else ("asleep", 1)
+            if k["phase"] in ("lift", "carry"):
+                c.x, c.bob = h.x, 9
+            elif k["phase"] == "drop":
+                c.x = k["to"]
+            return True
+        # the carrier
+        if k["phase"] == "fetch":
+            c.mood = "worried"
+            if c.walk_to(s.x - side * 7, 0.45):
+                k["phase"], k["t"] = "lift", now
+                c.say(random.choice(["hup!", "I gotcha", "upsy-daisy"]), 1.4)
+        elif k["phase"] == "lift":
+            c.facing, c.arm, c.mood = side, [3, 3], "focus"
+            if now - k["t"] > 0.7:
+                k["phase"] = "carry"
+        elif k["phase"] == "carry":
+            c.arm, c.mood = [3, 3], "focus"
+            if c.walk_to(k["to"], 0.28):
+                k["phase"], k["t"] = "drop", now
+        else:  # drop: set them down gently, a moment's pause, then back to it
+            c.arm, c.mood, c.facing = [1, 1], "happy", -side
+            if now - k["t"] > 0.9:
+                c.say(random.choice(["there you go, pookie", "rest up", "sleep tight", "nap time"]), 2.2)
+                c.walk_to(k["to"] - side * 14, 0.4)
+                self.end_carry(s)
+        return True
+
     def in_meeting(self, c, now):
         """Plays c's part in the meetup, if there is one. Returns True while it does."""
         m = self.meeting
@@ -977,6 +1041,8 @@ class World:
                             w.hop(3.2)
                     continue
                 # huggers, and anyone on their way to pat a sleeper, may come closer (or they'd moonwalk on the spot)
+                if self.carry and {a.name, b.name} == {self.carry["who"], self.carry["by"]}:
+                    continue  # one is in the other's arms
                 near = 11 if (a.behavior in close or b.behavior in close or a.accepting or b.accepting) else 16
                 if self.funeral and self.funeral["name"] in (a.name, b.name):
                     near = 9.5  # mourners may come right up to the grave, but never stand on it
@@ -1004,6 +1070,8 @@ class World:
             c.hidden = True
             return
         c.hidden = False
+        if self.carry_step(c, now):
+            return
         if a == "out" and not c.dramatic and not (self.funeral and self.funeral["name"] == c.name):
             c.mood, c.sit = "asleep", 1
             if random.random() < 0.06:

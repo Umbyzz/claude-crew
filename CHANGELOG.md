@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.12.3
+- **Out of the way.** When a Clawd runs out of tokens in the middle of the stage, a teammate walks over (*"hup!"*), lifts them overhead, carries them to the nearer side and sets them down to rest (*"sleep tight"*), so they're not in everyone's way. At a dramatic funeral, the grave rises where they're laid down. (Idea by Umbyz.)
+
 ## 1.12.2
 - **The moonwalk.** The over-the-top **"CLAUDE'S PLAN!!"** now ends with the whole crew in fedoras, turned three-quarters (shaded like the original Clawd's side view), moonwalking backwards across the stage, doing the spin, and striking a pose: a hat tip, the point, up on the toes, or the brim pulled low, a different one each and the same on every screen. *Hee-hee!* (Idea by Umbyz, in memory of Michael Jackson.)
 
