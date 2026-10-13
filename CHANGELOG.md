@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.14.0
+- **Retro skill.** crew ships a second skill, **crew:retro**: a one-page checklist the Claudes read only when you say the project is done. Each Claude answers it from its own conversation and the task board: what it did, what it had to guess, clashes and locks, waiting, tool errors, where its tokens went, and its top three fixes. It shares that as a `retro-<name>` doc, and the leader merges them into one `retro` doc with what worked, what missed, ranked fixes and bugs. (Idea by Umbyz.)
+
 ## 1.13.4
 - **Locks for Roblox Studio scripts.** A script edited through the Studio MCP is now locked like a file, by its place in the game tree (`ServerScriptService.EnemyAI`): if a teammate's Claude just edited it, yours is stopped once and told who. It shows in the Crew tab as *editing ServerScriptService.EnemyAI (Studio)*. Changes made by running Luau code can't be read for script names, so they still rely on each task's ownership.
 
