@@ -464,8 +464,10 @@ test('Host a crew opens start-relay.bat, takes its key and joins the session', {
   await ui.press({ key: 'host' })
   await settle(200)
   await ui.unmount()
-  // opened detached through Start-Process, so Claude's process runner never waits on the relay window
-  expect(ran.some(a => a[0] === 'powershell' && a.join(' ').includes("Start-Process -FilePath '") && a.join(' ').includes("start-relay.bat'"))).toBe(true)
+  // opened through WMI, outside Claude's process group, so restarting Claude doesn't close the relay (Start-Process if WMI fails)
+  const launch = ran.find(a => a[0] === 'powershell' && a.join(' ').includes('start-relay.bat'))?.join(' ') ?? ''
+  expect(launch).toContain('Invoke-CimMethod -ClassName Win32_Process -MethodName Create')
+  expect(launch).toContain('catch { Start-Process')
   expect(sets.find(s => s.key === 'crew.key')?.value).toBe('batkey123')
   expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://127.0.0.1:7777')
 })

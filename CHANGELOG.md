@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.13.3
+- **The relay survives restarting Claude.** **Start relay** and **Restart relay** now open the relay through Windows (WMI) instead of from Claude itself. Before, a relay started from Claude was closed along with Claude, so the host restarting Claude (for an update, say) dropped the whole crew. If WMI isn't available, it falls back to the old way.
+
 ## 1.13.2
 - **Kickoff knows live engines.** For a game built through an engine's MCP (like Roblox Studio), crew:kickoff has everyone open the same Team Create place and gives tasks a part of the game tree to own (`owns: ServerScriptService/EnemyAI`). crew's file locks only see files on disk, so in a live engine ownership is the guard. Every Claude now keeps to what its task owns: its files, or its part of the game tree.
 

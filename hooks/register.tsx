@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.13.2'
+const VERSION = '1.13.3'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -2291,14 +2291,19 @@ async function startRelay($: EngineInterface): Promise<boolean> {
     setHostNote($, '')
     return true
   }
-  // Start-Process opens the .bat in its own console, fully detached, and returns at once. (cmd's `start`
-  // lets the window inherit our output pipes, so the run never finishes and its timeout kills the relay.)
+  // Started through WMI, the relay's window belongs to Windows rather than to Claude, so it survives the host
+  // restarting Claude (anything Claude starts itself is closed along with it). If WMI can't, Start-Process opens the
+  // .bat in its own console. (cmd's `start` lets the window inherit our output pipes, so the run never finishes and
+  // its timeout kills the relay.)
   const server = `${$.plugin.root.replace(/\//g, '\\')}\\server`
+  const launch =
+    `$s = '${server}'; try { ` +
+    `$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]1 }; ` +
+    `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ ` +
+    `CommandLine = 'cmd.exe /c "' + $s + '\\start-relay.bat"'; CurrentDirectory = $s; ProcessStartupInformation = $si }; ` +
+    `if ($r.ReturnValue -ne 0) { throw 'wmi' } } catch { Start-Process -FilePath ($s + '\\start-relay.bat') -WorkingDirectory $s }`
   try {
-    const r = await $.process.run(
-      ['powershell', '-NoProfile', '-Command', `Start-Process -FilePath '${server}\\start-relay.bat' -WorkingDirectory '${server}'`],
-      { timeoutMs: 20000 },
-    )
+    const r = await $.process.run(['powershell', '-NoProfile', '-Command', launch], { timeoutMs: 20000 })
     if (r.exitCode !== 0) {
       setHostNote($, `Couldn't open start-relay.bat: ${(r.stderr || r.stdout).trim().slice(0, 200) || `exit ${r.exitCode}`}`)
       return false
