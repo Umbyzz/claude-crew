@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.13.0
+- **Kickoff skill.** crew now ships a skill, **crew:kickoff**, that the leader's Claude uses when a new project or big goal starts. It gathers the material, asks 2-3 questions if the goal is vague, and writes a one-page `plan` doc covering the goal, scope, folder layout, how the pieces connect, and what "done" means. It splits the work so every task owns its own files or folders, adds anti-clash house rules, and proposes who takes what before handing out tasks. It checks the first finished tasks against the plan. (Idea by CoriZori.)
+- **Stay in your lane.** Every Claude now reads the project's `plan` doc before claiming a task, and edits only the files its task owns, asking the owner or the leader for anything else.
+
 ## 1.12.3
 - **Out of the way.** When a Clawd runs out of tokens in the middle of the stage, a teammate walks over (*"hup!"*), lifts them overhead, carries them to the nearer side and sets them down to rest (*"sleep tight"*), so they're not in everyone's way. At a dramatic funeral, the grave rises where they're laid down. (Idea by Umbyz.)
 

@@ -64,6 +64,8 @@ test('the leader gets leader instructions in the system prompt', { options: OPTI
   const role = composed.sections.find((s: any) => s.id === 'crew:role')
   expect(role.text).toContain('You are the crew LEADER')
   expect(role.text).toContain("don't loop on crew_wait") // waiting on a teammate shouldn't burn tokens
+  expect(role.text).toContain('crew:kickoff') // a new project starts with the kickoff skill
+  expect(role.text).toContain('edit only the files your task owns')
 })
 
 test('the pane draws leader, crew, tasks and settings on terminal and desktop', { options: OPTIONS }, async ($, on) => {

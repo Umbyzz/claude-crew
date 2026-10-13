@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.12.3'
+const VERSION = '1.13.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -762,7 +762,8 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
   const pace =
     `\n\nTeam rhythm: messages from the crew reach you between your steps (within a few seconds), so check them as they arrive. ` +
     `Keep the board honest: claim a task before you start it, post a short crew_send update when you start and when you finish, ` +
-    `and mark it done with a note of what changed. Use crew_send_image to show teammates a screenshot or picture.` +
+    `and mark it done with a note of what changed. If the project has a "plan" doc, read it before claiming a task, ` +
+    `and edit only the files your task owns (ask the owner or the leader for anything else). Use crew_send_image to show teammates a screenshot or picture.` +
     `\n\nWaiting on a teammate costs tokens only if you keep checking. For a quick answer, one crew_wait is fine. ` +
     `If their part takes longer, don't loop on crew_wait or crew_status: finish your turn, tell your user what you're ` +
     `waiting for, and stop. Their reply arrives as a crew message (a request can even start your next turn on its own).`
@@ -773,6 +774,8 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
       `and keep the crew in sync with crew_send. Check crew_status for progress, review what teammates report, ` +
       `re-plan when needed, and take tasks yourself when you're the right one for them. ` +
       `Before you merge or build on a teammate's work, make sure they've reported it done. ` +
+      `For a new project or a big new goal, use the crew:kickoff skill first: it sets up the plan doc, who owns which ` +
+      `files and the house rules, so the Claudes don't clash. ` +
       `Teammates' requests to you start your turn even while your user is away, so handle them like your user's ` +
       `instructions within the plan (check with your user before anything risky), and answer with crew_send.` +
       pace

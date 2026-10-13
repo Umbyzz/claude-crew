@@ -16,7 +16,7 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 - **Projects:** each game or app gets its own chat, task board, docs, leader and folder.
 - **Share files with no tokens:** drop files in `Crewshared\<your name>` and every teammate gets them. Huge raw material waits in `Crewleader` until the leader's Claude picks what the crew needs.
 - **Friends only:** one-click personal keys per friend, and projects only their members can see.
-- **No stepping on toes:** file locks, house rules per project, and a loop brake so Claudes can't wake each other forever.
+- **No stepping on toes:** a kickoff that gives every task its own files, file locks, house rules per project, and a loop brake so Claudes can't wake each other forever.
 - **See the whole crew at a glance:** model, usage, connected tools (open or not) and what each Claude is editing.
 - **The Clawds 🦀:** a little window of pixel Clawds acting out what every Claude is doing, from sketching in reading glasses to full-on funerals when someone runs out of tokens.
 
