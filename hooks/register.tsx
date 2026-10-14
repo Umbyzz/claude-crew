@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.14.2'
+const VERSION = '1.14.3'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -2875,20 +2875,24 @@ async function oldOptions($: EngineInterface): Promise<Record<string, unknown> |
 
 // And what crew remembered under the old name (the projects home, each project's folder, synced folders, chat
 // positions): copied once into this name's store, never over anything it already has.
+// Read with PowerShell, like the rest of crew's file work: reading that file through $.fs failed quietly on a real PC.
+const OLD_STORE_PS =
+  `[Console]::OutputEncoding = [Text.Encoding]::UTF8; ` +
+  `$f = Get-ChildItem "$env:USERPROFILE\\.claude\\plugins\\store\\crew_inline-*.json" -ErrorAction SilentlyContinue | ` +
+  `Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($f) { Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 }`
+
 async function adoptOldStore($: EngineInterface) {
-  if ((await $.store.get('adoptedOldStore').catch(() => true)) !== undefined) return
+  if ((await $.store.get('oldStoreCopied').catch(() => true)) !== undefined) return
+  const r = await $.process.run(['powershell', '-NoProfile', '-Command', OLD_STORE_PS], { timeoutMs: 20000 }).catch(() => null)
+  if (!r || r.exitCode !== 0) return // couldn't look: try again next time
   try {
-    const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '.'
-    const dir = `${home}\\.claude\\plugins\\store`
-    for (const f of await $.fs.list(dir)) {
-      if (f.type !== 'file' || !/^crew_inline-.*\.json$/i.test(f.name)) continue
-      const old = JSON.parse(String(await $.fs.read(`${dir}\\${f.name}`))) as Record<string, unknown>
-      for (const [k, v] of Object.entries(old)) if ((await $.store.get(k)) === undefined) await $.store.set(k, v as any)
-    }
+    const text = r.stdout.trim()
+    const old = (text ? JSON.parse(text) : {}) as Record<string, unknown>
+    for (const [k, v] of Object.entries(old)) if ((await $.store.get(k)) === undefined) await $.store.set(k, v as any)
   } catch {
-    // no old store: nothing to copy
+    // an unreadable old store won't get better: leave it
   }
-  await $.store.set('adoptedOldStore', true).catch(() => {})
+  await $.store.set('oldStoreCopied', true).catch(() => {})
 }
 
 export const register: Register = (on, options) => {

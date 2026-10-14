@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.14.3
+- **The project-folder copy actually happens.** 1.14.2's copy read the old file from inside the plugin, which failed quietly on a real PC and still marked itself done. It now reads it with PowerShell (tested on the real file), and only counts as done once it has worked, so a failed try runs again at the next start.
+
 ## 1.14.2
 - **Project folders survive the switch too.** Besides its settings, crew remembers each project's folder, the projects home and which shared folders you've synced. Under the new plugin name all of that started empty, so Crewshared, Crewleader and new projects' folders went missing. It's now copied over once from the old name, without overwriting anything newer.
 - **A setting that can't be saved says so.** If Claude Code refuses or fails to save a crew setting, a message now says why. Before, nothing happened at all, which is what made *next* look broken during the switch.

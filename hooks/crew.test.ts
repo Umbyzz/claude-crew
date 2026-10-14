@@ -2073,15 +2073,19 @@ test("what crew remembered under the old plugin name (project folders…) is cop
   on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }))
   const base = OPTIONS.relayUrl.replace(/\/+$/, '')
   kept.set(`cursor:${base}`, 511)
-  let listed = 0
-  on('fs.list', async () => {
-    listed++
-    return { value: [{ name: 'crew_inline-ffb0.json', type: 'file' }, { name: 'other_x.json', type: 'file' }] } as any
-  })
   const old = { [`cursor:${base}`]: 503, [`projectsHome:${base}`]: 'C:\\Crew projects', [`folder:${base}:main`]: 'C:\\Crew projects\\main' }
-  on('fs.read', async (_$: unknown, e: any) =>
-    String(e.path).endsWith('crew_inline-ffb0.json') ? ({ value: JSON.stringify(old) } as any) : ({ deny: 'ENOENT' } as any),
-  )
+  let listed = 0
+  let fail = true // the first look fails: it must be tried again, not marked done
+  on('process.run', async (_$: unknown, e: any) => {
+    if (!e.argv.join(' ').includes('crew_inline-*.json')) return { value: { exitCode: 0, stdout: '', stderr: '' } } as any
+    listed++
+    if (fail) return { value: { exitCode: 1, stdout: '', stderr: 'boom' } } as any
+    return { value: { exitCode: 0, stdout: JSON.stringify(old), stderr: '' } } as any
+  })
+  await $.session.start({ source: 'startup', cwd: 'C:\\Games\\Lava' } as any)
+  await settle()
+  expect(kept.get(`folder:${base}:main`)).toBeUndefined()
+  fail = false
   await $.session.start({ source: 'startup', cwd: 'C:\\Games\\Lava' } as any)
   await settle()
   expect(kept.get(`folder:${base}:main`)).toBe('C:\\Crew projects\\main')
@@ -2089,5 +2093,5 @@ test("what crew remembered under the old plugin name (project folders…) is cop
   expect(kept.get(`cursor:${base}`)).toBe(511) // the newer value stays
   await $.session.start({ source: 'startup', cwd: 'C:\\Games\\Lava' } as any)
   await settle()
-  expect(listed).toBe(1) // only once
+  expect(listed).toBe(2) // tried again after the failure, then never again
 })
