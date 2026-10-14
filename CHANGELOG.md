@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.15.2
+- **The relay window has a name.** It used to show up as a plain `cmd.exe` tab, easy to mistake for a leftover and close, which drops the whole crew. It's now called *Crew relay - keep open while you host*.
+
 ## 1.15.1
 - **Locks for Unity scripts.** A script created or edited through MCP for Unity (`create_script`, `script_apply_edits`, `apply_text_edits`, `delete_script`, `manage_script`) is now locked like a file, by its path in the Unity project (`Assets/Scripts/Player.cs`), which is the same on every PC. Reading a script doesn't lock it.
 

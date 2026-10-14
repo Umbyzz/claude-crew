@@ -1,4 +1,6 @@
 @echo off
+rem A clear name in the taskbar and terminal tabs: closing this window stops the relay for the whole crew.
+title Crew relay - keep open while you host
 rem Starts the crew relay. The first run makes a random key in crew_key.txt;
 rem give that key and this PC's Radmin (26.x) or Tailscale (100.x) IP to your teammates.
 rem
