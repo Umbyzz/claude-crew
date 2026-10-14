@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.14.0'
+const VERSION = '1.14.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -2855,18 +2855,39 @@ const TOOLS = [
   },
 ]
 
+// Settings saved under the plugin's old name. The desktop app used to hand crew to Claude Code as a local plugin
+// ("crew@inline"); since October 2026 Claude Code loads it as installed ("crew@claude-crew"), which starts with no
+// settings of its own. Reading the old ones means nobody sets crew up twice, and a friend's personal key isn't lost.
+async function oldOptions($: EngineInterface): Promise<Record<string, unknown> | null> {
+  try {
+    const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '.'
+    const all = JSON.parse(String(await $.fs.read(`${home}\\.claude\\settings.json`))).pluginConfigs ?? {}
+    for (const [id, c] of Object.entries(all) as [string, any][]) {
+      const o = c?.options
+      if ((id === 'crew' || id.startsWith('crew@')) && o?.relayUrl && o?.name && o?.key) return o
+    }
+  } catch {
+    // no settings file, or not readable: set up in /crew as usual
+  }
+  return null
+}
+
 export const register: Register = (on, options) => {
-  const opts = options as Record<string, unknown>
-  const base = String(opts.relayUrl ?? '').trim().replace(/\/+$/, '')
-  const me = String(opts.name ?? '').trim()
-  const key = String(opts.key ?? '')
-  const autoRun = (['off', 'leader', 'anyone'].includes(String(opts.autoRun)) ? opts.autoRun : 'leader') as Config['autoRun']
-  const toasts = (['all', 'direct', 'off'].includes(String(opts.toasts)) ? opts.toasts : 'all') as Config['toasts']
-  const pollMs = Math.max(1, Number(opts.pollSeconds) || 3) * 1000
-  const configured = base !== '' && me !== '' && key !== ''
-  const clawdsWithCrew = String(opts.clawdsWindow ?? 'yes') !== 'no'
-  dropMs = Math.max(15, Number(opts.dropSeconds) || 120) * 1000
-  cfg = { base, me, key, autoRun, toasts, pollMs, configured }
+  let base = '', me = '', key = '', pollMs = 3000, configured = false, clawdsWithCrew = true
+  let autoRun: Config['autoRun'] = 'leader', toasts: Config['toasts'] = 'all'
+  const apply = (opts: Record<string, unknown>) => {
+    base = String(opts.relayUrl ?? '').trim().replace(/\/+$/, '')
+    me = String(opts.name ?? '').trim()
+    key = String(opts.key ?? '')
+    autoRun = (['off', 'leader', 'anyone'].includes(String(opts.autoRun)) ? opts.autoRun : 'leader') as Config['autoRun']
+    toasts = (['all', 'direct', 'off'].includes(String(opts.toasts)) ? opts.toasts : 'all') as Config['toasts']
+    pollMs = Math.max(1, Number(opts.pollSeconds) || 3) * 1000
+    configured = base !== '' && me !== '' && key !== ''
+    clawdsWithCrew = String(opts.clawdsWindow ?? 'yes') !== 'no'
+    dropMs = Math.max(15, Number(opts.dropSeconds) || 120) * 1000
+    cfg = { base, me, key, autoRun, toasts, pollMs, configured }
+  }
+  apply(options as Record<string, unknown>)
 
   on('session.start', async ($, e, next) => {
     // Commands first, each on its own: if anything later fails, /crew is still there to show what went wrong.
@@ -2876,6 +2897,16 @@ export const register: Register = (on, options) => {
         await fn()
       } catch (err) {
         problems.push(`${what}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    if (!configured) {
+      const old = await oldOptions($)
+      if (old) {
+        apply({ ...(options as Record<string, unknown>), ...old })
+        // and saved under the new name, so the settings menu shows them (a refused save changes nothing: they're
+        // read from the old name again next time)
+        for (const field of ['relayUrl', 'name', 'key'])
+          void $.config.set({ key: `crew.${field}`, value: String(old[field]) }).catch(() => {})
       }
     }
     void refreshModel($)

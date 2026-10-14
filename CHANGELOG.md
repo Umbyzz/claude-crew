@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.14.1
+- **Settings survive the desktop app's new way of loading plugins.** The Claude desktop app now lets Claude Code load crew as an installed plugin (`crew@claude-crew`) instead of handing it over as a local one (`crew@inline`), so crew started with no settings and asked to be set up again. crew now picks up the settings saved under the old name (a friend's personal key included) and saves them under the new one.
+- **`/crew` opens the pane again.** The kickoff and retro skills no longer show in the slash menu as `/crew:kickoff` and `/crew:retro`, where typing `/crew` could pick one of them. Claude still uses both; just say "run the retro".
+
 ## 1.14.0
 - **Retro skill.** crew ships a second skill, **crew:retro**: a one-page checklist the Claudes read only when you say the project is done. Each Claude answers it from its own conversation and the task board: what it did, what it had to guess, clashes and locks, waiting, tool errors, where its tokens went, and its top three fixes. It shares that as a `retro-<name>` doc, and the leader merges them into one `retro` doc with what worked, what missed, ranked fixes and bugs. (Idea by Umbyz.)
 

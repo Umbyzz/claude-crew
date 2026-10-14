@@ -4,6 +4,7 @@
 
 | Symptom | Fix |
 |---|---|
+| After a Claude desktop app update, `/crew` says *Set up your crew* again | The app now loads crew under a new name, which starts with no settings. Install update (crew 1.14.1 or later) and restart Claude: crew finds your old settings, personal key included. |
 | **Test connection** can't reach the relay | Is the relay window open? Is the IP right? Allow Python through Windows Firewall on private networks. |
 | *"The relay refused the crew key"* | The host may have made a new key: paste the one from their new invite in ⚙ Settings → Crew key. If **you** are the host, crew picks the right key up from `crew_key.txt` by itself. |
 | *"… has a personal key"* | You're on the host's friends list: use the key the host sent you (or that crew saved for you) with exactly that name. |

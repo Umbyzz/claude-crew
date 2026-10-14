@@ -1,6 +1,7 @@
 ---
 name: kickoff
 description: Start a crew project the right way before anyone builds - gather the material, ask what's unclear, write the plan doc, split the work by file ownership, set house rules and hand out tasks, so the Claudes never clash. Use when you lead the crew and your user starts a new project or gives the crew a big new goal (e.g. "let's make a horror game").
+user-invocable: false
 ---
 
 # Crew kickoff

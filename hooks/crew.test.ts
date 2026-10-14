@@ -2023,3 +2023,38 @@ test("the project's folder line shows only Open and ⋯, and its subfolders with
   expect(await ui.find({ key: 'folder-copy' })).toBeUndefined()
   await ui.unmount()
 })
+
+test('settings saved under the old plugin name (crew@inline) are picked up, and saved under the new one', { options: { ...OPTIONS, relayUrl: '', name: '', key: '' } }, async ($, on) => {
+  mock.store(on)
+  mock.env(on, { USERPROFILE: 'C:\\Users\\t' })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('tool.register', async () => ({ value: undefined }) as any)
+  on('command.register', async () => ({ value: undefined }) as any)
+  on('ui.invalidate', async () => ({ value: undefined }) as any)
+  on('session.start', async (_$: unknown, e: any) => e)
+  const settings = {
+    pluginConfigs: {
+      'other@x': { options: { relayUrl: 'http://nope' } },
+      'crew@inline': { options: { relayUrl: 'http://10.0.0.9:7777/', name: 'timmy', key: 'k123' } },
+    },
+  }
+  on('fs.read', async (_$: unknown, e: any) =>
+    String(e.path).endsWith('\\.claude\\settings.json') ? ({ value: JSON.stringify(settings) } as any) : ({ deny: 'ENOENT' } as any),
+  )
+  const sets: any[] = []
+  on('config.set', async (_$: unknown, e: any) => {
+    sets.push(e)
+    return { value: e.value } as any
+  })
+  const calls: { url: string; who: string }[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    calls.push({ url: e.url, who: e.init?.headers?.['X-Crew-Name'] })
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  await $.session.start({ source: 'startup', cwd: 'C:\\Games\\Lava' } as any)
+  await settle()
+  // connected with the old settings, as the old name
+  expect(calls.some(c => c.url.startsWith('http://10.0.0.9:7777/poll') && c.who === 'timmy')).toBe(true)
+  expect(sets.map(s => s.key).sort()).toEqual(['crew.key', 'crew.name', 'crew.relayUrl'])
+})
