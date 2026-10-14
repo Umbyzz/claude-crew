@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.14.1'
+const VERSION = '1.14.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1970,6 +1970,7 @@ function setOption($: EngineInterface, field: string, value: string) {
   void $.config
     .set({ key: `crew.${field}`, value: value.trim() })
     .then(r => $.ui.toast(r.deny ? `crew: ${r.deny}` : `crew: saved ${field}`))
+    .catch(err => $.ui.toast(`crew: couldn't save ${field} (${err instanceof Error ? err.message : err})`, { timeoutMs: 10000 }))
 }
 
 function testConnection($: EngineInterface, base: string) {
@@ -2872,6 +2873,24 @@ async function oldOptions($: EngineInterface): Promise<Record<string, unknown> |
   return null
 }
 
+// And what crew remembered under the old name (the projects home, each project's folder, synced folders, chat
+// positions): copied once into this name's store, never over anything it already has.
+async function adoptOldStore($: EngineInterface) {
+  if ((await $.store.get('adoptedOldStore').catch(() => true)) !== undefined) return
+  try {
+    const home = (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '.'
+    const dir = `${home}\\.claude\\plugins\\store`
+    for (const f of await $.fs.list(dir)) {
+      if (f.type !== 'file' || !/^crew_inline-.*\.json$/i.test(f.name)) continue
+      const old = JSON.parse(String(await $.fs.read(`${dir}\\${f.name}`))) as Record<string, unknown>
+      for (const [k, v] of Object.entries(old)) if ((await $.store.get(k)) === undefined) await $.store.set(k, v as any)
+    }
+  } catch {
+    // no old store: nothing to copy
+  }
+  await $.store.set('adoptedOldStore', true).catch(() => {})
+}
+
 export const register: Register = (on, options) => {
   let base = '', me = '', key = '', pollMs = 3000, configured = false, clawdsWithCrew = true
   let autoRun: Config['autoRun'] = 'leader', toasts: Config['toasts'] = 'all'
@@ -2909,6 +2928,7 @@ export const register: Register = (on, options) => {
           void $.config.set({ key: `crew.${field}`, value: String(old[field]) }).catch(() => {})
       }
     }
+    await adoptOldStore($)
     void refreshModel($)
     await storedKey($) // the key that last worked, even if a settings save was refused
     await attempt('/crew', () => $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' }))

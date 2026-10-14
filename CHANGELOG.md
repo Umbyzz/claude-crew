@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.14.2
+- **Project folders survive the switch too.** Besides its settings, crew remembers each project's folder, the projects home and which shared folders you've synced. Under the new plugin name all of that started empty, so Crewshared, Crewleader and new projects' folders went missing. It's now copied over once from the old name, without overwriting anything newer.
+- **A setting that can't be saved says so.** If Claude Code refuses or fails to save a crew setting, a message now says why. Before, nothing happened at all, which is what made *next* look broken during the switch.
+
 ## 1.14.1
 - **Settings survive the desktop app's new way of loading plugins.** The Claude desktop app now lets Claude Code load crew as an installed plugin (`crew@claude-crew`) instead of handing it over as a local one (`crew@inline`), so crew started with no settings and asked to be set up again. crew now picks up the settings saved under the old name (a friend's personal key included) and saves them under the new one.
 - **`/crew` opens the pane again.** The kickoff and retro skills no longer show in the slash menu as `/crew:kickoff` and `/crew:retro`, where typing `/crew` could pick one of them. Claude still uses both; just say "run the retro".

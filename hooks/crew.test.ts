@@ -2058,3 +2058,36 @@ test('settings saved under the old plugin name (crew@inline) are picked up, and 
   expect(calls.some(c => c.url.startsWith('http://10.0.0.9:7777/poll') && c.who === 'timmy')).toBe(true)
   expect(sets.map(s => s.key).sort()).toEqual(['crew.key', 'crew.name', 'crew.relayUrl'])
 })
+
+test("what crew remembered under the old plugin name (project folders…) is copied once, without overwriting newer values", { options: OPTIONS }, async ($, on) => {
+  const kept = new Map<string, unknown>()
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
+  mock.env(on, { USERPROFILE: 'C:\\Users\\t' })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('tool.register', async () => ({ value: undefined }) as any)
+  on('command.register', async () => ({ value: undefined }) as any)
+  on('ui.invalidate', async () => ({ value: undefined }) as any)
+  on('session.start', async (_$: unknown, e: any) => e)
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }))
+  const base = OPTIONS.relayUrl.replace(/\/+$/, '')
+  kept.set(`cursor:${base}`, 511)
+  let listed = 0
+  on('fs.list', async () => {
+    listed++
+    return { value: [{ name: 'crew_inline-ffb0.json', type: 'file' }, { name: 'other_x.json', type: 'file' }] } as any
+  })
+  const old = { [`cursor:${base}`]: 503, [`projectsHome:${base}`]: 'C:\\Crew projects', [`folder:${base}:main`]: 'C:\\Crew projects\\main' }
+  on('fs.read', async (_$: unknown, e: any) =>
+    String(e.path).endsWith('crew_inline-ffb0.json') ? ({ value: JSON.stringify(old) } as any) : ({ deny: 'ENOENT' } as any),
+  )
+  await $.session.start({ source: 'startup', cwd: 'C:\\Games\\Lava' } as any)
+  await settle()
+  expect(kept.get(`folder:${base}:main`)).toBe('C:\\Crew projects\\main')
+  expect(kept.get(`projectsHome:${base}`)).toBe('C:\\Crew projects')
+  expect(kept.get(`cursor:${base}`)).toBe(511) // the newer value stays
+  await $.session.start({ source: 'startup', cwd: 'C:\\Games\\Lava' } as any)
+  await settle()
+  expect(listed).toBe(1) // only once
+})
