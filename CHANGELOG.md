@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.16.1
+- **The new-chat question shows where you pressed.** In 1.16.0 it appeared at the very top of `/crew`, so pressing Enter on a new project's name just seemed to close the box. The question and the "start a new chat" note now show in the Project tab, right where the name was typed or Switch was pressed.
+
 ## 1.16.0
 - **New projects get their own chat.** **+ New project** or **Switch** in a chat that already has work now asks first, like invites do. Moving that chat would mix the two projects, and its Claude would carry the whole chat into the new one. **Open it in a new chat** (the default) makes the next new chat start in that project, already joined (no "rejoin?" question), and as its leader if it's a new project, so the kickoff starts clean. **Move this chat** does what it did before. A chat you already have for a project stays in it, so you can reopen it from the sidebar.
 

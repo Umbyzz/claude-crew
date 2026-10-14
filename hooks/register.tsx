@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.16.0'
+const VERSION = '1.16.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -3520,19 +3520,6 @@ export const register: Register = (on, options) => {
             </Box>
           </Callout>
         )}
-        {inSession && asked.project !== '' && (
-          <Callout>
-            <Text bold>{asked.isNew ? `Start "${asked.project}" in a new chat?` : `Open "${asked.project}" in a new chat?`}</Text>
-            <Text dimColor>
-              ⚠ This chat already has other work. Moving it would mix the two, and its Claude would carry all of this chat into "{asked.project}" (more tokens). A new chat starts clean{asked.isNew ? ', and you lead the project there' : ', with a catch-up'}. Already have a chat for it? Open that one from the sidebar: each chat stays in its own project.
-            </Text>
-            <Box flexDirection="row">
-              <Button key="move-newchat" label="Open it in a new chat" variant="primary" onPress={() => void moveInNewChat($)} />
-              <Button key="move-here" label="Move this chat" onPress={() => void moveHere($)} />
-              <Button key="move-cancel" label="Cancel" dimColor onPress={() => void update($, moveAsk, () => ({ project: '', isNew: false }))} />
-            </Box>
-          </Callout>
-        )}
         {inSession && invite.project !== '' && invite.project !== projectName && (
           <Callout>
             <Text bold>{invite.from} invites you to the project "{invite.project}"</Text>
@@ -4010,6 +3997,26 @@ export const register: Register = (on, options) => {
                   <Text dimColor>Not here yet: {elsewhere.join(', ')}</Text>
                   {!thisProject?.private && <Button key="invite-here" label="Invite the crew here" dimColor onPress={() => inviteCrew($)} />}
                 </Box>
+              )}
+              {/* asked right here, where the name was typed or Switch pressed */}
+              {inSession && asked.project !== '' && (
+                <Callout>
+                  <Text bold>{asked.isNew ? `Start "${asked.project}" in a new chat?` : `Open "${asked.project}" in a new chat?`}</Text>
+                  <Text dimColor>
+                    ⚠ This chat already has other work. Moving it would mix the two, and its Claude would carry all of this chat into "{asked.project}" (more tokens). A new chat starts clean{asked.isNew ? ', and you lead the project there' : ', with a catch-up'}. Already have a chat for it? Open that one from the sidebar: each chat stays in its own project.
+                  </Text>
+                  <Box flexDirection="row">
+                    <Button key="move-newchat" label="Open it in a new chat" variant="primary" onPress={() => void moveInNewChat($)} />
+                    <Button key="move-here" label="Move this chat" onPress={() => void moveHere($)} />
+                    <Button key="move-cancel" label="Cancel" dimColor onPress={() => void update($, moveAsk, () => ({ project: '', isNew: false }))} />
+                  </Box>
+                </Callout>
+              )}
+              {nextChat !== '' && asked.project === '' && (
+                <Callout>
+                  <Text bold>📌 Next: start a new chat (+ New session in the sidebar)</Text>
+                  <Text dimColor>It opens straight in "{nextChat}". This chat stays in "{projectName}".</Text>
+                </Callout>
               )}
               {folderMode === 'new' && (
                 <Callout>
