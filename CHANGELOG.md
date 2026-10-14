@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.15.1
+- **Locks for Unity scripts.** A script created or edited through MCP for Unity (`create_script`, `script_apply_edits`, `apply_text_edits`, `delete_script`, `manage_script`) is now locked like a file, by its path in the Unity project (`Assets/Scripts/Player.cs`), which is the same on every PC. Reading a script doesn't lock it.
+
 ## 1.15.0
 - **Kickoff knows Unity.** Unity has no live shared editing, and its scenes and prefabs merge badly in git. crew:kickoff now gives each teammate their own work scene (`Scenes/Work/<name>.unity`) and prefab folder, keeps the main scene with the leader (who places finished prefabs in it), and has everyone on one Unity version with `.meta` files committed and `Library/` and similar folders kept out of git. (Idea by Umbyz.)
 

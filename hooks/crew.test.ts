@@ -2095,3 +2095,35 @@ test("what crew remembered under the old plugin name (project folders…) is cop
   await settle()
   expect(listed).toBe(2) // tried again after the failure, then never again
 })
+
+test("a Unity script a teammate's Claude just edited through MCP for Unity is locked by its path in the project", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('tool.register', async () => ({ value: undefined }) as any)
+  on('command.register', async () => ({ value: undefined }) as any)
+  on('ui.invalidate', async () => ({ value: undefined }) as any)
+  on('session.start', async (_$: unknown, e: any) => e)
+  const touched: string[] = []
+  const now = Date.now() / 1000
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.endsWith('/touch')) {
+      touched.push(JSON.parse(e.init.body).path)
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true}' } }
+    }
+    const editing = [{ path: 'Assets/Scripts/Player.cs (Unity)', name: 'bob', at: now - 60 }]
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, editing }) } }
+  })
+  for (const t of ['script_apply_edits', 'apply_text_edits', 'create_script', 'manage_script'])
+    on('tool.call', { tool: `mcp__unityMCP__${t}` }, async () => ({ result: 'ok' }) as any)
+  await $.session.start({ source: 'startup', cwd: 'C:\\Games\\Lava' } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const first: any = await $.tool.call({ tool: 'mcp__unityMCP__script_apply_edits', name: 'Player', path: 'Assets/Scripts/', edits: [] } as any)
+  expect(first.deny).toContain("bob's Claude edited Assets/Scripts/Player.cs (Unity)")
+  const second: any = await $.tool.call({ tool: 'mcp__unityMCP__apply_text_edits', uri: 'mcpforunity://path/Assets/Scripts/Player.cs', edits: [] } as any)
+  expect(second.deny).toBeUndefined() // the same script by its other name: the second try goes through
+  await $.tool.call({ tool: 'mcp__unityMCP__create_script', path: 'Assets/Scripts/Enemy.cs', contents: '' } as any)
+  await $.tool.call({ tool: 'mcp__unityMCP__manage_script', action: 'read', name: 'Enemy', path: 'Assets/Scripts' } as any) // only looking
+  await settle()
+  expect(touched).toEqual(['Assets/Scripts/Player.cs (Unity)', 'Assets/Scripts/Enemy.cs (Unity)'])
+})

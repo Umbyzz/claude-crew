@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.15.0'
+const VERSION = '1.15.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -921,12 +921,22 @@ function editingNow(name: string) {
 // A script edited live in Roblox Studio through its MCP has no file: it's locked by its place in the game tree, which
 // is the same for everyone in a Team Create place.
 const STUDIO_EDIT = /^mcp__.*roblox.*__multi_edit$/i
+// MCP for Unity's script tools: locked by the script's path in the Unity project (Assets/…), the same on every PC.
+const UNITY_EDIT = /^mcp__.*unity.*__(create_script|script_apply_edits|apply_text_edits|delete_script|manage_script)$/i
 
 function lockPath(e: any) {
   const tool = String(e.tool)
   if (STUDIO_EDIT.test(tool)) {
     const script = String(e.file_path ?? '').trim().replace(/^game\./i, '')
     return script ? `${script} (Studio)` : ''
+  }
+  if (UNITY_EDIT.test(tool)) {
+    if (/^(read|get|list|validate)/i.test(String(e.action ?? ''))) return '' // manage_script just looking
+    const fromUri = String(e.uri ?? '').replace(/^[a-z]+:\/\/(path\/)?/i, '')
+    let script = fromUri || String(e.path ?? '')
+    if (!fromUri && e.name) script = `${script.replace(/[\\/]+$/, '')}/${String(e.name).replace(/\.cs$/i, '')}.cs`
+    script = script.replace(/\\/g, '/').replace(/^\/+/, '')
+    return script ? `${script} (Unity)` : ''
   }
   if (!TYPING_TOOLS.has(tool)) return ''
   const rel = relPath(String(e.file_path ?? e.notebook_path ?? '')) // outside the project folder: not crew work
