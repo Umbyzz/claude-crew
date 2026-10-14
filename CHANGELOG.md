@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.15.0
+- **Kickoff knows Unity.** Unity has no live shared editing, and its scenes and prefabs merge badly in git. crew:kickoff now gives each teammate their own work scene (`Scenes/Work/<name>.unity`) and prefab folder, keeps the main scene with the leader (who places finished prefabs in it), and has everyone on one Unity version with `.meta` files committed and `Library/` and similar folders kept out of git. (Idea by Umbyz.)
+
 ## 1.14.3
 - **The project-folder copy actually happens.** 1.14.2's copy read the old file from inside the plugin, which failed quietly on a real PC and still marked itself done. It now reads it with PowerShell (tested on the real file), and only counts as done once it has worked, so a failed try runs again at the next start.
 
