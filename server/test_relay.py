@@ -41,8 +41,8 @@ class Relay:
                 time.sleep(0.1)
         raise RuntimeError("relay didn't start")
 
-    def call(self, method, path, name="", key=KEY, project="", body=None, remote=True):
-        headers = {"X-Crew-Key": key, "X-Crew-Name": name, "Content-Type": "application/json"}
+    def call(self, method, path, name="", key=KEY, project="", body=None, remote=True, extra=None):
+        headers = {"X-Crew-Key": key, "X-Crew-Name": name, "Content-Type": "application/json", **(extra or {})}
         if project:
             headers["X-Crew-Project"] = project
         if remote:
@@ -89,6 +89,25 @@ class RelayTest(unittest.TestCase):
 
     def poll(self, name, project="", key=KEY):
         return self.r.call("GET", "/poll?since=0", name, key=key, project=project)
+
+    def test_one_person_with_chats_in_two_projects(self):
+        # cori's old chat stays in main (idle) while a new chat works in "RTS"
+        self.r.call("GET", "/poll?since=0", "cori", project="RTS", extra={"X-Crew-Activity": "working"})
+        self.r.call("GET", "/poll?since=0", "cori", extra={"X-Crew-Activity": "idle"})
+        self.r.call("GET", "/poll?since=0", "umbyz")
+        projects = {p["name"]: p for p in self.r.call("GET", "/projects", "cori")[1]["projects"]}
+        self.assertIn("cori", projects["RTS"]["here"])  # in both, no flipping between them
+        self.assertIn("cori", projects["main"]["here"])
+        cori = next(p for p in self.poll("umbyz")[1]["peers"] if p["name"] == "cori")
+        self.assertEqual(cori["activity"], "working")  # the busiest chat shows, whichever checked in last
+        # closing the old chat isn't leaving: the other chat is still open
+        self.r.call("POST", "/leave", "cori", body={})
+        cori = next(p for p in self.poll("umbyz")[1]["peers"] if p["name"] == "cori")
+        self.assertTrue(cori["online"])
+        self.assertFalse(any(m["kind"] == "leave" and m["from"] == "cori" for m in self.poll("umbyz")[1]["messages"]))
+        self.r.call("POST", "/leave", "cori", project="RTS", body={})  # now the last one: gone
+        cori = next(p for p in self.poll("umbyz")[1]["peers"] if p["name"] == "cori")
+        self.assertFalse(cori["online"])
 
     def test_shared_key_and_a_wrong_key(self):
         self.assertEqual(self.poll("cori")[0], 200)

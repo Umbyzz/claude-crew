@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.16.2
+- **Two chats, two projects, no flickering.** Someone with an old chat in one project and a new chat in another used to jump between the two in everyone's `/crew` and Clawds window, since the relay kept just one project per person and each chat's check-in overwrote the other's. The relay now tracks each chat on its own: you're listed as *here* in every project you have a chat open in, everyone sees your busiest chat (working beats idle), and closing one chat no longer tells the crew you left while another is still open. (Found in the first real test by Umbyz and CoriZori.)
+
 ## 1.16.1
 - **The new-chat question shows where you pressed.** In 1.16.0 it appeared at the very top of `/crew`, so pressing Enter on a new project's name just seemed to close the box. The question and the "start a new chat" note now show in the Project tab, right where the name was typed or Switch was pressed.
 

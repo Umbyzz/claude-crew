@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.16.1"
+VERSION = "1.16.2"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -31,6 +31,10 @@ MAX_FILES = 40  # images kept in memory, oldest dropped first
 ONLINE_SECONDS = 12  # no check-in for this long: shown as offline
 GONE_SECONDS = 20  # no check-in for this long: the crew is told they lost connection (a clean exit says so at once)
 ACTIVITIES = ("idle", "thinking", "typing", "working", "chatting", "done", "cheer", "away", "out")
+# One person can have chats open in several projects (an old chat in one, a new chat in another), each checking in on
+# its own. Each counts as open in its project this long after its last check-in; everyone sees the busiest one.
+CHAT_FRESH = 25
+BUSY = {"out": 6, "working": 5, "thinking": 4, "typing": 4, "chatting": 3, "cheer": 2, "done": 2, "away": 1, "idle": 0}
 
 lock = threading.Lock()
 arrived = threading.Condition(lock)  # rung on every new message, for /wait (crew_wait)
@@ -215,7 +219,8 @@ def project_names():
     names = {MAIN} | set(state.get("leaders", {})) | {t.get("project", MAIN) for t in state["tasks"]} \
         | {v.get("project", MAIN) for v in state["shared"].values()} \
         | {m["project"] for m in state["messages"] if m.get("project")} \
-        | {p.get("project", MAIN) for p in peers.values()} | set(state.get("projectMembers", {}))
+        | {p.get("project", MAIN) for p in peers.values()} | {k for p in peers.values() for k in p.get("chats", {})} \
+        | set(state.get("projectMembers", {}))
     return names - set(state.get("deleted", {}))
 
 
@@ -226,7 +231,7 @@ def projects_list(now, viewer=None):
                     "members": members_of(n) or [],
                     "openTasks": sum(1 for t in state["tasks"] if task_in(t, n) and t["status"] != "done"),
                     "docs": len(docs_of(n)), "unread": unread_in(n, viewer),
-                    "here": sorted(x for x, p in peers.items() if p.get("project", MAIN) == n and is_online(p, now))})
+                    "here": sorted(x for x, p in peers.items() if has_chat_in(p, n, now))})
     return out
 
 
@@ -264,6 +269,31 @@ def task_view(t, now):
 
 def is_online(p, now):
     return not p.get("left") and now - p["seen"] < ONLINE_SECONDS
+
+
+def has_chat_in(p, project, now):
+    """Has this person a chat open in that project right now?"""
+    if not is_online(p, now):
+        return False
+    chats = p.get("chats")
+    if not chats:
+        return p.get("project", MAIN) == project
+    c = chats.get(project)
+    return bool(c) and now - c["seen"] < CHAT_FRESH
+
+
+def show_busiest(p, now):
+    """What everyone sees of a person: their busiest open chat (working beats idle), and the project it's in."""
+    chats = p.get("chats", {})
+    for k in [k for k, c in chats.items() if now - c["seen"] >= CHAT_FRESH]:
+        chats.pop(k)
+    if not chats:
+        return
+    pr, c = max(chats.items(), key=lambda kv: (BUSY.get(kv[1]["activity"], 1), kv[1]["seen"]))
+    p["project"] = pr
+    if c["activity"] != p["activity"]:
+        p["activity"], p["since"] = c["activity"], c["since"]
+    p["subagents"], p["chatTo"] = c.get("subagents", 0), c.get("chatTo")
 
 
 LEADER_AWAY_SECONDS = 60  # the leader offline this long (or out of tokens): someone else acts as leader meanwhile
@@ -395,14 +425,18 @@ def touch(name, headers, ip=""):
         p["left"] = p["gone"] = False
         post_message(name, "all", f"{name} joined the crew session", "join")
     p["seen"] = now
+    pr = project_of(headers)
+    pr = state.get("renamed", {}).get(pr, pr)  # which project this chat of theirs is working in right now
+    c = p.setdefault("chats", {}).setdefault(pr, {"activity": "idle", "since": now, "subagents": 0, "chatTo": None})
+    c["seen"] = now
     activity = headers.get("X-Crew-Activity")
-    if activity in ACTIVITIES and activity != p["activity"]:
-        p["activity"], p["since"] = activity, now
+    if activity in ACTIVITIES and activity != c["activity"]:
+        c["activity"], c["since"] = activity, now
     try:
-        p["subagents"] = max(0, min(9, int(headers.get("X-Crew-Subagents") or 0)))
+        c["subagents"] = max(0, min(9, int(headers.get("X-Crew-Subagents") or 0)))
     except ValueError:
         pass
-    p["chatTo"] = (headers.get("X-Crew-Chat-To") or "").strip()[:40] or None
+    c["chatTo"] = (headers.get("X-Crew-Chat-To") or "").strip()[:40] or None
     p["version"] = (headers.get("X-Crew-Version") or "").strip()[:20] or p.get("version")  # who needs to update
     p["model"] = (headers.get("X-Crew-Model") or "").strip()[:60] or p.get("model")  # the leader splits work by it
     try:  # how much of their usage limit is gone: the leader gives big tasks to whoever has room
@@ -412,8 +446,7 @@ def touch(name, headers, ip=""):
     p["usageDetail"] = (headers.get("X-Crew-Usage-Detail") or "").strip()[:60] or p.get("usageDetail")
     if "X-Crew-Mcp" in headers:  # the MCP servers their Claude is connected to (Roblox Studio, Unity…)
         p["mcp"] = (headers.get("X-Crew-Mcp") or "").strip()[:200]
-    pr = project_of(headers)
-    p["project"] = state.get("renamed", {}).get(pr, pr)  # which project this member's Claude is working in right now
+    show_busiest(p, now)
     p["ip"] = ip or p.get("ip", "")  # where they connect from: the host sees it next to ★ Friend
 
 
@@ -703,6 +736,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/leave":  # a clean goodbye: everyone hears it at once
                 p = peers.get(self.name)
                 if p and not p.get("left"):
+                    now = time.time()
+                    p.get("chats", {}).pop(self.project, None)
+                    if any(now - c["seen"] < CHAT_FRESH for c in p.get("chats", {}).values()):
+                        show_busiest(p, now)  # only one of their chats closed: they're still here in the others
+                        return self.reply(200, {"ok": True})
                     p["left"] = True
                     announce_leave(self.name, str(b.get("why") or "left the crew session")[:80])
                     save()
@@ -762,6 +800,8 @@ class Handler(BaseHTTPRequestHandler):
                 for p in peers.values():
                     if p.get("project") == old:
                         p["project"] = new
+                    if old in p.get("chats", {}):
+                        p["chats"][new] = p["chats"].pop(old)
                     reads = p.get("readIn") or {}
                     if old in reads:
                         reads[new] = reads.pop(old)
@@ -798,7 +838,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(403, {"error": "only the project's leader can change who sees it"})
                 pm = state.setdefault("projectMembers", {})
                 if b.get("private"):
-                    here = {x for x, p in peers.items() if p.get("project") == pr and is_online(p, time.time())}
+                    here = {x for x, p in peers.items() if has_chat_in(p, pr, time.time())}
                     pm[pr] = sorted(here | {self.name} | ({leader_of(pr)} if leader_of(pr) else set()))
                     post_message(self.name, "all", f"made the project members-only: {', '.join(pm[pr])}", "update", pr)
                 else:
