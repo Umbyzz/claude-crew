@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.15.2'
+const VERSION = '1.16.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -527,19 +527,49 @@ function copyPath($: EngineInterface, surface: any, path: string) {
     .then(r => $.ui.toast(r.isCopied ? 'crew: folder path copied' : `crew: ${path}`, { timeoutMs: 5000 }))
 }
 
+// + New project or Switch in a chat that already has work asks first: moving it would mix the two projects, and its
+// Claude would carry all of this chat into the new one. A new chat keeps them apart.
+const moveAsk = atom({ plugin: 'crew', key: 'moveAsk' } as const, { project: '', isNew: false })
+
+const chatHasWork = async ($: EngineInterface) => (await $.session.turns().catch(() => 0)) > 0
+
 function newProjectPress($: EngineInterface, raw: string) {
   const name = cleanProject(raw)
   if (!raw.trim()) return
   void (async () => {
-    const existed = (await read($, snapshot)).projects?.some(p => p.name === name)
-    await switchProject($, name)
-    setFolderMode($, '')
-    if (!existed) {
-      await relay($, 'POST', '/leader', { name: cfg.me }).catch(() => {}) // whoever makes a project leads it
-      await poll($).catch(() => {})
-      $.ui.toast(`crew: made "${name}" with its own folder, and you lead it. Press "Invite the crew here" to bring the others.`, { timeoutMs: 10000 })
+    const existed = !!(await read($, snapshot)).projects?.some(p => p.name === name)
+    if (name !== projectName && (await chatHasWork($))) {
+      setFolderMode($, '')
+      await update($, moveAsk, () => ({ project: name, isNew: !existed }))
+      return
     }
+    await makeOrSwitch($, name, existed)
   })().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
+}
+
+async function makeOrSwitch($: EngineInterface, name: string, existed: boolean) {
+  await switchProject($, name)
+  setFolderMode($, '')
+  if (!existed) {
+    await relay($, 'POST', '/leader', { name: cfg.me }).catch(() => {}) // whoever makes a project leads it
+    await poll($).catch(() => {})
+    $.ui.toast(`crew: made "${name}" with its own folder, and you lead it. Press "Invite the crew here" to bring the others.`, { timeoutMs: 10000 })
+  }
+}
+
+// "Open it in a new chat": the next new chat starts in that project (and leads it, if it's a new one).
+async function moveInNewChat($: EngineInterface) {
+  const ask = await read($, moveAsk)
+  await update($, moveAsk, () => ({ project: '', isNew: false }))
+  if (!ask.project) return
+  await $.store.set(`nextChat:${cfg.base}`, { project: ask.project, at: Date.now(), lead: ask.isNew })
+  await update($, nextChatAtom, () => ask.project)
+}
+
+async function moveHere($: EngineInterface) {
+  const ask = await read($, moveAsk)
+  await update($, moveAsk, () => ({ project: '', isNew: false }))
+  if (ask.project) await makeOrSwitch($, ask.project, !ask.isNew).catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
 
 function folderPress($: EngineInterface, action: () => Promise<void>) {
@@ -587,7 +617,10 @@ async function kick($: EngineInterface, name: string) {
 
 function switchProjectPress($: EngineInterface, name: string) {
   if (!name.trim()) return
-  void switchProject($, name).catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
+  void (async () => {
+    if (name !== projectName && (await chatHasWork($))) return void (await update($, moveAsk, () => ({ project: name, isNew: false })))
+    await switchProject($, name)
+  })().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
 
 let joining = false // a second Join (double press, or Start relay joining too) waits out the first instead of re-briefing
@@ -2970,7 +3003,7 @@ export const register: Register = (on, options) => {
     sessionCwd = String((e as any).cwd ?? '')
     const own = await read($, projectAtom)
     // "Open it in a new chat" from an invite: a brand-new chat (opened within the hour) starts in that project.
-    const planned = (await $.store.get(`nextChat:${base}`).catch(() => undefined)) as { project?: string; at?: number } | undefined
+    const planned = (await $.store.get(`nextChat:${base}`).catch(() => undefined)) as { project?: string; at?: number; lead?: boolean } | undefined
     const pending = !own && planned?.project && Date.now() - Number(planned.at ?? 0) < 3600000 ? String(planned.project) : ''
     if (pending) await $.store.set(`nextChat:${base}`, null).catch(() => {})
     projectName = own || pending || String((await $.store.get(`project:${base}:${sessionCwd}`)) ?? '') || 'main'
@@ -2988,7 +3021,8 @@ export const register: Register = (on, options) => {
     let m = await read($, membership)
     if (!m) {
       const before = await $.store.get(`membership:${base}`)
-      m = before === 'joined' ? 'ask' : before === 'left' ? 'left' : 'joined' // first setup: straight in
+      // a chat you opened for a project goes straight in; first setup too
+      m = before === 'joined' && !pending ? 'ask' : before === 'left' && !pending ? 'left' : 'joined'
       await update($, membership, () => m)
       if (m === 'joined') await $.store.set(`membership:${base}`, 'joined')
     }
@@ -2998,6 +3032,14 @@ export const register: Register = (on, options) => {
       $.ui.toast('crew: you were in a crew session. Open /crew to rejoin or leave it.', { timeoutMs: 10000 })
     } else if (m === 'left') {
       $.ui.status('crew: not in the crew session (/crew to join)')
+    } else if (pending && planned?.lead) {
+      // opened to make a new project: whoever makes a project leads it
+      void (async () => {
+        await poll($)
+        await relay($, 'POST', '/leader', { name: cfg.me })
+        await poll($)
+        $.ui.toast(`crew: made "${pending}" in this new chat, and you lead it. Press "Invite the crew here" to bring the others.`, { timeoutMs: 10000 })
+      })().catch(() => {})
     } else {
       void poll($)
     }
@@ -3325,6 +3367,7 @@ export const register: Register = (on, options) => {
     const home = configured ? await projectsHome($) : ''
     const folderMode = await read($, folderModeAtom)
     const invite = await read($, inviteAtom)
+    const asked = await read($, moveAsk)
     const deletingDoc = await read($, docDeleting)
     const draft = await read($, drafts)
     const typingNow = await read($, typingAtom)
@@ -3474,6 +3517,19 @@ export const register: Register = (on, options) => {
             <Text dimColor>It opens straight in "{nextChat}" with a catch-up on the project. This chat stays where it is, with its own work.</Text>
             <Box flexDirection="row">
               <Button key="nextchat-cancel" label="Cancel" dimColor onPress={() => void cancelNextChat($)} />
+            </Box>
+          </Callout>
+        )}
+        {inSession && asked.project !== '' && (
+          <Callout>
+            <Text bold>{asked.isNew ? `Start "${asked.project}" in a new chat?` : `Open "${asked.project}" in a new chat?`}</Text>
+            <Text dimColor>
+              ⚠ This chat already has other work. Moving it would mix the two, and its Claude would carry all of this chat into "{asked.project}" (more tokens). A new chat starts clean{asked.isNew ? ', and you lead the project there' : ', with a catch-up'}. Already have a chat for it? Open that one from the sidebar: each chat stays in its own project.
+            </Text>
+            <Box flexDirection="row">
+              <Button key="move-newchat" label="Open it in a new chat" variant="primary" onPress={() => void moveInNewChat($)} />
+              <Button key="move-here" label="Move this chat" onPress={() => void moveHere($)} />
+              <Button key="move-cancel" label="Cancel" dimColor onPress={() => void update($, moveAsk, () => ({ project: '', isNew: false }))} />
             </Box>
           </Callout>
         )}

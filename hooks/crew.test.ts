@@ -2127,3 +2127,52 @@ test("a Unity script a teammate's Claude just edited through MCP for Unity is lo
   await settle()
   expect(touched).toEqual(['Assets/Scripts/Player.cs (Unity)', 'Assets/Scripts/Enemy.cs (Unity)'])
 })
+
+test('+ New project in a chat that already has work asks first; a new chat opened for it starts there and leads it', { options: OPTIONS }, async ($, on) => {
+  const kept = new Map<string, unknown>([['cursor:http://relay.test:7777', 1], ['membership:http://relay.test:7777', 'joined']])
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('session.turns', async () => ({ value: 4 }) as any) // this chat already has work of its own
+  const posts: { url: string; project: string; body: any }[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') posts.push({ url: e.url, project: e.init?.headers?.['X-Crew-Project'], body: JSON.parse(e.init.body || '{}') })
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' }) // the Project tab
+  await ui.press({ key: 'new-project-open' })
+  await ui.input({ key: 'new-project', text: 'Horror' })
+  await settle()
+  expect(await ui.find({ text: /Start "Horror" in a new chat\?/ } as any)).toBeDefined()
+  expect(posts.some(p => p.url.endsWith('/leader'))).toBe(false) // nothing moved yet
+  await ui.press({ key: 'move-newchat' })
+  await settle()
+  expect(await ui.find({ text: /Next: start a new chat/ } as any)).toBeDefined()
+  await ui.unmount()
+  expect(kept.get('nextChat:http://relay.test:7777')).toMatchObject({ project: 'Horror', lead: true })
+})
+
+test('a new chat opened for a new project joins straight in (no "rejoin?"), starts in it and leads it', { options: OPTIONS }, async ($, on) => {
+  const kept = new Map<string, unknown>([
+    ['membership:http://relay.test:7777', 'joined'], // was in the crew before: a plain new chat would ask first
+    ['nextChat:http://relay.test:7777', { project: 'Horror', at: Date.now(), lead: true }],
+  ])
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('session.turns', async () => ({ value: 0 }) as any)
+  const posts: { url: string; project: string; body: any }[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') posts.push({ url: e.url, project: e.init?.headers?.['X-Crew-Project'], body: JSON.parse(e.init.body || '{}') })
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  await startSession(on, $)
+  await settle()
+  expect(posts.some(p => p.url.endsWith('/leader') && p.project === 'Horror' && p.body.name === OPTIONS.name)).toBe(true)
+  expect(kept.get('nextChat:http://relay.test:7777')).toBeNull()
+})

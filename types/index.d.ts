@@ -119,6 +119,7 @@ declare module 'claude-code' {
       renaming: string
       stopAsk: boolean
       nextChat: string
+      moveAsk: { project: string; isNew: boolean }
       typing: Record<string, string>
       friends: { list: { name: string; key: string; seen: number; ip: string; online: boolean }[]; friendsOnly: boolean }
     }
