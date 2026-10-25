@@ -1,6 +1,6 @@
 {
   "name": "crew",
-  "version": "1.18.3",
+  "version": "1.18.4",
   "description": "Link Claude Code sessions across machines: a leader, shared chat, task board and docs through a small relay.",
   "author": { "name": "Umbyz" },
   "license": "MIT",
@@ -10,7 +10,7 @@
     "relayUrl": {
       "type": "string",
       "title": "Relay URL",
-      "description": "The relay's address, e.g. http://26.12.34.56:7777 (Radmin VPN) or http://100.x.y.z:7777 (Tailscale)",
+      "description": "The relay's address, e.g. http://26.12.34.56:7787 (Radmin VPN) or http://100.x.y.z:7787 (Tailscale)",
       "default": ""
     },
     "name": {

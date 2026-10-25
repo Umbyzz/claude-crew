@@ -11,7 +11,7 @@ tokens. Settings come from the crew plugin's config in ~/.claude/settings.json.
 
     pythonw clawd_window.py            # normal
     python clawd_window.py --demo      # fake crew, no relay needed
-    python clawd_window.py --relay http://26.1.2.3:7777 --key KEY
+    python clawd_window.py --relay http://26.1.2.3:7787 --key KEY
 """
 import argparse
 import hashlib

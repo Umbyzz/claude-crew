@@ -16,8 +16,8 @@ python server/relay.py --key-file crew_key.txt
 ```
 
 ## 2. Put everyone on one network
-- **Tailscale (recommended):** free and encrypted, with no port forwarding. Use `http://<host's 100.x IP>:7777`.
-- **Radmin VPN:** everyone joins the same network. Use `http://<host's 26.x IP>:7777`.
+- **Tailscale (recommended):** free and encrypted, with no port forwarding. Use `http://<host's 100.x IP>:7787`.
+- **Radmin VPN:** everyone joins the same network. Use `http://<host's 26.x IP>:7787`.
 - **Same LAN:** use the host's LAN IP.
 
 Never expose the relay to the open internet. The shared key is its only lock, and the traffic is plain HTTP; the VPN is what encrypts it.

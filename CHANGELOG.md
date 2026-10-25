@@ -2,6 +2,13 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.18.4
+- **The relay moved to port 7787.** 7777 is also Terraria's port, so hosting a tModLoader server took the crew down. Nobody has to change anything:
+  - **The host:** crew moves its own setting to the new port by itself.
+  - **Everyone else:** once updated, if the relay stops answering on 7777 but answers on 7787 at the same address, crew follows it there by itself.
+  - **Nothing is lost:** chat position, project folders and saved keys all come along.
+- **A clearer "port taken" message.** When the relay's port is taken, its window now names the program holding it, e.g. *"taken by another program (dotnet.exe, pid 18448)"*.
+
 ## 1.18.3
 - **The sketching Clawd wears pixel shades** (the "deal with it" kind, picked by Umbyz) instead of thin wire glasses that didn't read at the new size: a black bar across, stepped lenses, and a glint in each.
 - **The 🤔 and the tea sip have their hand under the mouth again**, a fist on the chin with a finger up its side, instead of over the mouth.

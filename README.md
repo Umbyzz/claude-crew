@@ -6,7 +6,7 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 
 ```
  you ──────┐
- friend A ─┼── HTTP ──► relay.py      (one PC, port 7777)
+ friend A ─┼── HTTP ──► relay.py      (one PC, port 7787)
  friend B ─┘     over Tailscale / Radmin VPN / LAN
 ```
 

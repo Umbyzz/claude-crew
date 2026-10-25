@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.18.3'
+const VERSION = '1.18.4'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -31,7 +31,11 @@ const membership = atom({ plugin: 'crew', key: 'membership' } as const, '' as Me
 type Membership = '' | 'joined' | 'left' | 'ask'
 let joined = true // mirrors membership === 'joined' for the hot paths; session.start sets it properly
 // Hosting from inside Claude: the relay runs in the background on this PC, reached locally on HOST_URL.
-const HOST_URL = 'http://127.0.0.1:7777'
+// The relay listens on 7787. It used to be 7777, which Terraria (tModLoader) servers use too, so a crew on the old
+// port is moved over by itself (see moveToBase).
+const PORT = 7787
+const OLD_PORT = 7777
+const HOST_URL = `http://127.0.0.1:${PORT}`
 const hostInfo = atom({ plugin: 'crew', key: 'host' } as const, { ip: '', key: '' })
 const confirmReset = atom({ plugin: 'crew', key: 'confirmReset' } as const, false) // the "are you sure?" box
 // What the last update check or install said, shown in /crew (not just a toast that's gone in seconds).
@@ -1744,6 +1748,7 @@ async function pollOnce($: EngineInterface) {
     }
     const msg = explain(raw)
     failures += 1
+    void probeNewPort($).catch(() => {}) // moved to the new port?
     // Back off while the relay is unreachable: skip 1, 2, 4 ... up to 10 ticks between tries.
     skip = Math.min(10, 2 ** Math.min(failures - 1, 4))
     await update($, snapshot, s => ({ ...s, connected: false, error: msg }))
@@ -2624,7 +2629,7 @@ function invite(ip: string, key: string, name = '') {
     `1. Install (once): claude plugin marketplace add Umbyzz/claude-crew, then claude plugin install crew@claude-crew, then restart Claude\n` +
     `2. Be on the same Radmin VPN / Tailscale network as me\n` +
     `3. In Claude: /crew > Settings, and save (press Enter in each field):\n` +
-    `   Relay URL: http://${ip || '<my IP>'}:7777\n` +
+    `   Relay URL: http://${ip || '<my IP>'}:${PORT}\n` +
     `   Crew key: ${key}` +
     (name ? `\n   Your name: ${name} (exactly this: the key only works with this name)` : '')
   )
@@ -3091,6 +3096,39 @@ const OLD_STORE_PS =
   `$f = Get-ChildItem "$env:USERPROFILE\\.claude\\plugins\\store\\crew_inline-*.json" -ErrorAction SilentlyContinue | ` +
   `Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($f) { Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 }`
 
+// Set by register: points this running crew at another relay address right away (a settings save reloads it too).
+let retarget: (base: string) => void = () => {}
+let lastPortProbe = 0
+
+async function moveToBase($: EngineInterface, to: string, why: string) {
+  const from = cfg.base
+  if (!from || to === from) return
+  // what crew remembered under the old address comes along: chat position, membership, project folders, keys
+  for (const k of await $.store.keys().catch(() => [] as string[])) {
+    if (!k.includes(from)) continue
+    const nk = k.split(from).join(to)
+    if ((await $.store.get(nk)) === undefined) await $.store.set(nk, (await $.store.get(k)) as any)
+  }
+  retarget(to)
+  void $.config.set({ key: 'crew.relayUrl', value: to }).catch(() => {})
+  $.ui.toast(`crew: ${why}`, { timeoutMs: 12000 })
+}
+
+// A teammate's relay that stopped answering on the old port: is it on the new one? (checked at most every 30 s)
+async function probeNewPort($: EngineInterface) {
+  const m = /^(https?:\/\/[^/:]+):(\d+)$/.exec(cfg.base)
+  if (!m || Number(m[2]) !== OLD_PORT || isHosting() || Date.now() - lastPortProbe < 30000) return
+  lastPortProbe = Date.now()
+  const to = `${m[1]}:${PORT}`
+  try {
+    const r = await $.http.fetch(`${to}/health`)
+    if (r.ok && JSON.parse(r.text)?.version)
+      await moveToBase($, to, `your crew's relay moved to port ${PORT} (7777 is Terraria's), so crew follows it there. Nothing to do.`)
+  } catch {
+    // not there either: the relay is just down
+  }
+}
+
 async function adoptOldStore($: EngineInterface) {
   if ((await $.store.get('oldStoreCopied').catch(() => true)) !== undefined) return
   const r = await $.process.run(['powershell', '-NoProfile', '-Command', OLD_STORE_PS], { timeoutMs: 20000 }).catch(() => null)
@@ -3107,8 +3145,10 @@ async function adoptOldStore($: EngineInterface) {
 
 export const register: Register = (on, options) => {
   let base = '', me = '', key = '', pollMs = 3000, configured = false, clawdsWithCrew = true
+  let current: Record<string, unknown> = {}
   let autoRun: Config['autoRun'] = 'leader', toasts: Config['toasts'] = 'all'
   const apply = (opts: Record<string, unknown>) => {
+    current = opts
     base = String(opts.relayUrl ?? '').trim().replace(/\/+$/, '')
     me = String(opts.name ?? '').trim()
     key = String(opts.key ?? '')
@@ -3121,6 +3161,7 @@ export const register: Register = (on, options) => {
     cfg = { base, me, key, autoRun, toasts, pollMs, configured }
   }
   apply(options as Record<string, unknown>)
+  retarget = to => apply({ ...current, relayUrl: to })
 
   on('session.start', async ($, e, next) => {
     // Commands first, each on its own: if anything later fails, /crew is still there to show what went wrong.
@@ -3143,6 +3184,9 @@ export const register: Register = (on, options) => {
       }
     }
     await adoptOldStore($)
+    // hosting on the old port: this PC's relay now listens on the new one
+    if (configured && new RegExp(`^http://(127\\.0\\.0\\.1|localhost):${OLD_PORT}$`).test(base))
+      await moveToBase($, HOST_URL, `your relay now uses port ${PORT} (7777 is Terraria's too). Teammates' crew follows by itself once they update.`)
     void refreshModel($)
     await storedKey($) // the key that last worked, even if a settings save was refused
     await attempt('/crew', () => $.command.register({ name: 'crew', description: 'Open the crew pane: leader, teammates, tasks, chat and settings' }))
@@ -3722,7 +3766,7 @@ export const register: Register = (on, options) => {
                 <Box flexDirection="column">
                   <Text dimColor>Paste what your friend's invite says. Press Enter in each field.</Text>
                   {Input && (
-                    <Input key="setup-url" label="Relay URL " value={base} placeholder="http://26.x.x.x:7777" submitLabel="save" autoFocus onSubmit={(v: string) => setOption($, 'relayUrl', v)} />
+                    <Input key="setup-url" label="Relay URL " value={base} placeholder="http://26.x.x.x:7787" submitLabel="save" autoFocus onSubmit={(v: string) => setOption($, 'relayUrl', v)} />
                   )}
                   {Input && (
                     <Input key="setup-key" label="Crew key  " value="" placeholder={key ? '•••••• saved' : 'paste the key'} submitLabel="save" onSubmit={(v: string) => setOption($, 'key', v)} />
@@ -3897,7 +3941,7 @@ export const register: Register = (on, options) => {
                 <Text dimColor>Or join a friend: paste their Relay URL and Crew key. Press Enter in a field to save it.</Text>
               </Box>
               {Input && (
-                <Input key="opt-relayUrl" label="Relay URL " value={base} placeholder="http://26.x.x.x:7777" submitLabel="save" onSubmit={(v: string) => setOption($, 'relayUrl', v)} />
+                <Input key="opt-relayUrl" label="Relay URL " value={base} placeholder="http://26.x.x.x:7787" submitLabel="save" onSubmit={(v: string) => setOption($, 'relayUrl', v)} />
               )}
               {Input && (
                 <Input key="opt-name" label="Your name " value={me} placeholder="e.g. umbyz" submitLabel="save" onSubmit={(v: string) => setOption($, 'name', v)} />
@@ -4760,7 +4804,7 @@ export const register: Register = (on, options) => {
             )}
             {isHosting() && s.connected && (
               <Card title="Invite friends">
-                <Text>You're hosting{host.ip ? ` · friends join at http://${host.ip}:7777` : ''}</Text>
+                <Text>You're hosting{host.ip ? ` · friends join at http://${host.ip}:${PORT}` : ''}</Text>
                 {!host.ip && <Text dimColor>No Radmin/Tailscale address found yet: connect your VPN, then press Host a crew again.</Text>}
                 {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
                 <Box flexDirection="row">

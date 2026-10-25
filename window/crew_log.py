@@ -6,7 +6,7 @@ You only ever see what you'd see in /crew yourself: messages to everyone, to you
 direct messages stay private.
 
     pythonw crew_log.py            (settings come from the crew plugin's /crew Settings)
-    python  crew_log.py --relay http://26.x.x.x:7777 --key KEY --name NAME
+    python  crew_log.py --relay http://26.x.x.x:7787 --key KEY --name NAME
 """
 
 import argparse

@@ -469,9 +469,9 @@ test('Host a crew opens start-relay.bat, takes its key and joins the session', {
   expect(launch).toContain('Invoke-CimMethod -ClassName Win32_Process -MethodName Create')
   expect(launch).toContain('catch { Start-Process')
   expect(sets.find(s => s.key === 'crew.key')?.value).toBe('batkey123')
-  expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://127.0.0.1:7777')
+  expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://127.0.0.1:7787')
 })
-test("a host whose relay is down sees it, and Start relay opens start-relay.bat", { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
+test("a host whose relay is down sees it, and Start relay opens start-relay.bat", { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7787' } }, async ($, on) => {
   mock.store(on)
   on('clock.sleep', async () => ({ value: undefined }) as any)
   on('ui.status', async () => ({ value: undefined }))
@@ -500,7 +500,7 @@ test("a host whose relay is down sees it, and Start relay opens start-relay.bat"
   expect((await ui.find({ key: 'host-settings' }))?.text).toContain('Hosting ✓')
   await ui.unmount()
 })
-test('Stop hosting asks first, then stops the relay and /crew shows it straight away', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
+test('Stop hosting asks first, then stops the relay and /crew shows it straight away', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7787' } }, async ($, on) => {
   mock.store(on)
   on('clock.sleep', async () => ({ value: undefined }) as any)
   on('ui.status', async () => ({ value: undefined }))
@@ -530,7 +530,7 @@ test('Stop hosting asks first, then stops the relay and /crew shows it straight 
   expect(await ui.find({ key: 'stop-host' })).toBeUndefined()
   await ui.unmount()
 })
-test('a host still running an old relay gets Restart relay, which stops it and starts the new one', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
+test('a host still running an old relay gets Restart relay, which stops it and starts the new one', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7787' } }, async ($, on) => {
   mock.store(on)
   on('clock.sleep', async () => ({ value: undefined }) as any)
   on('ui.status', async () => ({ value: undefined }))
@@ -1839,7 +1839,7 @@ test("a connected tool says whether its app is open, from a tasklist (no tokens)
   await new Promise(r => setTimeout(r, 300))
 })
 
-test("the host's own relay refusing its key heals itself from crew_key.txt", { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777', key: 'old-key' } }, async ($, on) => {
+test("the host's own relay refusing its key heals itself from crew_key.txt", { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7787', key: 'old-key' } }, async ($, on) => {
   mock.store(on)
   on('ui.status', async () => ({ value: undefined }))
   on('ui.toast', async () => ({ value: undefined }))
@@ -1868,8 +1868,8 @@ test("the host's own relay refusing its key heals itself from crew_key.txt", { o
   await new Promise(r => setTimeout(r, 300))
 })
 
-test('Timmy presses everything: 300 random button presses on every tab never break /crew', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
-  mock.store(on, { 'folder:http://127.0.0.1:7777:main': 'C:\\Games\\Lava' })
+test('Timmy presses everything: 300 random button presses on every tab never break /crew', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7787' } }, async ($, on) => {
+  mock.store(on, { 'folder:http://127.0.0.1:7787:main': 'C:\\Games\\Lava' })
   on('ui.status', async () => ({ value: undefined }))
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.copy', async () => ({ value: { isCopied: true } }) as any)
@@ -1890,7 +1890,7 @@ test('Timmy presses everything: 300 random button presses on every tab never bre
   const posted: string[] = []
   on('http.fetch', async (_$: unknown, e: any) => {
     if (e.init?.method === 'POST') {
-      posted.push(e.url.replace('http://127.0.0.1:7777', ''))
+      posted.push(e.url.replace('http://127.0.0.1:7787', ''))
       const body = { ok: true, id: 5, to: 'all', members: ['alice', 'bob'], friends: [{ name: 'bob', key: 'kb', seen: 1, ip: '26.1.2.3', online: true }], friendsOnly: false, key: 'fresh' }
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
     }
@@ -2527,3 +2527,43 @@ test('the acting leader gets Check too while the leader is away', { options: OPT
   await ui.unmount()
   expect(posts).toContainEqual({ action: 'check', id: 3 })
 })
+
+test('a host on the old port 7777 moves to 7787, and what crew remembered comes along', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7777' } }, async ($, on) => {
+  const kept = new Map<string, unknown>([['folder:http://127.0.0.1:7777:main', 'C:\\Games\\Lava'], ['cursor:http://127.0.0.1:7777', 5]])
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
+  on('store.keys', async () => ({ value: [...kept.keys()] }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const sets: any[] = []
+  on('config.set', async (_$: unknown, e: any) => (sets.push(e), { value: e.value }) as any)
+  const urls: string[] = []
+  on('http.fetch', async (_$: unknown, e: any) => (urls.push(e.url), { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }))
+  await startSession(on, $)
+  await settle()
+  expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://127.0.0.1:7787')
+  expect(kept.get('folder:http://127.0.0.1:7787:main')).toBe('C:\\Games\\Lava')
+  expect(kept.get('cursor:http://127.0.0.1:7787')).toBeGreaterThanOrEqual(5)
+  expect(urls.some(u => u.startsWith('http://127.0.0.1:7787/poll'))).toBe(true)
+  expect(urls.some(u => u.startsWith('http://127.0.0.1:7777/'))).toBe(false)
+})
+
+test('a teammate whose relay moved to 7787 follows it there by itself (a game server answers on 7777)', { options: { ...OPTIONS, relayUrl: 'http://10.0.0.9:7777' } }, async ($, on) => {
+  mock.store(on, { 'cursor:http://10.0.0.9:7777': 1 })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const sets: any[] = []
+  on('config.set', async (_$: unknown, e: any) => (sets.push(e), { value: e.value }) as any)
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.startsWith('http://10.0.0.9:7777')) return { deny: 'Parse Error: Expected HTTP/' } as any // Terraria's server
+    if (e.url === 'http://10.0.0.9:7787/health') return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true, "version": "1.18.4"}' } }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // fails on 7777, finds the relay on 7787
+  await settle()
+  expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://10.0.0.9:7787')
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(r.result).toContain('T3 [open')
+  expect(r.result).not.toContain("can't be reached")
+})
+

@@ -4,7 +4,7 @@ One person runs this; everyone else's `crew` mod polls it over HTTP.
 Stdlib only (Python 3.8+). Reach it over a VPN (Tailscale, Radmin VPN, ZeroTier)
 or your LAN -- do not expose it to the open internet.
 
-    python relay.py --key <shared-secret> [--port 7777] [--data crew_state.json]
+    python relay.py --key <shared-secret> [--port 7787] [--data crew_state.json]
     python relay.py --key-file crew_key.txt     (makes a random key the first time)
 """
 import argparse
@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.18.3"
+VERSION = "1.18.4"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -63,6 +63,22 @@ def mark_old_done_checked():
     for t in state["tasks"]:
         if t["status"] == "done" and not t.get("checkedBy"):
             t.update(checkedBy="(before 1.18)", checkedAt=t.get("at", 0))
+
+
+def port_owner(port):
+    """Which program holds a port, by name (Windows), for a clearer "port taken" line; "" if unknown."""
+    try:
+        import subprocess
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=10).stdout
+        pid = next((ln.split()[-1] for ln in out.splitlines()
+                    if "LISTENING" in ln and ln.split()[1].endswith(f":{port}")), "")
+        if not pid:
+            return ""
+        row = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+        return f"{row.split(',')[0].strip('\"')}, pid {pid}" if row.startswith('"') else f"pid {pid}"
+    except Exception:
+        return ""
 
 
 def save():
@@ -1280,7 +1296,7 @@ def main():
     p.add_argument("--key", help="shared secret every member puts in their settings")
     p.add_argument("--key-file", help="read the key from this file, creating it with a random key if missing")
     p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=7777)
+    p.add_argument("--port", type=int, default=7787)  # 7777 was Terraria's too
     p.add_argument("--data", default="crew_state.json")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--test-remote", action="store_true", help=argparse.SUPPRESS)
@@ -1317,7 +1333,9 @@ def main():
             print(f"\nA crew relay ({running}) is already running on port {args.port}, so this one isn't needed.")
             print("Use that one, or stop it first (Stop hosting in /crew, or close its window).")
         else:
-            print(f"\nPort {args.port} is taken by another program. Close it, or start the relay with --port <another>.")
+            who = port_owner(args.port)
+            print(f"\nPort {args.port} is taken by another program{f' ({who})' if who else ''}. "
+                  f"Close it, or start the relay with --port <another>.")
         sys.exit(2)
     print(f"Crew relay {VERSION} listening on http://{args.host}:{args.port}  (Ctrl+C to stop)")
     try:
