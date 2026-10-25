@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.18.3
+- **The sketching Clawd wears pixel shades** (the "deal with it" kind, picked by Umbyz) instead of thin wire glasses that didn't read at the new size: a black bar across, stepped lenses, and a glint in each.
+- **The 🤔 and the tea sip have their hand under the mouth again**, a fist on the chin with a finger up its side, instead of over the mouth.
+
 ## 1.18.2
 **Refreshed Clawds**, designed and built by Pluh's Claude after the real Claude mascot's animations (and the codrops breakdown of them):
 - **Motion with weight:** eased moves instead of straight lines. The eyes lead a look-around, the body leans into it with the legs stretching but never through the floor, a quick crouch comes before every jump, the arc goes up and falls like gravity, and the hands overshoot a little on landing.

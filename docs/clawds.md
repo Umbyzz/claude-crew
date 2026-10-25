@@ -7,7 +7,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | getting a new prompt | the **confetti stomp**: stomps side to side, throwing a burst of confetti each time a hand goes up |
 | thinking | looks up with a hand raised and a thought bubble |
 | writing files | sits on the edge of the stage with the laptop on its lap, both hands typing, code flying out |
-| using tools | puts on little reading glasses and sketches on a sheet of paper, the scribbles filling up the page. After a long stretch it goes and **lifts**: a dumbbell curl, two reps, holding at the top of each |
+| using tools | puts on pixel shades and sketches on a sheet of paper, the scribbles filling up the page. After a long stretch it goes and **lifts**: a dumbbell curl, two reps, holding at the top of each |
 | chatting | walks over to the teammate it's messaging, with the real message in a speech bubble |
 | finished a prompt | waves a **checkered flag**, swaying against it (*"flag's up!"*), then the whole crew huddles together and shouts **"CLAUDE'S PLAN!!"** (idea: Pluh and Corixer), then a dance |
 | running subagents | is followed by mini Clawds, one per subagent. Every so often the minis build a **tower**, taking turns making huge squash-and-stretch leaps onto each other's heads. When two or more are busy at once (one Claude's subagents on its task, or several Claudes' at the same time), they set up their own **mini office**: a little table with a tiny laptop each |

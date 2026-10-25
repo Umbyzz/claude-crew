@@ -2036,11 +2036,12 @@ class Painter:
             self.cells(x0, y, both([(ey - 1 + j, j - 1 + j, j - 1 + j)]), EYE)
             return
         if mood == "drafting":
-            # little reading glasses, eyes down on the paper
-            self.cells(x0, y, both([(ey, 0, 0)]), EYE)
-            self.cells(x0, y, both([(ey - 1, 0, 0)]), "#d8d5cb")  # the lenses
-            self.cells(x0, y, [(ey - 1, lx - 1, lx - 1), (ey - 1, lx + 1, rx - 1),
-                               (ey - 1, rx + 1, rx + 1)], "#c9c6bd")  # the wire frames and the bridge
+            # the pixel "deal with it" shades (Umbyz's pick): one black bar right across, a lens either side of the
+            # bridge's notch, each stepping in at its outer bottom corner, and a white glint running down each lens
+            self.cells(x0, y, [(ey - 1, lx - 1, rx + 2)], EYE)  # the top bar
+            self.cells(x0, y, [(ey, lx - 1, lx + 2), (ey, rx - 1, rx + 2)], EYE)  # the lenses
+            self.cells(x0, y, [(ey + 1, lx, lx + 2), (ey + 1, rx - 1, rx + 1)], EYE)  # their stepped bottoms
+            self.cells(x0, y, [(ey, lx, lx), (ey + 1, lx + 1, lx + 1), (ey, rx, rx), (ey + 1, rx + 1, rx + 1)], INK)  # glints
             return
         if mood == "annoyed":
             # brows down at you, a flat unimpressed mouth
@@ -2097,7 +2098,9 @@ class Painter:
         arm_row = max(0, h // 2)
         self.cells(x0, y, [(arm_row, w0 - 2, w0 - 1), (arm_row + 1, w0 - 2, w0 - 1)], color)  # the left arm, relaxed
         hand = ORANGE_DARK
-        self.cells(x0, y, [(4, 4, 5), (5, 4, 5), (4, 6, 7)], hand)  # fist under the mouth, finger along the chin
+        # the fist sits on the body's bottom row, under the mouth, with one finger up the side of the chin
+        low = max(4, h - 1)
+        self.cells(x0, y, [(low, 4, 7), (low - 1, 4, 4)], hand)
         if c.mood == "smug":
             self.cells(x0, y, [(arm_row - 1, w1 + 1, w1 + 2), (arm_row, w1 + 1, w1 + 2)], color)  # arm raised
             self.cells(x0, y, [(arm_row - 3, w1 + 1, w1 + 3), (arm_row - 2, w1 + 1, w1 + 3)], "#f0eee6")  # teacup
