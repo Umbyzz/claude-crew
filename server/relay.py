@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.17.1"
+VERSION = "1.18.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -295,12 +295,31 @@ def away_for(name, now):
 
 
 def task_view(t, now):
-    """A task as the plugins see it: with how long a claimed task's owner has been away."""
+    """A task as the plugins see it: with how long a claimed task's owner has been away, and which of the tasks it
+    comes after aren't done yet ("waiting"; one that was removed doesn't hold it up)."""
+    v = t
     if t["status"] == "claimed" and t.get("owner"):
         away = away_for(t["owner"], now)
         if away >= STALE_MINUTES * 60:
-            return dict(t, ownerAway=int(away // 60))
-    return t
+            v = dict(t, ownerAway=int(away // 60))
+    if t.get("after"):
+        status = {x["id"]: x["status"] for x in state["tasks"] if task_in(x, t.get("project", MAIN))}
+        waiting = [i for i in t["after"] if status.get(i, "done") != "done"]
+        if waiting:
+            v = dict(v, waiting=waiting)
+    return v
+
+
+def task_ids(raw):
+    """Task numbers from 3, "T3", "T3, T4" or a list of them."""
+    items = raw if isinstance(raw, list) else str(raw or "").replace(",", " ").split()
+    out = []
+    for x in items:
+        try:
+            out.append(int(str(x).strip().lstrip("Tt#")))
+        except ValueError:
+            pass
+    return out
 
 
 def is_online(p, now):
@@ -1140,11 +1159,14 @@ class Handler(BaseHTTPRequestHandler):
             t = {"id": new_task_id(), "title": title, "note": str(b.get("note", ""))[:5000],
                  "status": "open", "owner": None, "assignee": None,
                  "by": self.name, "at": int(time.time()), "project": pr}
+            after = self.after_ids(b, pr)
+            if after:
+                t["after"] = after
             tasks.append(t)
             post_message(self.name, "all", f"added task T{t['id']}: {title}", "update", pr)
             self.assign(t, assignee)
             save()
-            return self.reply(200, t)
+            return self.reply(200, task_view(t, time.time()))
         try:  # 3, "3" and "T3" all mean task T3
             wanted = int(str(b.get("id", "")).strip().lstrip("Tt#"))
         except ValueError:
@@ -1159,6 +1181,20 @@ class Handler(BaseHTTPRequestHandler):
             t.update(owner=self.name, status="claimed")
         elif action == "done":
             t.update(status="done", owner=t["owner"] or self.name)
+            t.pop("blocked", None)
+        elif action == "block":
+            reason = str(b.get("reason") or b.get("note") or "").strip()[:300]
+            if not reason:
+                return self.reply(400, {"error": "say what it's blocked on (reason)"})
+            t["blocked"] = reason
+        elif action == "unblock":
+            t.pop("blocked", None)
+        elif action == "check":  # the leader's review of finished work
+            if t["status"] != "done":
+                return self.reply(400, {"error": f"T{t['id']} isn't done yet: only a done task can be checked"})
+            if self.name not in (leader_of(pr), acting.get(pr)) and not self.host_pc():
+                return self.reply(403, {"error": "only the project's leader (or acting leader) checks finished tasks"})
+            t.update(checkedBy=self.name, checkedAt=int(time.time()))
         elif action == "release":
             t.update(status="open", owner=None)
         elif action == "assign":
@@ -1170,14 +1206,41 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "edit":  # fix a stale title or note without removing and re-adding the task
             if str(b.get("title") or "").strip():
                 t["title"] = str(b["title"]).strip()[:500]
+            if "after" in b:
+                after = [i for i in self.after_ids(b, pr) if i != t["id"]]
+                if after:
+                    t["after"] = after
+                else:
+                    t.pop("after", None)
         else:
-            return self.reply(400, {"error": "action must be add|claim|done|release|assign|edit|remove"})
-        if b.get("note") and action != "assign":
+            return self.reply(400, {"error": "action must be add|claim|done|release|assign|edit|remove|block|unblock|check"})
+        if b.get("note") and action not in ("assign", "block"):
             t["note"] = str(b["note"])[:5000]
         who = f" to {assignee}" if action == "assign" else ""
-        post_message(self.name, "all", f"{action} task T{t['id']}{who}: {t['title']}", "update", pr)
+        why = f" ({t['blocked']})" if action == "block" else ""
+        post_message(self.name, "all", f"{action} task T{t['id']}{who}: {t['title']}{why}", "update", pr)
+        if action == "done":
+            self.wake_next(t, pr)
         save()
-        self.reply(200, t)
+        self.reply(200, task_view(t, time.time()))
+
+    def after_ids(self, b, pr):
+        """The tasks a task comes after: ones that exist in this project."""
+        ids = {x["id"] for x in state["tasks"] if task_in(x, pr)}
+        return [i for i in dict.fromkeys(task_ids(b.get("after"))) if i in ids]
+
+    def wake_next(self, t, pr):
+        """A task is done: whoever holds a task that was only waiting for it hears it can start."""
+        now = time.time()
+        for d in state["tasks"]:
+            if d is t or d["status"] == "done" or not task_in(d, pr) or t["id"] not in d.get("after", []):
+                continue
+            if task_view(d, now).get("waiting"):
+                continue  # still waiting for something else
+            who = d.get("owner") or d.get("assignee")
+            post_message(self.name, who or "all",
+                         f"T{d['id']} can start: T{t['id']} is done, and so is everything it waited for. ({d['title']})",
+                         "request" if who else "update", pr)
 
 
 class RelayServer(ThreadingHTTPServer):

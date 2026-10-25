@@ -48,6 +48,11 @@ export type CrewTask = {
   by: string
   at: number
   ownerAway?: number // minutes the claiming owner has been offline (from 10 on); at 30 the relay reopens it
+  after?: number[] // tasks that must be done first
+  waiting?: number[] // the ones of those that aren't done yet (from the relay)
+  blocked?: string // what it's stuck on
+  checkedBy?: string // the leader who checked the finished work
+  checkedAt?: number
 }
 
 export type CrewSnapshot = {

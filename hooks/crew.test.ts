@@ -2401,3 +2401,59 @@ test('a members-only project has "+ Add someone" right in its summary', { option
   expect(posts.find(p => p.url.endsWith('/project/members'))?.body).toEqual({ add: ['bob'] })
   await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any)
 })
+
+test('with the relay unreachable, crew_status and crew_read_shared answer from the last saved copy', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  let down = false
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (down) return { deny: 'ECONNREFUSED: Unable to connect' } as any
+    const body = e.url.includes('/shared?name=') ? { name: 'plan', by: 'bob', content: 'Goal: a tower defense game' } : POLL
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_read_shared', name: 'plan' } as any)
+  down = true
+  const status: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(status.result).toContain("the relay can't be reached right now")
+  expect(status.result).toContain('T3 [open') // the board as last seen
+  const doc: any = await $.tool.call({ tool: 'mcp__crew__crew_read_shared', name: 'plan' } as any)
+  expect(doc.result).toContain('Saved copy')
+  expect(doc.result).toContain('Goal: a tower defense game')
+})
+
+test('at 90% of a limit while holding tasks, this Claude is asked once to hand them over', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const held = { ...POLL, leader: 'bob', tasks: [{ id: 5, title: 'Waves', note: '', status: 'claimed', owner: 'alice', assignee: 'alice', by: 'bob', at: 0 }] }
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(held) } }))
+  on('session.measure', async (_$: unknown, e: any) => ({ changed: e.changed }) as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const measure = (pct: number) =>
+    $.session.measure({ context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: pct, resetsAt: '2026-10-26T00:00:00Z' }], changed: ['rateLimits'] } as any)
+  await measure(80)
+  await settle()
+  expect(JSON.stringify(session.appended())).not.toContain('handover note')
+  await measure(92)
+  await measure(95)
+  await settle()
+  const notes = session.appended().filter(r => JSON.stringify(r.message.content).includes('handover note'))
+  expect(notes).toHaveLength(1)
+  expect(JSON.stringify(notes[0].message.content)).toContain('T5')
+  expect(JSON.stringify(notes[0].message.content)).toContain('tell bob')
+})
+
+test("crew_status shows a task's order, what it's blocked on and who checked it", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  on('ui.status', async () => ({ value: undefined }))
+  const tasks = [
+    { id: 3, title: 'Skeleton', note: '', status: 'done', owner: 'alice', assignee: null, by: 'alice', at: 0, checkedBy: 'alice' },
+    { id: 4, title: 'Enemies', note: '', status: 'open', owner: null, assignee: 'bob', by: 'alice', at: 0, after: [3, 6], waiting: [6], blocked: 'needs the art' },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, tasks }) } }))
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status', all: true } as any)
+  expect(r.result).toContain('T4 [open · for bob · waits for T6 · blocked: needs the art] Enemies')
+  expect(r.result).toContain('T3 [done · alice · checked by alice] Skeleton')
+})

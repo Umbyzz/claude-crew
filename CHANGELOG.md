@@ -2,6 +2,13 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.18.0
+- **Tasks in order.** A task can come *after* others (`crew_task` with `after: "T3, T4"`). The board says *waits for T3*, and when the last of those is done, whoever holds the task is told *"T5 can start"*. A task can also be **blocked**, with what it's stuck on, and unblocked again.
+- **The leader's review shows.** The leader (or acting leader) marks a finished task as **checked** (`crew_task check`), so everyone can see what's been reviewed, not just reported done.
+- **Readable while the relay is down.** Crew keeps a copy of the board, the recent chat and the shared docs you've read. With the relay unreachable, `crew_status` and `crew_read_shared` answer from that copy, saying when it's from, and messages still queue up to be sent.
+- **A handover before running dry.** At 90% of a usage limit while holding tasks, a Claude is asked once to put a handover note on each (where it stands, what's next, which files) and tell the leader, so work doesn't die mid-task.
+- **A leaner crew prompt.** The crew instructions every Claude carries on every turn say the same in fewer words: about 250 tokens less per turn when every section applies.
+
 ## 1.17.1
 The other half of the retro fixes, designed and built by CoriZori's Claude and merged over the crew relay:
 - **"Use this chat"** replaces "Move this chat", and crew warns *"Wait!! You already have a chat for <project>"* when this PC already has a chat in that project (with when it was last used), so you carry on there instead of starting over.

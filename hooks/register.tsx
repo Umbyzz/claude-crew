@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.17.1'
+const VERSION = '1.18.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -99,6 +99,11 @@ const answeredRequests = new Set<number>()
 let working = false
 let failures = 0
 let skip = 0
+// When the relay last answered, and a saved copy of what it said (per project), for when it can't be reached.
+let lastGoodAt = 0
+let cacheSavedAt = 0
+const cacheKey = () => `cache:${cfg.base}:${projectName}`
+const docKey = (name: string) => `doc:${cfg.base}:${projectName}:${name}`
 // This session hit its usage limit; teammates are told so and see it in the crew list.
 let outOfTokens = false
 let limits: { kind: string; percentUsed: number; resetsAt?: string }[] = []
@@ -766,6 +771,36 @@ function resetHint() {
   return `in about ${h ? `${h}h ` : ''}${m}m (${w.resetsAt})`
 }
 
+// Close to a usage limit while holding tasks: one note, so the work is handed over before this Claude runs dry.
+async function handoverNudge($: EngineInterface) {
+  if (!joined || !cfg.configured || outOfTokens) return
+  const l = [...limits].filter(x => x.percentUsed >= 90).sort((a, b) => b.percentUsed - a.percentUsed)[0]
+  if (!l) return
+  const s = await read($, snapshot)
+  const held = s.tasks.filter(t => t.status === 'claimed' && t.owner === cfg.me)
+  if (!held.length) return
+  const key = `handover:${cfg.base}:${l.kind}:${l.resetsAt ?? ''}`
+  if (await $.store.get(key).catch(() => true)) return
+  await $.store.set(key, true)
+  const name: Record<string, string> = { five_hour: 'session', seven_day: 'weekly', spend_limit: 'spend' }
+  const to = s.leader && s.leader !== cfg.me ? s.leader : 'the crew'
+  await $.session.append({
+    message: {
+      type: 'user',
+      content: [
+        {
+          type: 'text',
+          text:
+            `<crew-note>You've used ${Math.round(l.percentUsed)}% of your ${name[l.kind] ?? l.kind} limit and hold ` +
+            `${held.map(t => `T${t.id}`).join(', ')}. Before you run out, put a short handover note on each (crew_task edit ` +
+            `with a note: where it stands, what's next, which files) and tell ${to} in one crew_send line. Then carry on.</crew-note>\n` +
+            `(From the crew plugin, not typed by the user.)`,
+        },
+      ],
+    },
+  })
+}
+
 async function markOut($: EngineInterface, why: string) {
   if (outOfTokens || !cfg.configured) return
   outOfTokens = true
@@ -819,7 +854,10 @@ function crewNote(m: CrewMessage, leader: string | null) {
 function fmtTask(t: CrewTask) {
   const away = t.ownerAway ? ` (offline ${t.ownerAway} min: anyone can claim it)` : ''
   const who = t.owner ? ` · ${t.owner}${away}` : t.assignee ? ` · for ${t.assignee}` : ''
-  return `T${t.id} [${t.status}${who}] ${t.title}${t.note ? ` — ${t.note}` : ''}`
+  const waits = t.waiting?.length ? ` · waits for ${t.waiting.map(i => `T${i}`).join(', ')}` : ''
+  const blocked = t.blocked ? ` · blocked: ${t.blocked}` : ''
+  const checked = t.checkedBy ? ` · checked by ${t.checkedBy}` : ''
+  return `T${t.id} [${t.status}${who}${waits}${blocked}${checked}] ${t.title}${t.note ? ` — ${t.note}` : ''}`
 }
 
 function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acting: string | null = null) {
@@ -840,16 +878,17 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
     `and mark it done with a note of what changed. If the project has a "plan" doc, read it before claiming a task, ` +
     `and edit only what your task owns: its files, or its part of the game tree in a live engine like Roblox Studio (ask the ` +
     `owner or the leader for anything else). Use crew_send_image to show teammates a screenshot or picture.` +
-    `\n\nWaiting on a teammate costs tokens only if you keep checking. For a quick answer, one crew_wait is fine. ` +
-    `If their part takes longer, don't loop on crew_wait or crew_status: finish your turn, tell your user what you're ` +
-    `waiting for, and stop. Their reply arrives as a crew message (a request can even start your next turn on its own).`
+    `\n\nWaiting costs tokens only if you keep checking: one crew_wait for a quick answer is fine, but for a longer wait ` +
+    `don't loop on crew_wait or crew_status. Finish your turn, tell your user what you're waiting for, and stop: the reply ` +
+    `arrives as a crew message (a request can even start your next turn).`
   if (leader === cfg.me)
     return (
       `${common}\n\nYou are the crew LEADER. When the user gives you a goal, break it into concrete tasks, ` +
       `add them to the board with crew_task (assignee = the teammate best placed, or leave it open), share the plan with crew_share, ` +
       `and keep the crew in sync with crew_send. Check crew_status for progress, review what teammates report, ` +
       `re-plan when needed, and take tasks yourself when you're the right one for them. ` +
-      `Before you merge or build on a teammate's work, make sure they've reported it done. ` +
+      `Before you merge or build on a teammate's work, make sure they've reported it done; once you've checked it, mark it ` +
+      `with crew_task check. Give tasks an order with "after" when one needs another first. ` +
       `For a new project or a big new goal, use the crew:kickoff skill first: it sets up the plan doc, who owns which ` +
       `files and the house rules, so the Claudes don't clash. ` +
       `Teammates' requests to you start your turn even while your user is away, so handle them like your user's ` +
@@ -1381,29 +1420,23 @@ function crewExtras(s: CrewSnapshot) {
           `"(closed)" has its app shut, so ask that teammate to open it before giving them live work in it. `
         : '') +
       (leading
-        ? `Play to strengths: before splitting a bigger goal, propose who takes what in one crew_send and let teammates say ` +
-          `if another split suits them better (their person's wishes win). Rule of thumb: the most capable models (like Opus) ` +
-          `take the heavy or tricky coding, architecture and reviews; quicker ones (like Sonnet) take ideas, design, UI and ` +
-          `straightforward building; the lightest (like Haiku) take small, well-defined chores, tests and docs. Take your own share by the same rule.`
+        ? `Play to strengths: before splitting a bigger goal, propose who takes what in one crew_send (their person's wishes ` +
+          `win). Heavy or tricky code, architecture and reviews go to the most capable models (Opus); ideas, design, UI and ` +
+          `plain building to quicker ones (Sonnet); small chores, tests and docs to the lightest (Haiku). You too.`
         : `The leader splits work by these. If a task would clearly fit another teammate's model (or yours) better, say so in one line.`)
   }
   if (folderPath)
     text +=
-      `\n\nCrew drop folder: anything the crew needs from you (assets, references, exports, notes) goes in ` +
-      `${mirrorPath(mySharedName())}; the plugin sends it to every teammate by itself within ~2 minutes (no tokens). ` +
-      `Teammates' drops arrive in ${folderPath}\\${CREWSHARED}\\<their name>. ` +
-      `When your user gives you a goal without saying where its material is (source, assets, references), look in ` +
-      `${mirrorPath(CREWLEADER)} (raw material, only on this PC) and ${folderPath}\\${CREWSHARED} first. If the goal needs ` +
-      `files and both are empty, ask your user where they are (suggest dropping them in ${CREWLEADER}) instead of guessing ` +
-      `or starting from nothing. If the goal is vague ("just make this game") and nothing there or in the shared docs explains ` +
-      `it, ask your user two or three short questions first (what exactly, which engine or platform, how big) instead of ` +
-      `inventing a big plan.` +
+      `\n\nCrew drop folder: files the crew needs from you go in ${mirrorPath(mySharedName())}; the plugin sends them to ` +
+      `everyone within ~2 minutes (no tokens). Teammates' arrive in ${folderPath}\\${CREWSHARED}\\<their name>. A goal whose ` +
+      `material isn't named: look in ${mirrorPath(CREWLEADER)} (raw material, this PC only) and ${folderPath}\\${CREWSHARED} ` +
+      `first; if both are empty, ask your user where they are (suggest dropping them in ${CREWLEADER}) instead of guessing. ` +
+      `A vague goal ("just make this game") with nothing to go on: ask two or three short questions (what exactly, which ` +
+      `engine or platform, how big) before planning.` +
       (s.leader === cfg.me || s.acting === cfg.me
-        ? ` ${mirrorPath(CREWLEADER)} is your private raw-material folder: never synced, only on this PC. When your user ` +
-          `puts big raw material there (a whole source tree, every asset) and asks you to share it, sort it for the crew: ` +
-          `decide from the structure (folder names, file types and sizes, a quick look at a few key files), never by ` +
-          `reading everything. Then copy only what teammates need into your drop folder with one shell copy command ` +
-          `(copying costs no tokens), and crew_share a map doc of what's there and which task needs which part.`
+        ? ` ${mirrorPath(CREWLEADER)} is your private raw-material folder (never synced). Asked to share from it, sort by ` +
+          `structure (folder names, file types and sizes, a peek at a few key files), never by reading everything; copy only ` +
+          `what teammates need into your drop folder with one shell command, and crew_share a map doc of what's where.`
         : '')
   const shared = sharedFolders.filter(f => f.ready)
   if (shared.length) {
@@ -1417,11 +1450,10 @@ function crewExtras(s: CrewSnapshot) {
             (f.by !== cfg.me && !wantedFolders.get(f.name) ? ', not on this PC yet (crew_share_folder action "get" fetches it)' : folderPath ? ` at ${mirrorPath(f.name)}` : ''),
         )
         .join('; ') +
-      `. Read them locally with Read/Grep/Glob, only the parts your task needs. Treat teammates' shared folders as read-only: ` +
-      `the next sync updates them, so put your own work elsewhere.` +
+      `. Read only the parts your task needs, locally. Teammates' shared folders are read-only (the next sync overwrites them).` +
       (leading
-        ? ` Before splitting work over a big shared folder, read it once and crew_share a map doc ("${shared[0].name}-map"): ` +
-          `the systems, where each lives, and which files each task needs. Then point every task at its files, so no one re-explores the whole folder.`
+        ? ` Before splitting work over a big one, crew_share a map doc ("${shared[0].name}-map"): the systems, where each ` +
+          `lives, which files each task needs, so no one re-explores it.`
         : '')
   }
   const mine = s.peers.find(p => p.name === cfg.me)?.usage
@@ -1659,6 +1691,15 @@ async function pollOnce($: EngineInterface) {
       reads: data.reads && typeof data.reads === 'object' ? data.reads : undefined, // absent from an older relay
       keepAwake: data.keepAwake !== false,
     }))
+    lastGoodAt = Date.now()
+    if (lastGoodAt - cacheSavedAt > 60000) {
+      // in the background: a check-in never waits on it
+      cacheSavedAt = lastGoodAt
+      const at = lastGoodAt
+      void read($, snapshot)
+        .then(s => $.store.set(cacheKey(), { at, leader: s.leader, feed: s.feed.slice(-40), tasks: s.tasks, shared: s.shared, peers: s.peers }))
+        .catch(() => {})
+    }
     // a doc shared again under the same name keeps the list the same, but who/when/size change
     if (typeof data.yourKey === 'string' && data.yourKey && data.yourKey !== cfg.key) {
       void rememberKey($, data.yourKey)
@@ -2925,17 +2966,20 @@ const TOOLS = [
   {
     name: 'crew_task',
     description:
-      "Work the crew's shared task board: add a task (optionally with an assignee, who gets it as a request), assign one, " +
-      'claim one before starting it, mark it done with a note of the result, release it, edit its title/note when it goes stale, or remove it.',
+      "Work the crew's shared task board: add a task (optionally with an assignee, who gets it as a request, and the tasks it comes " +
+      'after), assign one, claim one before starting it, mark it done with a note of the result, release it, edit its title/note/order ' +
+      "when it goes stale, block it (and unblock) with what it's stuck on, check a teammate's finished task (the leader), or remove it.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['add', 'assign', 'claim', 'done', 'release', 'edit', 'remove'] },
+        action: { type: 'string', enum: ['add', 'assign', 'claim', 'done', 'release', 'edit', 'remove', 'block', 'unblock', 'check'] },
         id: { type: 'string', description: 'task number, like "3" or "T3" (every action but add)' },
         title: { type: 'string', description: 'for add' },
         assignee: { type: 'string', description: 'teammate name, for add or assign' },
         note: { type: 'string', description: 'details, or the result summary on done' },
+        after: { type: 'string', description: 'for add or edit: the tasks that must be done first, like "T3, T4" (its holder hears when they are)' },
+        reason: { type: 'string', description: "for block: what it's stuck on" },
       },
       required: ['action'],
     },
@@ -3256,6 +3300,7 @@ export const register: Register = (on, options) => {
     // No marking "out" at 100%: with extra usage bought, work goes on past it. A turn that really fails on the
     // limit (classic.StopFailure) is what says this Claude is out.
     limits = [...e.rateLimits]
+    void handoverNudge($).catch(() => {})
     return next(e)
   })
 
@@ -3302,8 +3347,17 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__crew__crew_status' }, async ($, e: any) => {
     if (!joined) return ok("You're not in the crew session right now; the user can join it from /crew.")
     await poll($)
-    const s = await read($, snapshot)
-    if (!s.connected) return ok(`Not connected to the relay: ${s.error || 'not set up'}`)
+    let s = await read($, snapshot)
+    let offline = ''
+    if (!s.connected) {
+      // the relay can't be reached: answer from the last copy this PC has (this run's, or the one saved on disk)
+      const saved: any = s.tasks.length || s.feed.length ? { ...s, at: lastGoodAt } : await $.store.get(cacheKey()).catch(() => null)
+      if (!saved?.at) return ok(`Not connected to the relay: ${s.error || 'not set up'}`)
+      offline =
+        `(Saved ${stamp(saved.at / 1000)}: the relay can't be reached right now (${s.error || 'offline'}), so this is the last ` +
+        `copy this PC has. crew_send still works: it's queued and sent once the relay is back.)\n\n`
+      s = { ...s, ...saved, connected: false, peers: (saved.peers ?? []).map((p: any) => ({ ...p, online: false })) }
+    }
     const n = Math.max(1, Math.min(100, Number(e.messages) || 15))
     if (e.id) {
       const m = s.feed.find(x => x.id === Number(e.id))
@@ -3322,6 +3376,7 @@ export const register: Register = (on, options) => {
     const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
     const onlineNow = s.peers.filter(p => p.online).length
     return ok(
+      offline +
       [
         `Summary: ${onlineNow} online · ${openTasks.length} open task${openTasks.length === 1 ? '' : 's'} (${mine} yours) · leader ${s.leader ?? 'none'}`,
         `You are "${me}", in project "${projectName}"` +
@@ -3353,6 +3408,8 @@ export const register: Register = (on, options) => {
       title: e.title,
       assignee: e.assignee,
       note: e.note,
+      ...(e.after !== undefined ? { after: e.after } : {}),
+      reason: e.reason,
     })
     await poll($)
     return ok(e.action === 'remove' ? `Removed T${t.id}.` : fmtTask(t))
@@ -3407,7 +3464,17 @@ export const register: Register = (on, options) => {
       const { docs } = await relay($, 'GET', '/shared')
       return ok(docs.map((d: any) => `${d.name} — by ${d.by}, ${d.size} chars`).join('\n') || '(no shared docs)')
     }
-    const doc = await relay($, 'GET', `/shared?name=${encodeURIComponent(e.name)}`)
+    let doc: any
+    try {
+      doc = await relay($, 'GET', `/shared?name=${encodeURIComponent(e.name)}`)
+    } catch (err) {
+      const saved: any = unreachable(err) ? await $.store.get(docKey(e.name)).catch(() => null) : null
+      if (!saved) throw err
+      return ok(
+        `(Saved copy from ${stamp(saved.at / 1000)}: the relay can't be reached right now.)\n"${saved.name}" by ${saved.by}:\n\n${saved.content}`,
+      )
+    }
+    void $.store.set(docKey(doc.name), { name: doc.name, by: doc.by, content: doc.content, at: Date.now() }).catch(() => {})
     return ok(`"${doc.name}" by ${doc.by}:\n\n${doc.content}`)
   }).catch(failed)
 

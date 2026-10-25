@@ -370,6 +370,28 @@ class RelayTest(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=5) as r:
             self.assertEqual(r.read(), bytes([0]) * 100)
 
+    def test_task_order_blocked_and_checked(self):
+        self.r.call("POST", "/leader", "cori", body={"name": "cori"})
+        _, a = self.r.call("POST", "/tasks", "cori", body={"action": "add", "title": "skeleton"})
+        _, b = self.r.call("POST", "/tasks", "cori", body={"action": "add", "title": "enemies", "assignee": "pluh",
+                                                           "after": f"T{a['id']}, T999"})  # T999 doesn't exist: ignored
+        self.assertEqual(b["after"], [a["id"]])
+        self.assertEqual(b["waiting"], [a["id"]])
+        _, r = self.r.call("POST", "/tasks", "pluh", body={"action": "block", "id": b["id"], "reason": "needs the art"})
+        self.assertEqual(r["blocked"], "needs the art")
+        self.assertEqual(self.r.call("POST", "/tasks", "pluh", body={"action": "block", "id": b["id"]})[0], 400)  # no reason
+        self.r.call("POST", "/tasks", "pluh", body={"action": "unblock", "id": b["id"]})
+        self.r.call("POST", "/tasks", "cori", body={"action": "done", "id": a["id"]})
+        msgs = self.poll("pluh")[1]["messages"]
+        self.assertTrue(any(m["to"] == "pluh" and m["kind"] == "request" and f"T{b['id']} can start" in m["text"] for m in msgs))
+        tasks = {t["id"]: t for t in self.poll("pluh")[1]["tasks"]}
+        self.assertNotIn("waiting", tasks[b["id"]])
+        self.assertNotIn("blocked", tasks[b["id"]])
+        self.assertEqual(self.r.call("POST", "/tasks", "pluh", body={"action": "check", "id": a["id"]})[0], 403)  # not the leader
+        _, r = self.r.call("POST", "/tasks", "cori", body={"action": "check", "id": a["id"]})
+        self.assertEqual(r["checkedBy"], "cori")
+        self.assertEqual(self.r.call("POST", "/tasks", "cori", body={"action": "check", "id": b["id"]})[0], 400)  # not done
+
     def test_an_image_goes_through(self):
         import base64
         data = base64.b64encode(os.urandom(50_000)).decode()
