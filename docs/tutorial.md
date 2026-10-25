@@ -74,9 +74,11 @@ New projects are **members-only**: nobody else can see them yet. **Alex**, in th
 
 ✔ Both of you see the project, and the project line says "here: you (this chat), Sam" on Alex's side. Someone with a chat open in another project shows as "you (another chat)"; **↻** next to **Working on** re-reads the list.
 
-### 8. Set up the engine (if it's a game)
-- **Roblox:** everyone opens the **same Team Create place**, with the Roblox Studio MCP connected. ✔ The **Crew** tab shows **🔌 1 MCP** next to each of you.
-- **Unity:** one git repo with a branch per person, everyone on the **same Unity version**. Unity has no live sharing, so each person builds in their own scene and the leader merges.
+### 8. Set up the project (engine, repo or doc)
+- **Roblox:** everyone opens the **same Team Create place**, with the Roblox Studio MCP connected. ✔ The **Crew** tab shows **🔌 1 MCP** next to each of you. Want scripts as files in git (diffs, reviews, file locks)? Add **Rojo** too: the kickoff sets it up if you say so.
+- **Unity:** one git repo with a branch per person, everyone on the **same Unity version**. Unity has no live sharing, so each person builds in their own work scene and the leader merges; the kickoff's first task makes those scenes and the `.gitignore`.
+- **A website:** one git repo with a branch per person. Each of you runs your own dev server on your own port, and the leader keeps the design (colours, fonts, layout) in one place.
+- **A document** (a guide, a report, a game design doc): no repo needed. The crew works in shared docs: an outline first, then one section each.
 - **Plain code:** one git repo with a branch per person is best.
 
 Got raw material (references, sounds, an old project)? **Alex** drops it in **📦 Crewleader** (Project tab → **▸ Shared folders → Crewleader → Open**). It stays on Alex's PC until the leader's Claude picks out what the crew needs.
@@ -88,19 +90,19 @@ Got raw material (references, sounds, an old project)? **Alex** drops it in **�
 
 The leader's Claude runs the **crew:kickoff** skill:
 1. It asks 2–3 questions if the goal is vague. Answer them.
-2. It writes a one-page **`plan`** doc: the goal, the scope, who owns which folder (or part of the game), how the pieces connect, and what "done" means.
+2. It writes a one-page **`plan`** doc: the goal, the scope, who owns which folder (or part of the game, page, or section), how the pieces connect, and what "done" means (in a game, that includes a playtest).
 3. It adds **house rules** (only edit what your task owns, test before done, and so on).
 4. It proposes **who takes what** in one message. Say if you'd rather swap.
-5. It adds tasks to the board, each saying what it owns (`owns: ServerScriptService/EnemyAI`), with the skeleton first.
+5. It adds tasks to the board, each saying what it owns (`owns: ServerScriptService/EnemyAI`), with the skeleton first. Tasks that need others first say so.
 
-✔ The **Tasks** tab fills up, the **plan** doc is in **▸ Shared docs**, and Sam's Claude gets its first task.
+✔ The **Tasks** tab fills up, the **plan** doc is in **▸ Shared docs**, and Sam's Claude gets its first task. A task that has to wait shows **waits for T1** until T1 is done; its owner is told when it can start.
 
 ---
 
 ## Part 3: Work together
 
 ### 10. What you do, and what the Claudes do
-- **The Claudes** claim tasks, work on them, test, mark them done and report back. Sam's Claude starts on the leader's requests by itself (**Auto-run**: *leader*, the default). When it finishes, it tells the leader's Claude, which checks the work and hands out the next task, even while Alex is away.
+- **The Claudes** claim tasks, work on them, test, mark them done and report back. Sam's Claude starts on the leader's requests by itself (**Auto-run**: *leader*, the default). When it finishes, it tells the leader's Claude, which checks the work and hands out the next task, even while Alex is away. In the **Tasks** tab, finished work sits under **Done** until the leader checks it (**✓ checked by Alex**); a stuck task shows **🚧 blocked** with the reason.
 - **You** talk to your own Claude as usual, answer its questions, and watch. Your own instructions always win.
 
 ### 11. Talk without spending tokens

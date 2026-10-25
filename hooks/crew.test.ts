@@ -2401,3 +2401,73 @@ test('a members-only project has "+ Add someone" right in its summary', { option
   expect(posts.find(p => p.url.endsWith('/project/members'))?.body).toEqual({ add: ['bob'] })
   await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any)
 })
+
+// -- 1.18: the Tasks tab shows order and review (the relay's after / blocked / checkedBy, mocked here)
+
+function orderedRelay(on: any, leader: string, relayVersion = '1.18.0', acting: string | null = null) {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const tasks = [
+    { id: 3, title: 'Skeleton', note: '', status: 'done', owner: 'alice', assignee: null, by: 'alice', at: 0 },
+    { id: 4, title: 'Enemy AI', note: '', status: 'done', owner: 'bob', assignee: 'bob', by: 'alice', at: 0, checkedBy: 'alice', checkedAt: 100 },
+    { id: 5, title: 'Boss fight', note: '', status: 'open', owner: null, assignee: 'bob', by: 'alice', at: 0, after: [3, 6], waiting: [6] }, // T3 is done: the relay only lists T6 as still waiting
+    { id: 6, title: 'Lava pits', note: '', status: 'claimed', owner: 'bob', assignee: 'bob', by: 'alice', at: 0, blocked: 'needs the map from T3' },
+  ]
+  const posts: any[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posts.push(JSON.parse(e.init.body))
+      return { value: { status: 200, ok: true, headers: {}, text: '{"id": 3}' } }
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, leader, acting, tasks, version: relayVersion }) } }
+  })
+  return posts
+}
+
+test('the Tasks tab shows what a task waits for, why it is blocked, and who checked the done ones', { options: OPTIONS }, async ($, on) => {
+  const posts = orderedRelay(on, 'alice') // alice (us) leads
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-tasks' })
+  expect(await ui.find({ text: /waits for T6/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /waits for T3/ } as any)).toBeUndefined()
+  expect(await ui.find({ text: /🚧 blocked: needs the map from T3/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /✓ T4 Enemy AI · checked by alice/ } as any)).toBeDefined()
+  expect(await ui.find({ key: 'task-check-4' })).toBeUndefined() // already checked
+  await ui.press({ key: 'task-check-3' })
+  await settle()
+  await ui.unmount()
+  expect(posts).toContainEqual({ action: 'check', id: 3 })
+})
+
+test('only the leader gets Check; everyone else sees the task waiting for the check', { options: OPTIONS }, async ($, on) => {
+  orderedRelay(on, 'bob') // bob leads, not us
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-tasks' })
+  expect(await ui.find({ key: 'task-check-3' })).toBeUndefined()
+  expect(await ui.find({ text: /T3 Skeleton.*waiting for bob's check/ } as any)).toBeDefined()
+  await ui.unmount()
+})
+
+test('an older relay (no reviews yet) never lists old done tasks as waiting for a check', { options: OPTIONS }, async ($, on) => {
+  orderedRelay(on, 'alice', '1.17.1')
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-tasks' })
+  expect(await ui.find({ key: 'task-check-3' })).toBeUndefined()
+  expect(await ui.find({ text: /waits for T6/ } as any)).toBeDefined() // the order still shows when the relay sends it
+  await ui.unmount()
+})
+
+test('the acting leader gets Check too while the leader is away', { options: OPTIONS }, async ($, on) => {
+  const posts = orderedRelay(on, 'bob', '1.18.0', 'alice') // bob leads, alice (us) stands in
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-tasks' })
+  await ui.press({ key: 'task-check-3' })
+  await settle()
+  await ui.unmount()
+  expect(posts).toContainEqual({ action: 'check', id: 3 })
+})

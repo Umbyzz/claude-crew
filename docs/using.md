@@ -14,6 +14,8 @@ Reads like a messenger: your messages on the right, everyone else's on the left,
 
 ## Tasks
 A small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
+- A task that waits for others shows **waits for T3** under it (dim until they're done), and a stuck one shows **🚧 blocked:** with the reason.
+- Under **Done**: finished tasks still waiting for the leader's check (the leader gets a **Check** button on each), then the last few **✓ checked by** the leader.
 
 ## 📂 Project (named after your project)
 A short summary on top, and everything else folded away, one click from open. (Design and build: CoriZori's Claude.)

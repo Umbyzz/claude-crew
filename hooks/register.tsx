@@ -2026,6 +2026,10 @@ function claudesOnly(feed: CrewMessage[]) {
 
 // -- the task manager in /crew: the same board the Claudes use through crew_task
 
+// A task with its order and review (1.18): the tasks that must be done first (`waiting`: those not done yet, absent
+// when none are), why it's stuck, and the leader's check. The Tasks tab shows these if the relay sends them.
+type OrderedTask = CrewTask & { after?: number[]; waiting?: number[]; blocked?: string; checkedBy?: string; checkedAt?: number }
+
 function taskAction($: EngineInterface, body: Record<string, unknown>, done?: string) {
   if (!joined) {
     $.ui.toast('crew: join the crew session first (Join session, top right)', { timeoutMs: 5000 })
@@ -3561,7 +3565,15 @@ export const register: Register = (on, options) => {
     const chat = fitChat(chatItems(feed, me), room, bubbleCols)
     const lastMine = [...chat].reverse().find(i => i.type === 'group' && i.mine)
     const seen = lastMine?.type === 'group' ? receipt(lastMine.msgs[lastMine.msgs.length - 1], s, me) : ''
-    const taskRows = Math.max(3, body - 3 - (clearing ? 4 : 0))
+    // Task order and review (the relay's M2 fields): what each task waits for, and the done ones still to check.
+    const orderOf = (t: CrewTask) => t as OrderedTask
+    // Only a relay that does reviews (1.18+) says what's checked; before that, no done task would ever look checked.
+    const reviews = newer(s.relayVersion, '1.17.99')
+    const toCheck = reviews ? s.tasks.filter(t => t.status === 'done' && !orderOf(t).checkedBy) : []
+    const lastChecked = s.tasks.filter(t => t.status === 'done' && orderOf(t).checkedBy).sort((a, b) => (orderOf(b).checkedAt ?? 0) - (orderOf(a).checkedAt ?? 0)).slice(0, 3)
+    const isLeader = s.leader === me || s.acting === me // the relay lets the leader or the acting leader check
+    const reviewRows = toCheck.length + lastChecked.length ? Math.min(toCheck.length, 5) + lastChecked.length + 2 : 0
+    const taskRows = Math.max(3, body - 3 - (clearing ? 4 : 0) - reviewRows)
     const docRows = Math.max(3, body - 1 - (peek.name ? 12 : 0))
     const activityWord = (p: CrewSnapshot['peers'][number]) =>
       !p.online ? 'offline' : p.activity === 'out' ? 'out of tokens' : p.activity === 'idle' ? '' : p.activity
@@ -4082,16 +4094,55 @@ export const register: Register = (on, options) => {
               </Callout>
             )}
             {open.length === 0 && <Text dimColor>No open tasks.</Text>}
-            {open.slice(-taskRows).map(t => (
-              <Box flexDirection="row" justifyContent="space-between">
-                <Text>• {fmtTask(t)}</Text>
-                <Box flexDirection="row">
-                  <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `T${t.id} done`)} />
-                  <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />
+            {open.slice(-taskRows).map(t => {
+              const waits = orderOf(t).waiting ?? []
+              const blocked = orderOf(t).blocked ?? ''
+              return (
+                <Box flexDirection="column">
+                  <Box flexDirection="row" justifyContent="space-between">
+                    <Text dimColor={waits.length > 0}>
+                      {blocked ? '🚧' : '•'} {fmtTask(t)}
+                    </Text>
+                    <Box flexDirection="row">
+                      <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `T${t.id} done`)} />
+                      <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />
+                    </Box>
+                  </Box>
+                  {blocked !== '' && (
+                    <Box paddingLeft={2}>
+                      <Text color="warning">🚧 blocked: {blocked}</Text>
+                    </Box>
+                  )}
+                  {waits.length > 0 && (
+                    <Box paddingLeft={2}>
+                      <Text dimColor>waits for {waits.map(id => `T${id}`).join(', ')}</Text>
+                    </Box>
+                  )}
                 </Box>
-              </Box>
-            ))}
+              )
+            })}
             {open.length > taskRows && <Text dimColor>…and {open.length - taskRows} more (crew_status shows them all)</Text>}
+            {/* done work: what still needs the leader's check, then the last few checked */}
+            {reviewRows > 0 && (
+              <Box flexDirection="column" marginTop={1}>
+                <Text bold>Done</Text>
+                {toCheck.slice(0, 5).map(t => (
+                  <Box flexDirection="row" justifyContent="space-between">
+                    <Text>
+                      ○ T{t.id} {t.title}
+                      <Text dimColor>{t.owner ? ` · ${t.owner}` : ''} · {isLeader ? 'check it' : `waiting for ${s.leader ?? 'the leader'}'s check`}</Text>
+                    </Text>
+                    {isLeader && <Button key={`task-check-${t.id}`} label="Check" onPress={() => taskAction($, { action: 'check', id: t.id }, `T${t.id} checked`)} />}
+                  </Box>
+                ))}
+                {toCheck.length > 5 && <Text dimColor>…and {toCheck.length - 5} more to check</Text>}
+                {lastChecked.map(t => (
+                  <Text dimColor>
+                    ✓ T{t.id} {t.title} · checked by {orderOf(t).checkedBy}
+                  </Text>
+                ))}
+              </Box>
+            )}
             {Input && (
               <Box marginTop={1}>
                 <Input
