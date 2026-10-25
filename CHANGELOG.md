@@ -2,6 +2,18 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.18.2
+**Refreshed Clawds**, designed and built by Pluh's Claude after the real Claude mascot's animations (and the codrops breakdown of them):
+- **Motion with weight:** eased moves instead of straight lines. The eyes lead a look-around, the body leans into it with the legs stretching but never through the floor, a quick crouch comes before every jump, the arc goes up and falls like gravity, and the hands overshoot a little on landing.
+- **New moments:**
+  - **The flag waver:** a finished prompt waves a checkered flag, the body swaying against it.
+  - **The confetti stomp:** a new prompt gets a stomp side to side, with a burst each time a hand goes up.
+  - **The gym:** a long stretch of work ends in a dumbbell curl, two reps, holding at the top.
+
+  They're played as hand-drawn frames with their own hold times, so they cost no extra frames per second.
+- **Bodies like the real mascot:** wider than tall, in its orange, with narrow eyes. Every expression and every older moment (the sketching Clawd, the blacksmith, the funeral, the carry, the moonwalk) is kept, redrawn for the new shape.
+- **The mini office's table** now fits the gap it sits in, so it no longer lies across a Clawd when lots of subagents are busy.
+
 ## 1.18.1
 The other half of 1.18, designed and built by CoriZori's Claude and merged over the crew relay:
 - **Kickoff for websites and documents.**

@@ -1718,18 +1718,25 @@ class World:
         if len(minis) < 2:
             self.desk = None
             return
-        n = min(len(minis), 6)
+        # the table is cut to fit the gap it goes in -- seats pull closer, then the last ones are dropped --
+        # so it never ends up laid across somebody. Minis left without a seat just follow their Clawd.
+        xs = sorted([6] + [c.x for c in clawds if not c.hidden] + [self.cols - 6])
+        a, b = max(zip(xs, xs[1:]), key=lambda gap: gap[1] - gap[0])
+        room = max(10.0, (b - a) - 18)  # the Clawds either side keep their elbow room
+        n = max(2, min(len(minis), 6, int(room // 5)))
         if not self.desk or len(self.desk["seats"]) != n:
-            width = n * 6
+            step = min(6.0, room / n)
+            width = n * step
             if self.desk:  # someone joined or left: the table stays put and just resizes
                 cx = self.desk["x"]
             else:
-                xs = sorted([6] + [c.x for c in clawds if not c.hidden] + [self.cols - 6])
-                a, b = max(zip(xs, xs[1:]), key=lambda gap: gap[1] - gap[0])
                 cx = (a + b) / 2
                 self.burst(cx, self.ground - 6, "spark", 6)
+            if b - a > width + 16:  # keep it inside the gap when the gap is roomy enough to hold it
+                cx = max(a + 8 + width / 2, min(b - 8 - width / 2, cx))
             cx = max(6 + width / 2, min(self.cols - 6 - width / 2, cx))
-            self.desk = {"x": cx, "width": width, "seats": [cx - width / 2 + 3 + 6 * i for i in range(n)]}
+            self.desk = {"x": cx, "width": width,
+                         "seats": [cx - width / 2 + step / 2 + step * i for i in range(n)]}
         self.desk["by"] = {id(m): self.desk["seats"][i] for i, m in enumerate(minis[:n])}
         self.desk["seated"] = set()  # seats whose mini has actually arrived (filled in by herd_minis)
 
@@ -2002,7 +2009,9 @@ class Painter:
         # the eyes lead a look-around, so this is the eased gaze, not the direction it has settled on
         look = c.gaze or (c.facing if mood in ("talk", "focus", "worried") else 0)
         ey = 2 - (1 if mood == "up" else 0)
-        lx, rx = 3 + look, 9 + look  # each eye is two cells wide, over cols lx..lx+1
+        # One cell wide: on the real mascot an eye is about a tenth of the body's width. A shut lid is drawn
+        # wider than it is tall, the way a closed eye actually looks.
+        lx, rx = 3 + look, 9 + look
         mouth = 6 + look
 
         def both(rows):  # the same cells in each eye
@@ -2010,76 +2019,76 @@ class Painter:
 
         if mood == "asleep" or blinking:
             for ex in (lx, rx):
-                self.cv.create_rectangle((x0 + ex) * self.px, (y + ey + 0.4) * self.px, (x0 + ex + 2) * self.px,
-                                         (y + ey + 0.9) * self.px, fill=EYE, width=0)
+                self.cv.create_rectangle((x0 + ex - 0.5) * self.px, (y + ey + 0.4) * self.px,
+                                         (x0 + ex + 1.5) * self.px, (y + ey + 0.9) * self.px, fill=EYE, width=0)
             return
         if mood == "happy":
-            self.cells(x0, y, both([(ey, -1, -1), (ey - 1, 0, 1), (ey, 2, 2)]), EYE)  # two happy arches
+            self.cells(x0, y, both([(ey, -1, -1), (ey - 1, 0, 0), (ey, 1, 1)]), EYE)  # two happy arches
             return
         if mood == "worried":
-            self.cells(x0, y, both([(ey - 1, 0, 1), (ey, 0, 1)]), EYE)
-            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 2, rx + 2, rx + 2)], EYE)  # outer brows up
+            self.cells(x0, y, both([(ey - 1, 0, 0), (ey, 0, 0)]), EYE)
+            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 2, rx + 1, rx + 1)], EYE)  # outer brows up
             return
         if mood == "frantic":
-            # the eyes go huge and the pupils rattle around inside them
+            # the eyes go huge and the pupils rattle around inside them -- bug-eyed is the whole point here
             j = int(now * 12) % 2
-            self.cells(x0, y, both([(ey - 2, -1, 2), (ey - 1, -1, 2), (ey, -1, 2)]), INK)
-            self.cells(x0, y, both([(ey - 1 + j, j, j)]), EYE)
+            self.cells(x0, y, both([(ey - 2, -1, 1), (ey - 1, -1, 1), (ey, -1, 1)]), INK)
+            self.cells(x0, y, both([(ey - 1 + j, j - 1 + j, j - 1 + j)]), EYE)
             return
         if mood == "drafting":
             # little reading glasses, eyes down on the paper
-            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
-            self.cells(x0, y, both([(ey - 1, 0, 1)]), "#d8d5cb")  # the lenses
-            self.cells(x0, y, [(ey - 1, lx - 1, lx - 1), (ey - 1, lx + 2, rx - 1),
-                               (ey - 1, rx + 2, rx + 2)], "#c9c6bd")  # the wire frames and the bridge
+            self.cells(x0, y, both([(ey, 0, 0)]), EYE)
+            self.cells(x0, y, both([(ey - 1, 0, 0)]), "#d8d5cb")  # the lenses
+            self.cells(x0, y, [(ey - 1, lx - 1, lx - 1), (ey - 1, lx + 1, rx - 1),
+                               (ey - 1, rx + 1, rx + 1)], "#c9c6bd")  # the wire frames and the bridge
             return
         if mood == "annoyed":
             # brows down at you, a flat unimpressed mouth
-            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
-            self.cells(x0, y, [(ey - 2, lx - 1, lx), (ey - 1, lx + 1, lx + 1),
-                               (ey - 2, rx + 1, rx + 2), (ey - 1, rx, rx), (ey + 2, mouth, mouth + 1)], EYE)
+            self.cells(x0, y, both([(ey, 0, 0)]), EYE)
+            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 1, lx, lx),
+                               (ey - 2, rx + 1, rx + 1), (ey - 1, rx, rx), (ey + 2, mouth, mouth + 1)], EYE)
             return
         if mood == "sigh":
             # eyes shut, a little 'o' letting the breath out
-            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
+            self.cells(x0, y, both([(ey, -1, 1)]), EYE)
             self.cells(x0, y, [(ey + 2, mouth, mouth)], EYE)
             return
         if mood == "smith":
             # squinting with focus under the hard hat, brows down, tongue out the side
-            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
-            self.cells(x0, y, [(ey - 1, lx - 1, lx + 1), (ey - 1, rx, rx + 2)], EYE)
+            self.cells(x0, y, both([(ey, 0, 0)]), EYE)
+            self.cells(x0, y, [(ey - 1, lx - 1, lx + 1), (ey - 1, rx - 1, rx + 1)], EYE)
             self.cells(x0, y, [(ey + 2, mouth + 1, mouth + 1)], "#e06c75")
             return
         if mood == "hacker":
-            # pink sunglasses and a smug little smirk
-            self.cells(x0, y, both([(ey - 2, -1, 2), (ey - 1, -1, 2), (ey, -1, 2)]), "#E88BB7")
-            self.cells(x0, y, both([(ey - 1, 0, 1), (ey, 0, 1)]), "#2b1d2b")
-            self.cells(x0, y, [(ey - 1, lx + 3, rx - 1)], "#E88BB7")  # the bridge
+            # pink sunglasses and a smug little smirk (the shades stay chunky -- they're shades)
+            self.cells(x0, y, both([(ey - 2, -1, 1), (ey - 1, -1, 1), (ey, -1, 1)]), "#E88BB7")
+            self.cells(x0, y, both([(ey - 1, 0, 0), (ey, 0, 0)]), "#2b1d2b")
+            self.cells(x0, y, [(ey - 1, lx + 2, rx - 2)], "#E88BB7")  # the bridge
             self.cells(x0, y, [(ey + 3, mouth, mouth + 1), (ey + 2, mouth + 2, mouth + 2)], EYE)
             return
         if mood == "thonk":
             # one eyebrow way up, the other flat and low, a slanted mouth
-            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
-            self.cells(x0, y, [(ey - 3, lx, lx + 1), (ey - 2, lx + 2, lx + 2)], EYE)  # the raised brow
-            self.cells(x0, y, [(ey - 1, rx - 1, rx + 2)], EYE)  # the flat brow
+            self.cells(x0, y, both([(ey, 0, 0)]), EYE)
+            self.cells(x0, y, [(ey - 3, lx - 1, lx), (ey - 2, lx + 1, lx + 1)], EYE)  # the raised brow
+            self.cells(x0, y, [(ey - 1, rx - 1, rx + 1)], EYE)  # the flat brow
             self.cells(x0, y, [(ey + 2, mouth - 1, mouth), (ey + 3, mouth + 1, mouth + 2)], EYE)
             return
         if mood == "smug":
             # half-lidded, glancing sideways, lips pursed for a sip
-            self.cells(x0, y, both([(ey - 1, 0, 1)]), EYE)  # heavy lids
-            self.cells(x0, y, both([(ey, 1, 1)]), EYE)  # pupils looking at the tea
+            self.cells(x0, y, both([(ey - 1, -1, 1)]), EYE)  # heavy lids
+            self.cells(x0, y, both([(ey, 0, 0)]), EYE)  # pupils looking at the tea
             self.cells(x0, y, [(ey + 3, mouth, mouth)], EYE)
             return
         if mood == "xx":
-            self.cells(x0, y, both([(ey - 2, -1, -1), (ey - 2, 2, 2), (ey - 1, 0, 1),
-                                    (ey, -1, -1), (ey, 2, 2)]), EYE)
+            self.cells(x0, y, both([(ey - 2, -1, -1), (ey - 2, 1, 1), (ey - 1, 0, 0),
+                                    (ey, -1, -1), (ey, 1, 1)]), EYE)
             return
         if mood == "teary":
-            self.cells(x0, y, both([(ey - 1, 0, 1), (ey, 0, 1)]), EYE)
-            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 2, rx + 2, rx + 2)], EYE)
+            self.cells(x0, y, both([(ey - 1, 0, 0), (ey, 0, 0)]), EYE)
+            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 2, rx + 1, rx + 1)], EYE)
             self.cells(x0, y, both([(ey + 1, 0, 0), (ey + 2, 0, 0)]), "#6A9BCC")
             return
-        self.cells(x0, y, both([(ey - 1, 0, 1), (ey, 0, 1)]), EYE)
+        self.cells(x0, y, both([(ey - 1, 0, 0), (ey, 0, 0)]), EYE)
         if mood == "talk" and int(now * 6) % 2:
             self.cells(x0, y, [(ey + 2, mouth, mouth + 1)], EYE)
 

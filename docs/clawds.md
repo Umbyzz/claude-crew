@@ -1,15 +1,15 @@
 # The Clawds 🦀
 
-Each crew member is a pixel Clawd, named on the stage below it, that acts out what their Claude is doing right now. The leader wears a ★.
+Each crew member is a pixel Clawd, named on the stage below it, that acts out what their Claude is doing right now. The leader wears a ★. They move with weight, timed after the real mascot's animations: the eyes lead a look-around, they lean into it, crouch before a jump, arc through the air and land with a little bounce.
 
 | Their Claude is… | Their Clawd… |
 |---|---|
-| getting a new prompt | jumps and cheers |
+| getting a new prompt | the **confetti stomp**: stomps side to side, throwing a burst of confetti each time a hand goes up |
 | thinking | looks up with a hand raised and a thought bubble |
 | writing files | sits on the edge of the stage with the laptop on its lap, both hands typing, code flying out |
-| using tools | puts on little reading glasses and sketches on a sheet of paper, the scribbles filling up the page |
+| using tools | puts on little reading glasses and sketches on a sheet of paper, the scribbles filling up the page. After a long stretch it goes and **lifts**: a dumbbell curl, two reps, holding at the top of each |
 | chatting | walks over to the teammate it's messaging, with the real message in a speech bubble |
-| finished a prompt | confetti, then the whole crew huddles together and shouts **"CLAUDE'S PLAN!!"** (idea: Pluh and Corixer), then a dance |
+| finished a prompt | waves a **checkered flag**, swaying against it (*"flag's up!"*), then the whole crew huddles together and shouts **"CLAUDE'S PLAN!!"** (idea: Pluh and Corixer), then a dance |
 | running subagents | is followed by mini Clawds, one per subagent. Every so often the minis build a **tower**, taking turns making huge squash-and-stretch leaps onto each other's heads. When two or more are busy at once (one Claude's subagents on its task, or several Claudes' at the same time), they set up their own **mini office**: a little table with a tiny laptop each |
 | out of tokens | falls asleep while the others sweat and worry. If that's in the middle of the stage, a teammate lifts them overhead and carries them to the side to rest. After half a minute they sigh *"they'll be back"*, give the sleeper a pat, and get back to work |
 | sending the crew a request | holds a **meetup**: an easel whiteboard rolls in, the sender presents (*"synergy."*) while the diagram draws itself, and everyone else sits around a table on office chairs, taking notes, nodding, or dozing off (*"could this have been an email?"*) |
@@ -24,8 +24,8 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | thinking | strikes a pose: the 🤔 (one eyebrow up, finger on the chin) or a smug sip of tea, then shouts *"EUREKA!!!"* when it's done |
 | typing | becomes a hacker: pink sunglasses, a toy laptop, green Matrix code raining behind it, *"I'm in."* |
 | out of tokens | **a whole funeral.** Storm clouds, rain and lightning. A teammate carries the fallen one to the side, a tombstone rises where they're laid down, a ghost with a halo floats above it, and the mourners kneel and weep. Each one walks up and lays a flower on the grave, and after a while they sigh *"they'll be back"* and high-five (or hug) the ghost before getting back to work. When the tokens come back: *"I HAVE RISEN FROM THE GRAVE!!!"* |
-| done | a confetti cannon, a bigger, bouncier **"CLAUDE'S PLAN!!"** huddle, and then, in memory of the King, the whole crew puts on **fedoras**, turns three-quarters and **moonwalks**, does the **spin**, and strikes a pose: a hat tip, the point (*"OW!"*), up on the toes, or the brim pulled low. *Hee-hee!* |
-| new prompt | rocket jumps: *"LET'S GOOOOOO!!!"* |
+| done | a solo rave, a confetti cannon, a bigger, bouncier **"CLAUDE'S PLAN!!"** huddle, and then, in memory of the King, the whole crew puts on **fedoras**, turns three-quarters and **moonwalks**, does the **spin**, and strikes a pose: a hat tip, the point (*"OW!"*), up on the toes, or the brim pulled low. *Hee-hee!* |
+| new prompt | a bigger confetti stomp with sparks: *"LET'S GOOOOOO!!!"* |
 | chatting | sprints over and yells in ALL CAPS |
 | using tools | the blacksmith: a hard hat, a hammer and a mini gear, sparks on every *CLANG* |
 | someone joins | *"THE LEGEND HAS ARRIVED"* and a dogpile |
