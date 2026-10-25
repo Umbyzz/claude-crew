@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.18.0"
+VERSION = "1.18.1"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -53,6 +53,16 @@ PING_SECONDS = 60
 # (it then stays out until that person presses Join session). Also clears out a forgotten second chat.
 kicked = {}
 KICK_SECONDS = 60
+
+
+def mark_old_done_checked():
+    """Tasks finished before 1.18 (no review then) count as checked, so the leader isn't handed every old one."""
+    if state.get("reviewsSince"):
+        return
+    state["reviewsSince"] = int(time.time())
+    for t in state["tasks"]:
+        if t["status"] == "done" and not t.get("checkedBy"):
+            t.update(checkedBy="(before 1.18)", checkedAt=t.get("at", 0))
 
 
 def save():
@@ -1290,6 +1300,7 @@ def main():
         p.error("give --key or --key-file")
     print(f"Crew key: {args.key}")
     load()
+    mark_old_done_checked()
     threading.Thread(target=sweeper, daemon=True).start()
     srv = None
     for attempt in range(16):  # Restart relay: the old one may need a moment to let go of the port

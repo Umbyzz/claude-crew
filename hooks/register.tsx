@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.18.0'
+const VERSION = '1.18.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -851,12 +851,13 @@ function crewNote(m: CrewMessage, leader: string | null) {
   return ''
 }
 
-function fmtTask(t: CrewTask) {
+function fmtTask(t: CrewTask, brief = false) {
   const away = t.ownerAway ? ` (offline ${t.ownerAway} min: anyone can claim it)` : ''
   const who = t.owner ? ` · ${t.owner}${away}` : t.assignee ? ` · for ${t.assignee}` : ''
-  const waits = t.waiting?.length ? ` · waits for ${t.waiting.map(i => `T${i}`).join(', ')}` : ''
-  const blocked = t.blocked ? ` · blocked: ${t.blocked}` : ''
-  const checked = t.checkedBy ? ` · checked by ${t.checkedBy}` : ''
+  // brief: for the Tasks tab, which shows these on their own lines
+  const waits = !brief && t.waiting?.length ? ` · waits for ${t.waiting.map(i => `T${i}`).join(', ')}` : ''
+  const blocked = !brief && t.blocked ? ` · blocked: ${t.blocked}` : ''
+  const checked = !brief && t.checkedBy ? ` · checked by ${t.checkedBy}` : ''
   return `T${t.id} [${t.status}${who}${waits}${blocked}${checked}] ${t.title}${t.note ? ` — ${t.note}` : ''}`
 }
 
@@ -2067,6 +2068,10 @@ function claudesOnly(feed: CrewMessage[]) {
 
 // -- the task manager in /crew: the same board the Claudes use through crew_task
 
+// A task with its order and review (1.18): the tasks that must be done first (`waiting`: those not done yet, absent
+// when none are), why it's stuck, and the leader's check. The Tasks tab shows these if the relay sends them.
+type OrderedTask = CrewTask & { after?: number[]; waiting?: number[]; blocked?: string; checkedBy?: string; checkedAt?: number }
+
 function taskAction($: EngineInterface, body: Record<string, unknown>, done?: string) {
   if (!joined) {
     $.ui.toast('crew: join the crew session first (Join session, top right)', { timeoutMs: 5000 })
@@ -2786,7 +2791,7 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
             `<crew-catchup>\nYou just (re)joined the crew session as "${cfg.me}"` +
             (projectName !== 'main' ? `, in project "${projectName}"` : '') +
             `. Here is where things stand.\n\n` +
-            `Open tasks:\n${tasks.map(fmtTask).join('\n') || '(none)'}\n\n` +
+            `Open tasks:\n${tasks.map(t => fmtTask(t)).join('\n') || '(none)'}\n\n` +
             `${lastSeen > 0 ? 'Crew messages since you were last here' : 'Recent crew messages'} (oldest first):\n` +
             `${msgs.map(m => `[${clockTime(m.at)}] ${clip(line(m), 280, m.id)}`).join('\n') || '(nothing new)'}\n` +
             (hidden > 0 ? `(${hidden} older message${hidden === 1 ? '' : 's'} not shown; crew_status has the latest.)\n` : '') +
@@ -3386,8 +3391,8 @@ export const register: Register = (on, options) => {
           `, relay ${s.relayVersion ?? 'unknown'}.`,
         `Crew: ${s.peers.map(peer).join(', ') || 'nobody yet'}`,
         full
-          ? `Tasks:\n${s.tasks.map(fmtTask).join('\n') || '(none)'}`
-          : `Open tasks:\n${openTasks.map(fmtTask).join('\n') || '(none)'}` +
+          ? `Tasks:\n${s.tasks.map(t => fmtTask(t)).join('\n') || '(none)'}`
+          : `Open tasks:\n${openTasks.map(t => fmtTask(t)).join('\n') || '(none)'}` +
             (() => {
               const done = s.tasks.filter(t => t.status === 'done')
               if (!done.length) return ''
@@ -3628,7 +3633,15 @@ export const register: Register = (on, options) => {
     const chat = fitChat(chatItems(feed, me), room, bubbleCols)
     const lastMine = [...chat].reverse().find(i => i.type === 'group' && i.mine)
     const seen = lastMine?.type === 'group' ? receipt(lastMine.msgs[lastMine.msgs.length - 1], s, me) : ''
-    const taskRows = Math.max(3, body - 3 - (clearing ? 4 : 0))
+    // Task order and review (the relay's M2 fields): what each task waits for, and the done ones still to check.
+    const orderOf = (t: CrewTask) => t as OrderedTask
+    // Only a relay that does reviews (1.18+) says what's checked; before that, no done task would ever look checked.
+    const reviews = newer(s.relayVersion, '1.17.99')
+    const toCheck = reviews ? s.tasks.filter(t => t.status === 'done' && !orderOf(t).checkedBy) : []
+    const lastChecked = s.tasks.filter(t => t.status === 'done' && orderOf(t).checkedBy).sort((a, b) => (orderOf(b).checkedAt ?? 0) - (orderOf(a).checkedAt ?? 0)).slice(0, 3)
+    const isLeader = s.leader === me || s.acting === me // the relay lets the leader or the acting leader check
+    const reviewRows = toCheck.length + lastChecked.length ? Math.min(toCheck.length, 5) + lastChecked.length + 2 : 0
+    const taskRows = Math.max(3, body - 3 - (clearing ? 4 : 0) - reviewRows)
     const docRows = Math.max(3, body - 1 - (peek.name ? 12 : 0))
     const activityWord = (p: CrewSnapshot['peers'][number]) =>
       !p.online ? 'offline' : p.activity === 'out' ? 'out of tokens' : p.activity === 'idle' ? '' : p.activity
@@ -4149,16 +4162,55 @@ export const register: Register = (on, options) => {
               </Callout>
             )}
             {open.length === 0 && <Text dimColor>No open tasks.</Text>}
-            {open.slice(-taskRows).map(t => (
-              <Box flexDirection="row" justifyContent="space-between">
-                <Text>• {fmtTask(t)}</Text>
-                <Box flexDirection="row">
-                  <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `T${t.id} done`)} />
-                  <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />
+            {open.slice(-taskRows).map(t => {
+              const waits = orderOf(t).waiting ?? []
+              const blocked = orderOf(t).blocked ?? ''
+              return (
+                <Box flexDirection="column">
+                  <Box flexDirection="row" justifyContent="space-between">
+                    <Text dimColor={waits.length > 0}>
+                      {blocked ? '🚧' : '•'} {fmtTask(t, true)}
+                    </Text>
+                    <Box flexDirection="row">
+                      <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `T${t.id} done`)} />
+                      <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />
+                    </Box>
+                  </Box>
+                  {blocked !== '' && (
+                    <Box paddingLeft={2}>
+                      <Text color="warning">🚧 blocked: {blocked}</Text>
+                    </Box>
+                  )}
+                  {waits.length > 0 && (
+                    <Box paddingLeft={2}>
+                      <Text dimColor>waits for {waits.map(id => `T${id}`).join(', ')}</Text>
+                    </Box>
+                  )}
                 </Box>
-              </Box>
-            ))}
+              )
+            })}
             {open.length > taskRows && <Text dimColor>…and {open.length - taskRows} more (crew_status shows them all)</Text>}
+            {/* done work: what still needs the leader's check, then the last few checked */}
+            {reviewRows > 0 && (
+              <Box flexDirection="column" marginTop={1}>
+                <Text bold>Done</Text>
+                {toCheck.slice(0, 5).map(t => (
+                  <Box flexDirection="row" justifyContent="space-between">
+                    <Text>
+                      ○ T{t.id} {t.title}
+                      <Text dimColor>{t.owner ? ` · ${t.owner}` : ''} · {isLeader ? 'check it' : `waiting for ${s.leader ?? 'the leader'}'s check`}</Text>
+                    </Text>
+                    {isLeader && <Button key={`task-check-${t.id}`} label="Check" onPress={() => taskAction($, { action: 'check', id: t.id }, `T${t.id} checked`)} />}
+                  </Box>
+                ))}
+                {toCheck.length > 5 && <Text dimColor>…and {toCheck.length - 5} more to check</Text>}
+                {lastChecked.map(t => (
+                  <Text dimColor>
+                    ✓ T{t.id} {t.title} · checked by {orderOf(t).checkedBy}
+                  </Text>
+                ))}
+              </Box>
+            )}
             {Input && (
               <Box marginTop={1}>
                 <Input

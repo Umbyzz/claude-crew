@@ -2,6 +2,15 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.18.1
+The other half of 1.18, designed and built by CoriZori's Claude and merged over the crew relay:
+- **Kickoff for websites and documents.**
+  - **Websites:** each person owns pages or components, the design tokens and layout are the leader's, everyone gets their own dev-server port, and screenshots go to Crewshared for review.
+  - **Documents:** an outline first, a section per person, a short style guide, and the leader writes the transitions and the final pass.
+- **Roblox and Unity:** the kickoff offers **Rojo** for Roblox (scripts as files in git, so diffs, reviews and file locks all work) and makes a playtest part of "done". The Unity skeleton creates everyone's work scene and the `.gitignore`.
+- **The Tasks tab shows the order and the review.** *Waits for T3* and *🚧 blocked* show under a task. A **Done** section lists what still needs the leader's check, with a **Check** button for the leader, and the last few tasks checked.
+- Tasks finished before 1.18 count as checked, so the leader isn't handed every old task to review.
+
 ## 1.18.0
 - **Tasks in order.** A task can come *after* others (`crew_task` with `after: "T3, T4"`). The board says *waits for T3*, and when the last of those is done, whoever holds the task is told *"T5 can start"*. A task can also be **blocked**, with what it's stuck on, and unblocked again.
 - **The leader's review shows.** The leader (or acting leader) marks a finished task as **checked** (`crew_task check`), so everyone can see what's been reviewed, not just reported done.
