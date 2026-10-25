@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.18.4'
+const VERSION = '1.18.5'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1704,6 +1704,7 @@ async function pollOnce($: EngineInterface) {
       void read($, snapshot)
         .then(s => $.store.set(cacheKey(), { at, leader: s.leader, feed: s.feed.slice(-40), tasks: s.tasks, shared: s.shared, peers: s.peers }))
         .catch(() => {})
+      void noteRelay($)
     }
     // a doc shared again under the same name keeps the list the same, but who/when/size change
     if (typeof data.yourKey === 'string' && data.yourKey && data.yourKey !== cfg.key) {
@@ -3096,6 +3097,12 @@ const OLD_STORE_PS =
   `$f = Get-ChildItem "$env:USERPROFILE\\.claude\\plugins\\store\\crew_inline-*.json" -ErrorAction SilentlyContinue | ` +
   `Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($f) { Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 }`
 
+// The relay this plugin really uses, for the Clawds window and the crew log: settings.json can hold an older entry
+// too (from before the desktop app's loader changed), and they'd pick that one.
+function noteRelay($: EngineInterface) {
+  return $.store.set('relayNow', { relayUrl: cfg.base, name: cfg.me, at: Date.now() }).catch(() => {})
+}
+
 // Set by register: points this running crew at another relay address right away (a settings save reloads it too).
 let retarget: (base: string) => void = () => {}
 let lastPortProbe = 0
@@ -3110,6 +3117,7 @@ async function moveToBase($: EngineInterface, to: string, why: string) {
     if ((await $.store.get(nk)) === undefined) await $.store.set(nk, (await $.store.get(k)) as any)
   }
   retarget(to)
+  void noteRelay($) // the windows follow at once
   void $.config.set({ key: 'crew.relayUrl', value: to }).catch(() => {})
   $.ui.toast(`crew: ${why}`, { timeoutMs: 12000 })
 }

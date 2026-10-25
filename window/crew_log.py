@@ -81,6 +81,24 @@ def stored_key(relay):
     return best[1]
 
 
+def relay_now():
+    """The relay the crew plugin last said it's really using (its store, newest first): settings.json can still hold an
+    older entry from before the desktop app changed how it loads crew, with an old address."""
+    best = (0.0, {})
+    try:
+        names = os.listdir(STORE_DIR)
+    except OSError:
+        return {}
+    for f in names:
+        if not (f.startswith("crew_") and f.endswith(".json")):
+            continue
+        path = os.path.join(STORE_DIR, f)
+        r = load_json(path, {}).get("relayNow")
+        if isinstance(r, dict) and r.get("relayUrl") and os.path.getmtime(path) > best[0]:
+            best = (os.path.getmtime(path), r)
+    return best[1]
+
+
 def crew_config():
     """The crew plugin's relayUrl / name / key, from whichever install has them."""
     best = {}
@@ -90,6 +108,10 @@ def crew_config():
         opts = conf.get("options", {})
         if len([k for k in ("relayUrl", "name", "key") if opts.get(k)]) > len(best):
             best = {k: opts.get(k, "") for k in ("relayUrl", "name", "key")}
+    now = relay_now()
+    if now and best:
+        best["relayUrl"] = now["relayUrl"]  # the one the plugin is really on
+        best["name"] = now.get("name") or best.get("name", "")
     if best.get("relayUrl"):
         best["key"] = stored_key(best["relayUrl"]) or best.get("key", "")
     return best

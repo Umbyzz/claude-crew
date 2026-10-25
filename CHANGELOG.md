@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.18.5
+- **The Clawds window and crew log follow the relay's new port too.** They read the relay's address from your settings, which can still hold an older crew entry from before the desktop app changed how it loads crew, so after 1.18.4 they'd keep trying 7777. The plugin now notes the address it really uses, and both windows use that first.
+
 ## 1.18.4
 - **The relay moved to port 7787.** 7777 is also Terraria's port, so hosting a tModLoader server took the crew down. Nobody has to change anything:
   - **The host:** crew moves its own setting to the new port by itself.

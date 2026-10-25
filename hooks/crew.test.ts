@@ -2544,6 +2544,7 @@ test('a host on the old port 7777 moves to 7787, and what crew remembered comes 
   expect(sets.find(s => s.key === 'crew.relayUrl')?.value).toBe('http://127.0.0.1:7787')
   expect(kept.get('folder:http://127.0.0.1:7787:main')).toBe('C:\\Games\\Lava')
   expect(kept.get('cursor:http://127.0.0.1:7787')).toBeGreaterThanOrEqual(5)
+  expect((kept.get('relayNow') as any)?.relayUrl).toBe('http://127.0.0.1:7787') // the Clawds window and crew log follow
   expect(urls.some(u => u.startsWith('http://127.0.0.1:7787/poll'))).toBe(true)
   expect(urls.some(u => u.startsWith('http://127.0.0.1:7777/'))).toBe(false)
 })
