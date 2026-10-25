@@ -27,6 +27,18 @@ You lead the crew. Before anyone builds, put everyone on one plan so no two Clau
   In a live engine edited through MCP (like Roblox Studio), everyone opens the same Team Create place, so all edits land in one game; without it, each Claude builds a separate copy that never comes together. Shared folders and Crewshared then carry only raw files (references, sounds, notes).
   In an engine without live sharing (like Unity), use the git repo. Each teammate builds in their own scene (`Scenes/Work/<name>.unity`) and turns finished pieces into prefabs in their own folder; the main scene is yours, and you place their prefabs in it. Scenes and prefabs merge badly in git, so never put two people in one scene or prefab. Everyone uses the same Unity version, commits each asset's `.meta` file with it, and keeps `Library/`, `Temp/`, `Logs/` and `UserSettings/` out of git.
 
+### Studio notes (Roblox Studio projects)
+
+For a Roblox Studio project, also `crew_share` a doc named `studio-notes` with these lessons from earlier crews, and point to it in the plan:
+
+- Requiring a ModuleScript from the command bar (or `execute_luau`) gets a fresh copy of the module, not the one the game is running. To test live game state, go through a DevHook in ServerStorage that the running scripts expose.
+- `screen_capture` can time out, and it doesn't draw BillboardGuis: check those another way.
+- `script_grep` and `script_read` can miss matches while the game is in Play.
+- Edits need Play stopped.
+- Studio ids change after a reconnect: list them again instead of reusing old ones.
+- Keep each MCP wait under about 25 seconds.
+- DataStores and teleports don't work in Studio: publish and test those in a real server.
+
 ## 3. Split by ownership
 
 Every task names what it owns, in its title or note: `Enemy AI - owns: Scripts/Enemy/`. In a live engine, use a path in the game tree: `Enemy AI - owns: ServerScriptService/EnemyAI`. In Unity, name the folder and the work scene: `Enemy AI - owns: Assets/Game/Enemy/, Scenes/Work/Cori.unity`.
@@ -37,6 +49,8 @@ Every task names what it owns, in its title or note: `Enemy AI - owns: Scripts/E
 - Your first task is the skeleton: the folders, empty scenes and stub scripts with the agreed names, so everyone builds on the same base. Order the rest so nobody waits.
 - Size tasks to the teammate: heavy or tricky work to the most capable models, UI, art and level design to quicker ones, small chores to the lightest. Live engine work goes to whoever has the engine's tool connected; anyone past 80% usage gets small tasks.
 - Keep tasks small enough to finish in one sitting.
+- Spread your own building across the project instead of front-loading it: after the skeleton, take a share of the work alongside everyone else, so you're free to check finished tasks as they come in.
+- Plan a **perf pass** and a **balance pass** as their own tasks before the project counts as done, each reporting numbers (frame time or script time, spawn counts, damage, timings), not just "feels fine".
 
 ## 4. House rules
 
@@ -46,6 +60,9 @@ Read `crew-rules` with `crew_read_shared`. Keep every existing line and add any 
 - Read the plan doc before claiming a task. If the plan is wrong, say so instead of working around it.
 - Mark a task done only after testing it; the leader checks it before others build on it.
 - After each finished task, one crew_send line: what changed and which files.
+- Every request gets a T-number on the board before work starts, including requests a person relays to another person's Claude while the leader is away.
+- The done note is the changelog line: write it so it can be copied into the changelog as is.
+- While acting as leader, add a line to the plan doc for each decision you make.
 
 Ask your user before removing or rewriting rules the crew wrote.
 

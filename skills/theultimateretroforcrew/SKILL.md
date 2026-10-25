@@ -1,5 +1,5 @@
 ---
-name: retro
+name: theultimateretroforcrew
 description: After a crew project is finished, look back on how the crew worked - what you did, what you had to guess, clashes, waiting, tool problems, where your tokens went - and share it so crew can be improved. Use only when your user says the crew project is done and asks for the retro (or a debrief or look-back); never while the project is still running.
 user-invocable: false
 ---

@@ -61,17 +61,18 @@ You only do Part 1 once. From now on, opening Claude reconnects you.
 Every project gets **its own Claude chat**. A chat remembers which project it's in, and its Claude only carries that project's work, which saves tokens and keeps projects from mixing.
 
 **Alex:** in `/crew`, open the **📂 project tab** (named after the project you're in, `main` at first) and press **+ New project**. Type a name and press Enter.
-- In a chat that already has other work, crew asks first: press **Open it in a new chat**, then start a new chat (**+ New session** in the sidebar).
+- In a chat that already has other work, crew asks first: press **Open it in a new chat**, then start a new chat (**+ New session** in the sidebar). **Use this chat** moves this chat over instead.
+- If this PC already has a chat for that project, crew says so ("Wait!! You already have a chat for …", with when you last used it): open that one from the sidebar instead.
 - In an empty chat, it switches right there.
 
 ✔ The new chat's `/crew` shows the new project, with Alex as its leader. Whoever makes a project leads it.
 
 ### 7. Invite your friends
-New projects are **members-only**: nobody else can see them yet. **Alex**, in the project tab: **▸ Members & access → +** and pick Sam.
+New projects are **members-only**: nobody else can see them yet. **Alex**, in the project tab: press **+ Add someone** next to "🔒 Members only" and pick Sam (it's the same list as **▸ Members & access**).
 
 **Sam:** an invite appears in `/crew`. If your current chat has other work, press **Open it in a new chat** and start a new chat; otherwise press **Switch**.
 
-✔ Both of you see the project, and the project line says "here: Alex, Sam".
+✔ Both of you see the project, and the project line says "here: you (this chat), Sam" on Alex's side. Someone with a chat open in another project shows as "you (another chat)"; **↻** next to **Working on** re-reads the list.
 
 ### 8. Set up the engine (if it's a game)
 - **Roblox:** everyone opens the **same Team Create place**, with the Roblox Studio MCP connected. ✔ The **Crew** tab shows **🔌 1 MCP** next to each of you.
@@ -137,7 +138,7 @@ When the project's done, each person tells **their own** Claude, in the project'
 
 > The project's done, run the retro.
 
-Each Claude runs the **crew:retro** skill and shares a `retro-<name>` doc covering what it did, what it had to guess, clashes, waiting, tool trouble and where its tokens went. The leader's Claude merges them into one **`retro`** doc: what worked, what missed, the fixes ranked, and any bugs.
+Each Claude runs the **crew:theultimateretroforcrew** skill and shares a `retro-<name>` doc covering what it did, what it had to guess, clashes, waiting, tool trouble and where its tokens went. The leader's Claude merges them into one **`retro`** doc: what worked, what missed, the fixes ranked, and any bugs.
 
 ✔ The `retro` doc is in **▸ Shared docs**. Read it, add what *you* noticed, and keep it for the next project.
 
@@ -149,7 +150,7 @@ When a new version is out, `/crew` shows a banner. Press **Install update**, the
 ## Good to know
 - **One chat per project.** Starting something new from an old chat? Use **Open it in a new chat**.
 - **The relay window is the crew.** Closing it disconnects everyone; restarting Claude doesn't.
-- **Members-only by default.** Can't see a friend's project? Ask them to add you under **Members & access**.
+- **Members-only by default.** Can't see a friend's project? Ask them to add you with **+ Add someone** in their project tab.
 - **Tokens:** people's chat is free, and so is moving files. What costs is Claudes working, so keep **Auto-run** on *leader* unless you want every request to start work.
 - **Something odd?** [Troubleshooting](troubleshooting.md) has the common fixes.
 
