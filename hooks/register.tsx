@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.17.0'
+const VERSION = '1.17.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -533,6 +533,34 @@ const moveAsk = atom({ plugin: 'crew', key: 'moveAsk' } as const, { project: '',
 
 const chatHasWork = async ($: EngineInterface) => (await $.session.turns().catch(() => 0)) > 0
 
+// The chats this PC has had in each project. A chat has no id we can open, so its folder and when it was last used
+// are the handle: when the new-chat question comes up for a project that already has one, we say so.
+type ChatSeen = { cwd: string; at: number }
+
+async function rememberChat($: EngineInterface) {
+  if (!sessionCwd || !cfg.configured) return
+  const k = `chatsFor:${cfg.base}:${projectName}`
+  const list = ((await $.store.get(k).catch(() => null)) as ChatSeen[] | null) ?? []
+  await $.store.set(k, [{ cwd: sessionCwd, at: Date.now() }, ...list.filter(c => c.cwd !== sessionCwd)].slice(0, 10)).catch(() => {})
+}
+
+// Another chat on this PC that's still in that project (not one that moved on since), the most recently used first.
+async function otherChatFor($: EngineInterface, project: string): Promise<ChatSeen | null> {
+  const list = ((await $.store.get(`chatsFor:${cfg.base}:${project}`).catch(() => null)) as ChatSeen[] | null) ?? []
+  for (const c of [...list].sort((a, b) => b.at - a.at)) {
+    if (c.cwd === sessionCwd) continue
+    const now = String((await $.store.get(`project:${cfg.base}:${c.cwd}`).catch(() => '')) ?? '') || 'main'
+    if (now === project) return c
+  }
+  return null
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+function shortDate(ms: number) {
+  const d = new Date(ms)
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${hhmm(ms / 1000)}`
+}
+
 function newProjectPress($: EngineInterface, raw: string) {
   const name = cleanProject(raw)
   if (!raw.trim()) return
@@ -549,6 +577,7 @@ function newProjectPress($: EngineInterface, raw: string) {
 
 async function makeOrSwitch($: EngineInterface, name: string, existed: boolean) {
   await switchProject($, name)
+  await rememberChat($)
   setFolderMode($, '')
   if (!existed) {
     await relay($, 'POST', '/leader', { name: cfg.me }).catch(() => {}) // whoever makes a project leads it
@@ -620,7 +649,20 @@ function switchProjectPress($: EngineInterface, name: string) {
   void (async () => {
     if (name !== projectName && (await chatHasWork($))) return void (await update($, moveAsk, () => ({ project: name, isNew: false })))
     await switchProject($, name)
+    await rememberChat($)
   })().catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
+}
+
+// Open one of the Project tab's sections (not a toggle): "+ Add someone" in the summary opens Members & access.
+function openSection($: EngineInterface, id: ProjectSection) {
+  void update($, projectSection, () => id)
+}
+
+// The project list again, now: who's where changes as chats open and close.
+function refreshProjectsPress($: EngineInterface) {
+  void poll($)
+    .then(() => $.ui.toast('crew: project list re-read', { timeoutMs: 3000 }))
+    .catch(err => $.ui.toast(`crew: ${err instanceof Error ? err.message : err}`))
 }
 
 let joining = false // a second Join (double press, or Start relay joining too) waits out the first instead of re-briefing
@@ -3139,6 +3181,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    void rememberChat($) // this chat is in use in its project: "you already have a chat for it" knows when
     working = true
     void refreshModel($) // /model may have switched it
     void refreshMcp($)
@@ -3389,7 +3432,7 @@ export const register: Register = (on, options) => {
         `${p.name === projectName ? '→ ' : '  '}${p.name}: leader ${p.leader ?? 'none'}, ${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}, ` +
         `${p.docs} doc${p.docs === 1 ? '' : 's'}${p.here.length ? `, here now: ${p.here.join(', ')}` : ''}`,
     )
-    return ok(`Crew projects (→ is this session's):\n${rows.join('\n')}`)
+    return ok(`Crew projects (→ is this session's):\n${rows.join('\n')}\nSome projects are members-only: ask a member to add you.`)
   }).catch(failed)
 
   on('tool.call', { tool: 'mcp__crew__crew_ping' }, async ($, e: any) => {
@@ -3464,6 +3507,8 @@ export const register: Register = (on, options) => {
     const folderMode = await read($, folderModeAtom)
     const invite = await read($, inviteAtom)
     const asked = await read($, moveAsk)
+    // asked to move: does this PC already have a chat in that project?
+    const otherChat = asked.project ? await otherChatFor($, asked.project) : null
     const deletingDoc = await read($, docDeleting)
     const draft = await read($, drafts)
     const typingNow = await read($, typingAtom)
@@ -3489,6 +3534,13 @@ export const register: Register = (on, options) => {
       ...projectNames.filter(n => !(s.projects ?? []).some(p => p.name === n)).map(n => ({ name: n, leader: null, openTasks: 0, docs: 0, here: [] as string[] })),
     ]
     const here = s.peers.filter(p => p.online && (p.project ?? 'main') === projectName).map(p => p.name)
+    // Who has a chat open in a project, by name. "2 here" left people guessing whether one of those was them in
+    // another chat, so you show as "you (this chat)" or "you (another chat)".
+    const whoIn = (name: string, there: string[]) => [
+      ...(name === projectName ? ['you (this chat)'] : there.includes(me) ? ['you (another chat)'] : []),
+      ...there.filter(n => n !== me),
+    ]
+    const hereNow = whoIn(projectName, thisProject?.here ?? here)
     const canKick = s.leader === me || isHosting() // the relay checks this too
     const docs: DocMeta[] = s.shared
       .map(n => meta.docs.find(d => d.name === n) ?? { name: n, by: '', at: 0, size: 0 })
@@ -4063,30 +4115,39 @@ export const register: Register = (on, options) => {
               right={<Button key="new-project-open" label="+ New project" dimColor={folderMode !== 'new'} onPress={() => setFolderMode($, folderMode === 'new' ? '' : 'new')} />}
             >
               {/* -- which project (switching is just for you), who leads it, who's here, who can see it */}
-              {Select && (
-                <Select
-                  key="project"
-                  label="Working on "
-                  value={projectName}
-                  options={projectNames.map(n => {
-                    const p = (s.projects ?? []).find(x => x.name === n)
-                    const bits = p
-                      ? [p.unread && n !== projectName ? `${p.unread} new` : '', p.here.length ? `${p.here.length} here` : '', p.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : ''].filter(Boolean)
-                      : []
-                    return { value: n, label: bits.length ? `${n} · ${bits.join(' · ')}` : n }
-                  })}
-                  onSelect={(v: string) => switchProjectPress($, v)}
-                />
-              )}
+              <Box flexDirection="row">
+                {Select && (
+                  <Select
+                    key="project"
+                    label="Working on "
+                    value={projectName}
+                    options={projectNames.map(n => {
+                      const p = (s.projects ?? []).find(x => x.name === n)
+                      const who = whoIn(n, p?.here ?? [])
+                      const bits = [
+                        who.length ? who.join(', ') : '',
+                        p?.unread && n !== projectName ? `${p.unread} new` : '',
+                        p?.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : '',
+                      ].filter(Boolean)
+                      return { value: n, label: bits.length ? `${n} · ${bits.join(' · ')}` : n }
+                    })}
+                    onSelect={(v: string) => switchProjectPress($, v)}
+                  />
+                )}
+                <Button key="projects-refresh" label="↻" dimColor onPress={() => refreshProjectsPress($)} />
+              </Box>
               <Text dimColor>
-                {[
-                  `led by ${s.leader ?? 'nobody yet (Crew tab)'}`,
-                  here.length ? `here: ${here.join(', ')}` : '',
-                  projectName === 'main' ? '' : thisProject?.private ? `🔒 Members only: ${(thisProject.members ?? []).join(', ')}` : '🔓 open to the crew',
-                ]
+                {[`led by ${s.leader ?? 'nobody yet (Crew tab)'}`, `here: ${hereNow.join(', ')}`, projectName === 'main' || thisProject?.private ? '' : '🔓 open to the crew']
                   .filter(Boolean)
                   .join(' · ')}
               </Text>
+              {/* members-only: who's in, and adding someone is right here (the same + buttons as Members & access) */}
+              {projectName !== 'main' && thisProject?.private && (
+                <Box flexDirection="row" justifyContent="space-between">
+                  <Text dimColor>🔒 Members only: {(thisProject.members ?? []).join(', ')}</Text>
+                  <Button key="member-add-open" label="+ Add someone" dimColor={section === 'members'} onPress={() => openSection($, 'members')} />
+                </Box>
+              )}
               {projectNames.length <= 1 && <Text dimColor>Everyone starts in 'main': make a project per game or app to keep its chat, tasks and docs apart.</Text>}
               {elsewhere.length > 0 && (
                 <Box flexDirection="row" justifyContent="space-between">
@@ -4098,12 +4159,18 @@ export const register: Register = (on, options) => {
               {inSession && asked.project !== '' && (
                 <Callout>
                   <Text bold>{asked.isNew ? `Start "${asked.project}" in a new chat?` : `Open "${asked.project}" in a new chat?`}</Text>
+                  {otherChat && (
+                    <Text bold color="warning">
+                      Wait!! You already have a chat for {asked.project} (last used {shortDate(otherChat.at)}). Open it from the sidebar to carry on there.
+                    </Text>
+                  )}
                   <Text dimColor>
-                    ⚠ This chat already has other work. Moving it would mix the two, and its Claude would carry all of this chat into "{asked.project}" (more tokens). A new chat starts clean{asked.isNew ? ', and you lead the project there' : ', with a catch-up'}. Already have a chat for it? Open that one from the sidebar: each chat stays in its own project.
+                    ⚠ This chat already has other work. Using it for "{asked.project}" would mix the two, and its Claude would carry all of this chat along (more tokens). A new chat starts clean{asked.isNew ? ', and you lead the project there' : ', with a catch-up'}.
+                    {otherChat ? '' : ' Already have a chat for it on another PC? Open that one: each chat stays in its own project.'}
                   </Text>
                   <Box flexDirection="row">
-                    <Button key="move-newchat" label="Open it in a new chat" variant="primary" onPress={() => void moveInNewChat($)} />
-                    <Button key="move-here" label="Move this chat" onPress={() => void moveHere($)} />
+                    <Button key="move-newchat" label="Open it in a new chat" variant={otherChat ? undefined : 'primary'} onPress={() => void moveInNewChat($)} />
+                    <Button key="move-here" label="Use this chat" onPress={() => void moveHere($)} />
                     <Button key="move-cancel" label="Cancel" dimColor onPress={() => void update($, moveAsk, () => ({ project: '', isNew: false }))} />
                   </Box>
                 </Callout>
@@ -4191,14 +4258,21 @@ export const register: Register = (on, options) => {
             {/* -- the rest, one line each until you open it */}
             <Box flexDirection="column" borderStyle="round" paddingX={1} marginTop={1}>
               {sectionHead('projects', `Projects (${projectRows.length})`, 'switch, rename or delete')}
+              {section === 'projects' && (
+                <Box flexDirection="row" justifyContent="space-between" paddingLeft={2}>
+                  <Text dimColor>Some projects are members-only: ask a member to add you.</Text>
+                  <Button key="projects-refresh-list" label="↻" dimColor onPress={() => refreshProjectsPress($)} />
+                </Box>
+              )}
               {section === 'projects' &&
                 projectRows.map(p => {
                   const mine = p.name === projectName
                   const lead = mine ? s.leader : p.leader // the project you're in: the leader the pane already has
                   const canDelete = p.name !== 'main' && (lead === me || isHosting())
+                  const who = whoIn(p.name, p.here)
                   const bits = [
                     p.unread && !mine ? `${p.unread} new` : '',
-                    p.here.length ? `${p.here.join(', ')} here` : '',
+                    who.length ? `here: ${who.join(', ')}` : '',
                     p.openTasks ? `${p.openTasks} open task${p.openTasks === 1 ? '' : 's'}` : '',
                     lead ? `led by ${lead}` : '',
                   ].filter(Boolean)

@@ -2287,3 +2287,117 @@ test("a catch-up only has this chat's project: a message from another project wa
   expect(text).not.toContain('timeline T40')
 })
 
+// -- 1.17: which chat is where (C1, C3), invites easier to find (C2)
+
+function keptStore(on: any, entries: [string, unknown][] = []) {
+  const kept = new Map<string, unknown>(entries)
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  return kept
+}
+
+test('a chat that is used remembers it is in its project', { options: OPTIONS }, async ($, on) => {
+  const kept = keptStore(on)
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }))
+  on('turn.start', async (_$: unknown, e: any) => ({ turnId: e.turnId ?? 't1' }) as any)
+  await startSession(on, $) // this chat's folder is /tmp
+  await $.turn.start({ turnId: 't1' } as any)
+  await settle()
+  const list = kept.get('chatsFor:http://relay.test:7777:main') as { cwd: string; at: number }[]
+  expect(list?.[0]?.cwd).toBe('/tmp')
+  expect(Date.now() - (list?.[0]?.at ?? 0)).toBeLessThan(60000)
+})
+
+test('the move question says "Use this chat", and warns when this PC already has a chat in that project', { options: OPTIONS }, async ($, on) => {
+  const other = 'C:\\Games\\HorrorChat'
+  const kept = keptStore(on, [
+    ['chatsFor:http://relay.test:7777:Horror', [{ cwd: other, at: Date.UTC(2026, 9, 20, 12, 0) }]],
+    [`project:http://relay.test:7777:${other}`, 'Horror'],
+  ])
+  on('session.turns', async () => ({ value: 3 }) as any) // this chat already has work
+  const projects = [
+    { name: 'main', leader: 'alice', openTasks: 0, docs: 0, here: ['alice'] },
+    { name: 'Horror', leader: 'alice', openTasks: 0, docs: 0, here: [] },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, projects }) } }))
+  await startSession(on, $)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  await ui.select({ key: 'project', value: 'Horror' })
+  await settle()
+  expect(await ui.find({ text: /Wait!! You already have a chat for Horror \(last used Oct 20, \d\d:\d\d\)/ } as any)).toBeDefined()
+  expect((await ui.find({ key: 'move-here' }))?.text).toContain('Use this chat')
+  await ui.press({ key: 'move-cancel' })
+  // that chat has moved on to another project since: no warning
+  kept.set(`project:http://relay.test:7777:${other}`, 'main')
+  await ui.select({ key: 'project', value: 'Horror' })
+  await settle()
+  expect(await ui.find({ text: /Open "Horror" in a new chat\?/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /Wait!!/ } as any)).toBeUndefined()
+  await ui.press({ key: 'move-cancel' })
+  await ui.unmount()
+})
+
+test('the project list names who is where, with you as "this chat" or "another chat", and ↻ re-reads it', { options: OPTIONS }, async ($, on) => {
+  keptStore(on)
+  let reads = 0
+  const projects = [
+    { name: 'main', leader: 'alice', openTasks: 1, docs: 0, here: ['alice', 'bob'] },
+    { name: 'lava', leader: 'alice', openTasks: 0, docs: 0, here: ['alice'] },
+  ]
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.includes('/poll')) reads += 1
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, projects }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  expect(await ui.find({ text: /here: you \(this chat\), bob/ } as any)).toBeDefined()
+  await ui.press({ key: 'section-projects' })
+  expect(await ui.find({ text: /lava.*here: you \(another chat\)/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /Some projects are members-only: ask a member to add you\./ } as any)).toBeDefined()
+  const before = reads
+  await ui.press({ key: 'projects-refresh' })
+  await settle()
+  expect(reads).toBeGreaterThan(before)
+  await ui.unmount()
+  const listed: any = await $.tool.call({ tool: 'mcp__crew__crew_project' } as any)
+  expect(String(listed.result)).toContain('Some projects are members-only: ask a member to add you.')
+})
+
+test('a members-only project has "+ Add someone" right in its summary', { options: OPTIONS }, async ($, on) => {
+  keptStore(on)
+  const posts: { url: string; body: any }[] = []
+  const projects = [
+    { name: 'main', leader: 'alice', openTasks: 0, docs: 0, here: [] },
+    { name: 'secret', leader: 'alice', openTasks: 0, docs: 0, here: ['alice'], private: true, members: ['alice'] },
+  ]
+  const peers = [
+    { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true },
+    { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false },
+  ]
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posts.push({ url: e.url, body: JSON.parse(e.init.body) })
+      return { value: { status: 200, ok: true, headers: {}, text: '{"members": ["alice", "bob"]}' } }
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers, projects, project: 'secret' }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'secret' } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-docs' })
+  await settle()
+  expect(await ui.find({ text: /🔒 Members only: alice/ } as any)).toBeDefined()
+  expect(await ui.find({ key: 'member-add-bob' })).toBeUndefined() // folded until asked
+  await ui.press({ key: 'member-add-open' })
+  await ui.press({ key: 'member-add-bob' })
+  await settle()
+  await ui.unmount()
+  expect(posts.find(p => p.url.endsWith('/project/members'))?.body).toEqual({ add: ['bob'] })
+  await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any)
+})

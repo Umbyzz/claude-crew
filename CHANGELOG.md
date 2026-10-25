@@ -2,6 +2,14 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.17.1
+The other half of the retro fixes, designed and built by CoriZori's Claude and merged over the crew relay:
+- **"Use this chat"** replaces "Move this chat", and crew warns *"Wait!! You already have a chat for <project>"* when this PC already has a chat in that project (with when it was last used), so you carry on there instead of starting over.
+- **"+ Add someone"** right in a members-only project's summary, so inviting someone doesn't mean digging into Members & access. Can't see a friend's project? The Projects list and `crew_project` now say that some projects are members-only.
+- **Who's where:** the project list names who is in each project, with you as *you (this chat)* or *you (another chat)*, and a **↻** re-reads it.
+- **The retro skill is now crew:theultimateretroforcrew**, a name nothing triggers by accident. Just say "the project's done, run the retro".
+- **Kickoff** learned from the RTS project: a *studio-notes* doc for Roblox Studio projects (the MCP quirks we hit), a task number for every request (relayed ones too) with the done note as the changelog line, perf and balance passes as real tasks, and the leader spreading their own building across the project.
+
 ## 1.17.0
 Fixes from the first real crew project, a Roblox RTS built by CoriZori's and Umbyz's Claudes (from their retro):
 - **A short `crew_status`.** It used to print every done task with its whole note, around 10k tokens a call on a long project. Now it shows the open tasks, how many are done (and the newest three), and recent messages cut to a few lines. `all: true` shows everything, and `id` one message in full.
