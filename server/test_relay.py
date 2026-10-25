@@ -345,6 +345,31 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(dm[0]["project"], "(private)")  # side is cori's private project: its name stays private
         self.assertFalse(any(m["text"] == "for everyone in side" for m in got))  # messages to everyone stay put
 
+    def test_a_message_to_you_waits_for_your_chat_in_its_own_project(self):
+        # umbyz has a chat in main and one in "RTS"; pluh asks for something in main
+        self.r.call("GET", "/poll?since=0", "umbyz", project="RTS")
+        self.r.call("GET", "/poll?since=0", "umbyz")
+        self.r.call("POST", "/send", "pluh", body={"to": "umbyz", "kind": "request", "text": "build the gate"})
+        texts = lambda project: [m["text"] for m in self.poll("umbyz", project=project)[1]["messages"]]
+        self.assertIn("build the gate", texts(""))
+        self.assertNotIn("build the gate", texts("RTS"))  # not in the RTS chat as well
+        # with no chat in main any more, it reaches whichever chat they have (labelled with its project)
+        self.r.call("POST", "/leave", "umbyz", body={})
+        self.assertIn("build the gate", texts("RTS"))
+
+    def test_images_outlive_the_in_memory_cache(self):
+        import base64
+        ids = []
+        for i in range(42):  # more than the 40 kept in memory
+            data = base64.b64encode(bytes([i]) * 100).decode()
+            code, r = self.r.call("POST", "/files", "cori", body={"to": "all", "name": f"s{i}.png", "mime": "image/png", "data": data})
+            self.assertEqual(code, 200, r)
+            ids.append(r["file"])
+        req = urllib.request.Request(f"http://127.0.0.1:{self.r.port}/file?id={ids[0]}",
+                                     headers={"X-Crew-Key": KEY, "X-Crew-Name": "umbyz", "X-Crew-Test-Remote": "1"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            self.assertEqual(r.read(), bytes([0]) * 100)
+
     def test_an_image_goes_through(self):
         import base64
         data = base64.b64encode(os.urandom(50_000)).decode()

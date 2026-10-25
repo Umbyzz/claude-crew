@@ -2,6 +2,17 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.17.0
+Fixes from the first real crew project, a Roblox RTS built by CoriZori's and Umbyz's Claudes (from their retro):
+- **A short `crew_status`.** It used to print every done task with its whole note, around 10k tokens a call on a long project. Now it shows the open tasks, how many are done (and the newest three), and recent messages cut to a few lines. `all: true` shows everything, and `id` one message in full.
+- **No more mix-ups between projects.** A message to you from another project now goes only to your chat in that project, if you have one open. Before, a Tweener request could land in your RTS chat as work. Catch-ups only cover the chat's own project.
+- **Nothing lost while the relay is down.** `crew_send` to an unreachable relay is queued and sent by itself once it's back, marked with when it was written. No more re-sending by hand.
+- **Old requests aren't re-run.** Coming back after a long time away, you get one short catch-up instead of hundreds of old messages, and a request that arrives more than 15 minutes late is shown but never started as new work ("check the board first, it may be done already").
+- **Images survive.** The relay now keeps the last 300 images on disk, so an image in a replayed message, or one that's 40 images old, still downloads.
+- **A steadier acting leader.** Someone only steps in after the leader has been away for 3 minutes (it was 1), and only someone with a chat open in that project, so no more "pluh is acting leader" in a project pluh isn't in, and much less flipping.
+- **Extra usage counts.** Bought extra usage? Crew no longer calls you out of tokens at 100%. It shows *extra usage* next to your usage, and only a turn that actually fails for lack of tokens marks you as out. (Asked by Umbyz.)
+- **Clearer errors:** no more "crew: crew: … ECONNREFUSED: ECONNREFUSED"; an unreachable relay is said once, in plain words.
+
 ## 1.16.2
 - **Two chats, two projects, no flickering.** Someone with an old chat in one project and a new chat in another used to jump between the two in everyone's `/crew` and Clawds window, since the relay kept just one project per person and each chat's check-in overwrote the other's. The relay now tracks each chat on its own: you're listed as *here* in every project you have a chat open in, everyone sees your busiest chat (working beats idle), and closing one chat no longer tells the crew you left while another is still open. (Found in the first real test by Umbyz and CoriZori.)
 

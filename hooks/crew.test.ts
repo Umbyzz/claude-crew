@@ -2176,3 +2176,114 @@ test('a new chat opened for a new project joins straight in (no "rejoin?"), star
   expect(posts.some(p => p.url.endsWith('/leader') && p.project === 'Horror' && p.body.name === OPTIONS.name)).toBe(true)
   expect(kept.get('nextChat:http://relay.test:7777')).toBeNull()
 })
+
+test('crew_send while the relay is unreachable is queued, and sent by itself once the relay is back', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  let down = false
+  const sent: any[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (down) return { deny: 'ECONNREFUSED: ECONNREFUSED: Unable to connect' } as any
+    if (e.url.endsWith('/send')) {
+      sent.push(JSON.parse(e.init.body))
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ id: 50, to: 'bob' }) } }
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // joined and connected
+  down = true
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_send', to: 'bob', kind: 'update', text: 'T5 done' } as any)
+  expect(r.result).toContain('queued')
+  expect(sent).toHaveLength(0)
+  const failedRead: any = await $.tool.call({ tool: 'mcp__crew__crew_read_shared', name: 'plan' } as any)
+  expect(failedRead.deny ?? '').not.toContain('crew: crew:') // the engine's "crew:" is said once
+  down = false
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // a good check-in
+  await settle()
+  expect(sent).toHaveLength(1)
+  expect(sent[0].text).toContain('while the relay was unreachable) T5 done')
+  expect(sent[0].to).toBe('bob')
+})
+
+test("an old request that arrives late (after a disconnect) is shown, but not run as new work", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const submitted: string[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => (submitted.push(e.text), e))
+  on('turn.complete', async () => ({ text: '' }) as any)
+  let polls = 0
+  const hourAgo = Date.now() / 1000 - 3600
+  on('http.fetch', async () => {
+    polls += 1
+    const messages = polls === 1 ? [{ id: 9201, from: 'bob', to: 'alice', kind: 'request', text: 'Build T7 and T8', at: hourAgo }] : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 9201 }) } }
+  })
+  await $.turn.complete({ reason: 'answer', text: 'done' } as any) // idle
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(submitted.join(' ')).not.toContain('Build T7 and T8') // not re-run
+  const shown = JSON.stringify(session.appended().map(r => r.message.content))
+  expect(shown).toContain('Build T7 and T8')
+  expect(shown).toContain('An old request')
+})
+
+test('crew_status is short by default: open tasks in full, done ones counted; all and id show more', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  on('ui.status', async () => ({ value: undefined }))
+  const done = Array.from({ length: 30 }, (_, i) => ({ id: 100 + i, title: `Old job ${i}`, note: 'x'.repeat(400), status: 'done', owner: 'bob', at: 0 }))
+  const long = { id: 9301, from: 'bob', to: 'all', kind: 'chat', text: `start ${'y'.repeat(900)} end`, at: 0 }
+  on('http.fetch', async () => ({
+    value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, tasks: [...POLL.tasks, ...done], messages: [long], cursor: 9301 }) },
+  }))
+  const short: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(short.result).toContain('T3 [open')
+  expect(short.result).toContain('Done: 30')
+  expect(short.result).not.toContain('x'.repeat(400)) // no done notes
+  expect(short.result).toContain('crew_status id 9301 has the rest')
+  expect(short.result.length).toBeLessThan(3000)
+  const all: any = await $.tool.call({ tool: 'mcp__crew__crew_status', all: true } as any)
+  expect(all.result).toContain('x'.repeat(400))
+  const one: any = await $.tool.call({ tool: 'mcp__crew__crew_status', id: 9301 } as any)
+  expect(one.result).toContain(' end')
+})
+
+test('past 100% with extra usage you are not "out": crew shows extra usage instead', { options: OPTIONS }, async ($, on) => {
+  const seen = fakeRelay(on)
+  on('session.measure', async (_$: unknown, e: any) => ({ changed: e.changed }) as any)
+  await $.session.measure({ context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: 100 }], changed: ['rateLimits'] } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const sends = seen.filter(s => s.url.endsWith('/send')).map(s => JSON.parse(s.init.body))
+  expect(sends.some(b => b.kind === 'out')).toBe(false)
+  const last = seen[seen.length - 1].init.headers
+  expect(last['X-Crew-Usage-Detail']).toBe('100% session · extra usage')
+  expect(last['X-Crew-Activity']).not.toBe('out')
+})
+
+test("a catch-up only has this chat's project: a message from another project waits for that project's chat", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const messages = [
+    { id: 9401, from: 'bob', to: 'all', kind: 'chat', text: 'main news', at: 0 },
+    { id: 9402, from: 'pluh', to: 'alice', kind: 'request', text: 'timeline T40', project: 'Tweener', at: 0 },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 9402 }) } }))
+  await startSession(on, $)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'leave' })
+  await ui.press({ key: 'leave-yes' })
+  await settle()
+  await ui.press({ key: 'join' })
+  await settle()
+  await ui.unmount()
+  const text = JSON.stringify(session.appended().map(r => r.message.content))
+  expect(text).toContain('(1 older message not shown') // main's news only: Tweener's request isn't counted
+  expect(text).not.toContain('timeline T40')
+})
+

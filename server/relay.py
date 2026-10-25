@@ -22,12 +22,13 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.16.2"
+VERSION = "1.17.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
 MAX_FILE = 8_000_000  # bytes per shared image
 MAX_FILES = 40  # images kept in memory, oldest dropped first
+MAX_IMAGES = 300  # images kept on disk in crew-images/ (oldest dropped first), so a replayed message still downloads
 ONLINE_SECONDS = 12  # no check-in for this long: shown as offline
 GONE_SECONDS = 20  # no check-in for this long: the crew is told they lost connection (a clean exit says so at once)
 ACTIVITIES = ("idle", "thinking", "typing", "working", "chatting", "done", "cheer", "away", "out")
@@ -142,6 +143,41 @@ def docs_of(project):
 MAX_FOLDER_FILE = 200_000_000  # bytes per file
 MAX_FOLDER_BYTES = 2_000_000_000  # bytes per shared folder
 MAX_FOLDER_FILES = 20_000
+
+
+def image_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(args.data)), "crew-images")
+
+
+def keep_image(fid, meta, data):
+    """Saves an image to disk and forgets the oldest beyond MAX_IMAGES."""
+    try:
+        os.makedirs(image_dir(), exist_ok=True)
+        tmp = os.path.join(image_dir(), fid + ".part")
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, os.path.join(image_dir(), fid))
+    except OSError:
+        return
+    images = state.setdefault("images", {})
+    images[fid] = meta
+    for old in sorted(images, key=lambda k: images[k].get("at", 0))[:-MAX_IMAGES]:
+        images.pop(old, None)
+        try:
+            os.remove(os.path.join(image_dir(), old))
+        except OSError:
+            pass
+
+
+def image_bytes(fid):
+    meta = state.get("images", {}).get(fid)
+    if not meta or not fid.isalnum():
+        return None, None
+    try:
+        with open(os.path.join(image_dir(), fid), "rb") as f:
+            return f.read(), meta.get("mime", "image/png")
+    except OSError:
+        return None, None
 
 
 def blob_dir():
@@ -296,7 +332,7 @@ def show_busiest(p, now):
     p["subagents"], p["chatTo"] = c.get("subagents", 0), c.get("chatTo")
 
 
-LEADER_AWAY_SECONDS = 60  # the leader offline this long (or out of tokens): someone else acts as leader meanwhile
+LEADER_AWAY_SECONDS = 180  # the leader offline this long (or out of tokens): someone else acts as leader meanwhile
 acting = {}  # project -> the acting leader while that project's true leader is away (memory only)
 edits = {}  # project -> {path (lowercase): {"path", "name", "at"}}: who last edited which file there (memory only)
 EDIT_SECONDS = 600
@@ -324,7 +360,9 @@ def update_acting(now):
         leader, cur = leader_of(project), acting.get(project)
         want = None
         if leader_away(project, now):
-            ok = lambda n: n != leader and n in peers and is_online(peers[n], now) and peers[n]["activity"] != "out"
+            # someone working in this very project: a chat open in it, and allowed to see it
+            ok = lambda n: n != leader and n in peers and has_chat_in(peers[n], project, now) \
+                and peers[n]["activity"] != "out" and can_see(project, n)
             want = cur if cur and ok(cur) else next(
                 (n for n, _ in sorted(((n, p["joinedAt"]) for n, p in peers.items() if ok(n)),
                                       key=lambda x: (x[1], x[0]))), None)
@@ -630,10 +668,14 @@ class Handler(BaseHTTPRequestHandler):
                     found = matches()
                 return self.reply(200, {"messages": found, "now": time.time(), "timedOut": not found})
             if url.path == "/file":  # an image's raw bytes, for curl to save
-                f = files.get(q.get("id", [""])[0])
-                if not f:
-                    return self.reply(404, {"error": "no such image (the relay keeps the latest few)"})
-                return self.reply_bytes(f["data"], f["mime"])
+                fid = q.get("id", [""])[0]
+                f = files.get(fid)
+                if f:
+                    return self.reply_bytes(f["data"], f["mime"])
+                data, mime = image_bytes(fid)
+                if data is None:
+                    return self.reply(404, {"error": f"no such image (the relay keeps the latest {MAX_IMAGES})"})
+                return self.reply_bytes(data, mime)
             if url.path == "/log":
                 # The crew log window: full messages, read-only (no check-in, no read mark). Same privacy as /poll:
                 # what went to everyone, to the viewer, or from the viewer. Others' direct messages never show.
@@ -665,13 +707,16 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/poll":
                 since = int(q.get("since", ["0"])[0])
                 pr = self.project
+                now = time.time()
+                me = peers.get(self.name, {})
                 msgs = [m for m in state["messages"] if m["id"] > since and (
                         (in_project(m, pr) and (m["to"] in ("all", self.name) or m["from"] == self.name))
-                        # a message to you reaches you wherever you are: a teammate's "done, what next?" or a reply
-                        or (m["to"] == self.name and m.get("project") and m.get("project") != pr))]
+                        # a message to you reaches you wherever you are (a teammate's "done, what next?", a reply),
+                        # unless you have a chat open in its own project: then only that chat gets it
+                        or (m["to"] == self.name and m.get("project") and m.get("project") != pr
+                            and not has_chat_in(me, m["project"], now)))]
                 msgs = [m if not m.get("project") or can_see(m["project"], self.name) else {**m, "project": "(private)"}
                         for m in msgs]
-                now = time.time()
                 self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr, self.name, self.host_pc()), "project": pr,
                                  "friendsOnly": bool(state.get("friendsOnly")),
                                  **({"renamedFrom": self.asked_project} if self.asked_project != pr else {}),
@@ -994,6 +1039,7 @@ class Handler(BaseHTTPRequestHandler):
                 fid = secrets.token_hex(6)
                 files[fid] = {"id": fid, "name": name, "mime": mime, "data": data, "by": self.name,
                               "at": int(time.time())}
+                keep_image(fid, {"name": name, "mime": mime, "by": self.name, "at": time.time(), "size": len(data)}, data)
                 for old in list(files)[:-MAX_FILES]:
                     del files[old]
                 caption = str(b.get("caption") or "").strip()[:500]

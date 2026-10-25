@@ -64,7 +64,7 @@ Every crew message a Claude receives becomes part of its conversation, so crew k
 | Tool | What it does |
 |---|---|
 | `crew_send` | message a teammate or everyone (`chat`, `request` or `update`) |
-| `crew_status` | who's online and busy, their models, usage and tools, the leader, tasks, shared docs and folders, and recent messages |
+| `crew_status` | who's online and busy, their models, usage and tools, the leader, the open tasks, shared docs and folders, and recent messages. Short by default: done tasks are counted, long messages cut. `all: true` lists every done task with its note; `id` shows one message in full |
 | `crew_task` | `add` / `assign` / `claim` / `done` / `release` / `edit` / `remove` tasks (by number: `3` or `T3`) |
 | `crew_lead` | change the leader (only when you ask it to) |
 | `crew_share` / `crew_read_shared` | publish and read shared docs (including the `crew-rules` house rules) |

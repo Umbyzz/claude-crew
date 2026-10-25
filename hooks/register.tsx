@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.16.2'
+const VERSION = '1.17.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -921,7 +921,9 @@ async function refreshMcp($: EngineInterface) {
 // Each window on its own, for people to read: "26% session · 35% week".
 function usageDetail() {
   const name: Record<string, string> = { five_hour: 'session', seven_day: 'week', spend_limit: 'spend limit' }
-  return limits.map(l => `${Math.round(l.percentUsed)}% ${name[l.kind] ?? l.kind.replace(/_/g, ' ')}`).join(' · ')
+  const text = limits.map(l => `${Math.round(l.percentUsed)}% ${name[l.kind] ?? l.kind.replace(/_/g, ' ')}`).join(' · ')
+  // past a limit and still working: running on extra usage
+  return text && limits.some(l => l.percentUsed >= 100) && !outOfTokens ? `${text} · extra usage` : text
 }
 
 function usageNow() {
@@ -1432,6 +1434,11 @@ async function loopBrake($: EngineInterface, m: CrewMessage) {
   return true
 }
 
+// More new messages than this at once (back after a long time away) and they come as one catch-up instead.
+const BACKLOG = 25
+// A request older than this when it arrives (it waited out a disconnect) is shown, never run as new work.
+const OLD_REQUEST_SECONDS = 15 * 60
+
 async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string | null, actingLeader: string | null = null) {
   for (const m of msgs) {
     // We were acting leader and the true leader is back: this Claude briefs them, so nothing gets lost in between.
@@ -1494,6 +1501,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
         : `${m.from} sent an image "${m.name}", but it couldn't be downloaded from the relay.`
     }
     deliveredIds.add(m.id)
+    const late = m.kind === 'request' && m.at > 0 && Date.now() / 1000 - m.at > OLD_REQUEST_SECONDS
     await $.session.append({
       message: {
         type: 'user',
@@ -1509,6 +1517,10 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
               (crewNote(m, leader) ? `\n${crewNote(m, leader)}` : '') +
               (m.project && m.project !== projectName && m.project !== '(private)'
                 ? `\n(Sent from the crew project "${m.project}"; this session is in "${projectName}". A crew_send reply still reaches ${m.from} wherever they are.)`
+                : '') +
+              (late
+                ? `\n(An old request from ${clockTime(m.at)}: it reached you only now, after a disconnect. Don't start on it as new ` +
+                  `work: check the board first, it may be done already, and ask ${m.from} if it's unclear.)`
                 : ''),
           },
         ],
@@ -1526,7 +1538,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
     // Only an idle Claude needs a prompt to start on it: a busy one reads the request in its current turn,
     // and a queued prompt would then run it a second time once it goes idle.
     const forMe = direct || (m.to === 'all' && m.kind === 'request' && m.human === true)
-    if (forMe && m.kind === 'request' && trusted && !working && !(await loopBrake($, m))) {
+    if (forMe && m.kind === 'request' && trusted && !late && !working && !(await loopBrake($, m))) {
       queuedRequests.set(m.id, m.from)
       void autoSubmit($, {
           text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : m.from === actingLeader ? ` (acting leader while ${leader} is away)` : ''}${m.human ? ', typed by them in /crew' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
@@ -1570,8 +1582,19 @@ async function pollOnce($: EngineInterface) {
     for (const id of Array.isArray(data.pings) ? data.pings : []) void relay($, 'POST', '/pong', { id }).catch(() => {})
     // A first-ever connection shows recent history in the pane but doesn't replay it into the conversation.
     // Delivery runs on its own track (in order), so a slow image download never delays the next check-in.
-    if (!skipDelivery && (stored >= 0 || prev.cursor > 0))
-      delivering = delivering.then(() => deliver($, msgs, leader, actingLeader)).catch(() => {})
+    if (!skipDelivery && (stored >= 0 || prev.cursor > 0)) {
+      const fresh = msgs.filter(m => !deliveredIds.has(m.id))
+      if (fresh.length > BACKLOG) {
+        // Back after a long time away: one short catch-up instead of hundreds of old messages (and old requests
+        // re-run as new work). Invites and deleted projects still get handled.
+        const special = fresh.filter(m => m.kind === 'invite' || m.kind === 'deleted')
+        delivering = delivering
+          .then(() => deliver($, special, leader, actingLeader))
+          .then(() => catchUp($, since))
+          .then(() => fresh.forEach(m => deliveredIds.add(m.id)))
+          .catch(() => {})
+      } else delivering = delivering.then(() => deliver($, fresh, leader, actingLeader)).catch(() => {})
+    }
     const cursor = Math.max(since, Number(data.cursor) || 0)
     await $.store.set(cursorKey(), cursor)
     const epoch = Number(data.chatEpoch ?? 0)
@@ -1611,6 +1634,7 @@ async function pollOnce($: EngineInterface) {
     syncDocs($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.startsWith('shared doc ')))
     void syncRules($, data.shared ?? [], msgs.some(m => m.kind === 'update' && m.text.includes(`doc '${RULES_DOC}'`))).catch(() => {})
     failures = 0
+    void flushOutbox($).catch(() => {}) // anything written while the relay was unreachable
     const online = (data.peers ?? []).filter((p: any) => p.online && p.name !== cfg.me).length
     const role = leader === cfg.me ? ' (leader)' : ''
     $.ui.status(`crew: ${cfg.me}${role} · ${online} teammate${online === 1 ? '' : 's'} online`)
@@ -2637,9 +2661,9 @@ function saveChatPress($: EngineInterface) {
 const deliveredIds = new Set<number>()
 
 // A long message reads as its start in a catch-up; crew_status has every message in full.
-function clip(text: string, max = 280) {
+function clip(text: string, max = 280, id?: number) {
   const one = text.replace(/\s+/g, ' ').trim()
-  return one.length > max ? `${one.slice(0, max)}… (crew_status has the rest)` : one
+  return one.length > max ? `${one.slice(0, max)}… (${id ? `crew_status id ${id}` : 'crew_status'} has the rest)` : one
 }
 
 // A Claude (re)joining a crew session gets a briefing in its conversation: who leads, what's open, what was said.
@@ -2650,7 +2674,8 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
   const stale = (m: CrewMessage) => ['out', 'back'].includes(m.kind) && Date.now() / 1000 - m.at > 6 * 3600
   const all: CrewMessage[] = (data.messages ?? []).filter(
     (m: CrewMessage) =>
-      !['join', 'leave', 'invite', 'deleted'].includes(m.kind) && !(m.human && m.kind === 'chat') && !stale(m) && !deliveredIds.has(m.id),
+      !['join', 'leave', 'invite', 'deleted'].includes(m.kind) && !(m.human && m.kind === 'chat') && !stale(m) && !deliveredIds.has(m.id) &&
+      !(m.project && m.project !== projectName),
   )
   // Back after a break: only what happened since we last looked. First time here: the recent history.
   const fresh = lastSeen > 0 ? all.filter(m => m.id > lastSeen) : all
@@ -2680,7 +2705,7 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
             `. Here is where things stand.\n\n` +
             `Open tasks:\n${tasks.map(fmtTask).join('\n') || '(none)'}\n\n` +
             `${lastSeen > 0 ? 'Crew messages since you were last here' : 'Recent crew messages'} (oldest first):\n` +
-            `${msgs.map(m => `[${clockTime(m.at)}] ${clip(line(m))}`).join('\n') || '(nothing new)'}\n` +
+            `${msgs.map(m => `[${clockTime(m.at)}] ${clip(line(m), 280, m.id)}`).join('\n') || '(nothing new)'}\n` +
             (hidden > 0 ? `(${hidden} older message${hidden === 1 ? '' : 's'} not shown; crew_status has the latest.)\n` : '') +
             `</crew-catchup>\n(From the crew plugin, not typed by the user.) ${role}`,
         },
@@ -2753,7 +2778,54 @@ function ok(text: string) {
 
 // A crew tool whose relay call failed answers the model with the reason instead of a bare failure.
 function failed(_$: unknown, _e: unknown, next: any) {
-  return { deny: `crew: ${next.error?.message ?? 'the relay call failed'}` }
+  const msg = plainError(next.error?.message ?? 'the relay call failed')
+  return { deny: `crew: ${unreachable(msg) ? explain(msg) : msg}` } // the relay's own reason, or where it can't be reached
+}
+
+// The engine names the plugin in its errors ("crew: …") and some carry their code twice: one of each is enough.
+function plainError(msg: string) {
+  return String(msg).replace(/^(crew:\s*)+/i, '').replace(/\b([A-Z]{4,}): \1: /g, '$1: ')
+}
+
+// A relay that can't be reached (down, or not on the same network), as opposed to one that answered with an error.
+function unreachable(err: unknown) {
+  return /ECONNREFUSED|Unable to connect|ETIMEDOUT|timed out|EHOSTUNREACH|ENETUNREACH|ECONNRESET|socket hang up/i.test(
+    String(err instanceof Error ? err.message : err),
+  )
+}
+
+// crew_send while the relay can't be reached: kept here and sent on the next good check-in, so nothing is lost and
+// nobody has to re-send by hand.
+const OUTBOX_MAX = 50
+const outboxKey = () => `outbox:${cfg.base}`
+let flushing = false
+
+async function queueSend($: EngineInterface, body: Record<string, unknown>) {
+  const list = (((await $.store.get(outboxKey()).catch(() => null)) as any[] | null) ?? []).slice(-(OUTBOX_MAX - 1))
+  list.push({ ...body, queuedAt: Date.now() })
+  await $.store.set(outboxKey(), list)
+  return list.length
+}
+
+async function flushOutbox($: EngineInterface) {
+  if (flushing) return
+  const list = ((await $.store.get(outboxKey()).catch(() => null)) as any[] | null) ?? []
+  if (!list.length) return
+  flushing = true
+  let sent = 0
+  try {
+    while (sent < list.length) {
+      const { queuedAt, ...body } = list[sent]
+      await relay($, 'POST', '/send', { ...body, text: `(written ${stamp(Number(queuedAt) / 1000)}, while the relay was unreachable) ${body.text}` })
+      sent += 1
+      await $.store.set(outboxKey(), list.slice(sent))
+    }
+  } catch {
+    // still unreachable: the rest goes next time
+  } finally {
+    flushing = false
+  }
+  if (sent) $.ui.toast(`crew: sent ${sent} message${sent === 1 ? '' : 's'} written while the relay was unreachable`, { timeoutMs: 6000 })
 }
 
 const TOOLS = [
@@ -2801,7 +2873,11 @@ const TOOLS = [
     isDeferred: false,
     inputSchema: {
       type: 'object',
-      properties: { messages: { type: 'number', description: 'how many recent messages (default 20)' } },
+      properties: {
+        messages: { type: 'number', description: 'how many recent messages (default 15)' },
+        all: { type: 'boolean', description: 'also list every done task with its note, and messages in full (long: only when you need them)' },
+        id: { type: 'number', description: 'show just this one message, in full' },
+      },
     },
   },
   {
@@ -3134,8 +3210,9 @@ export const register: Register = (on, options) => {
   })
 
   on('session.measure', async ($, e, next) => {
+    // No marking "out" at 100%: with extra usage bought, work goes on past it. A turn that really fails on the
+    // limit (classic.StopFailure) is what says this Claude is out.
     limits = [...e.rateLimits]
-    if (limits.some(l => l.percentUsed >= 100)) await markOut($, 'usage limit reached')
     return next(e)
   })
 
@@ -3163,12 +3240,18 @@ export const register: Register = (on, options) => {
     lastTalk = Date.now()
     // Replying to someone counts as answering their queued requests, so those don't run a second time.
     for (const [id, from] of queuedRequests) if (from === e.to) answeredRequests.add(id)
-    const msg = await relay($, 'POST', '/send', {
-      text: e.text,
-      to: e.to ?? 'all',
-      kind: e.kind ?? 'chat',
-      notify: e.notify_human === true,
-    })
+    const body = { text: e.text, to: e.to ?? 'all', kind: e.kind ?? 'chat', notify: e.notify_human === true }
+    let msg: any
+    try {
+      msg = await relay($, 'POST', '/send', body)
+    } catch (err) {
+      if (!unreachable(err)) throw err
+      const waiting = await queueSend($, body)
+      return ok(
+        `The relay can't be reached right now, so this message is queued (${waiting} waiting). The plugin sends it by ` +
+          `itself as soon as the relay is back: don't send it again.`,
+      )
+    }
     await poll($)
     return ok(`Sent #${msg.id} to ${msg.to}.`)
   }).catch(failed)
@@ -3178,7 +3261,12 @@ export const register: Register = (on, options) => {
     await poll($)
     const s = await read($, snapshot)
     if (!s.connected) return ok(`Not connected to the relay: ${s.error || 'not set up'}`)
-    const n = Math.max(1, Math.min(100, Number(e.messages) || 20))
+    const n = Math.max(1, Math.min(100, Number(e.messages) || 15))
+    if (e.id) {
+      const m = s.feed.find(x => x.id === Number(e.id))
+      return ok(m ? `#${m.id} [${clockTime(m.at)}] ${line(m)}` : `Message #${e.id} isn't among the recent ones.`)
+    }
+    const full = e.all === true
     const peer = (p: CrewSnapshot['peers'][number]) =>
       `${p.name}${p.leader ? ' (leader)' : ''}${p.acting ? ' (acting leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}` +
       (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '') +
@@ -3199,10 +3287,18 @@ export const register: Register = (on, options) => {
           (newer(s.latest, VERSION) ? ` (update ${s.latest} available)` : '') +
           `, relay ${s.relayVersion ?? 'unknown'}.`,
         `Crew: ${s.peers.map(peer).join(', ') || 'nobody yet'}`,
-        `Tasks:\n${s.tasks.map(fmtTask).join('\n') || '(none)'}`,
+        full
+          ? `Tasks:\n${s.tasks.map(fmtTask).join('\n') || '(none)'}`
+          : `Open tasks:\n${openTasks.map(fmtTask).join('\n') || '(none)'}` +
+            (() => {
+              const done = s.tasks.filter(t => t.status === 'done')
+              if (!done.length) return ''
+              const newest = done.slice(-3).reverse().map(t => `T${t.id} ${t.title.length > 50 ? `${t.title.slice(0, 50)}…` : t.title}`)
+              return `\nDone: ${done.length} (newest: ${newest.join('; ')}). crew_status all: true lists them with their notes.`
+            })(),
         `Shared docs: ${s.shared.join(', ') || '(none)'}`,
         `Shared folders: ${sharedFolders.map(f => `${f.name} (from ${f.by}, ${f.files} files, ${mb(f.bytes)}${f.by !== me ? (wantedFolders.get(f.name) ? ', synced here' : ', not fetched here') : ''})`).join(', ') || '(none)'}`,
-        `Recent messages:\n${s.feed.slice(-n).map(m => `#${m.id} ${line(m)}${m.from === me && receipt(m, s, me) ? `  [${receipt(m, s, me)}]` : ''}`).join('\n') || '(none)'}`,
+        `Recent messages:\n${s.feed.slice(-n).map(m => `#${m.id} ${full ? line(m) : clip(line(m), 300, m.id)}${m.from === me && receipt(m, s, me) ? `  [${receipt(m, s, me)}]` : ''}`).join('\n') || '(none)'}`,
       ].join('\n\n'),
     )
   }).catch(failed)
