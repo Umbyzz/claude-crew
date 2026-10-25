@@ -45,6 +45,150 @@ def roll(*parts):
     return seed(*parts) / float(16 ** 12)
 
 
+# ------------------------------------------------- easing: motion with weight
+# The real mascot never moves in a straight line. These are the GSAP curves its
+# animations use, so a lean settles, a jump floats up and drops, a hand overshoots.
+
+
+def clamp01(k):
+    return 0.0 if k < 0 else 1.0 if k > 1 else k
+
+
+def power2_out(k):
+    """Fast off the mark, easing into place: leans, look-arounds, hands finding a pose."""
+    k = clamp01(k)
+    return 1 - (1 - k) ** 2
+
+
+def power3_in(k):
+    """Slow then sudden: the crouch before a jump, and the drop back down."""
+    k = clamp01(k)
+    return k * k * k
+
+
+def sine_out(k):
+    """Floats up and loses steam at the top: the rising half of a jump."""
+    return math.sin(clamp01(k) * math.pi / 2)
+
+
+def back_out(k, s=1.70158):
+    """Goes past the mark and settles back: hands landing after a jump."""
+    k = clamp01(k) - 1
+    return 1 + (s + 1) * k ** 3 + s * k ** 2
+
+
+def toward(now, start, value, target, seconds, ease=power2_out):
+    """`value` eased to `target` over `seconds` from `start`. Same on every PC: it's all off the shared clock."""
+    if seconds <= 0:
+        return target
+    return value + (target - value) * ease((now - start) / seconds)
+
+
+class Seq:
+    """Hand-drawn frames played with their own hold times, with sections that replay.
+
+    `order` is the frames to show, in order (a frame may appear twice: that's a section replaying, like the
+    gym's second rep). `holds` is how long each entry of `order` stays up -- a pause at the top of an effort,
+    a long last frame. After the first pass the loop restarts at `loop_from`, so a run-up (the flag rising
+    from limp) plays once and the wave carries on without it.
+
+    Timed off clock(), so the same frame is on screen in every crew member's window.
+    """
+
+    def __init__(self, order, holds, loop_from=0):
+        self.order = list(order)
+        self.holds = [float(h) for h in holds]
+        self.stops, run = [], 0.0
+        for hold in self.holds:
+            run += hold
+            self.stops.append(run)
+        self.total = run
+        self.loop_from = max(0, min(loop_from, len(self.order) - 1))
+        self.loop_at = self.stops[self.loop_from - 1] if self.loop_from else 0.0
+        self.loop_len = max(1e-6, self.total - self.loop_at)
+
+    def pos(self, t):
+        """Which entry of `order` is up at `t` seconds in."""
+        if t < 0:
+            return 0
+        if t >= self.total:
+            t = self.loop_at + (t - self.total) % self.loop_len
+        for i, stop in enumerate(self.stops):
+            if t < stop:
+                return i
+        return len(self.order) - 1
+
+    def frame(self, t):
+        """Which drawing is up at `t` seconds in."""
+        return self.order[self.pos(t)]
+
+
+CROUCH = 0.1  # the gathering dip before a jump (the real one is 0.1 s of power3.in)
+LAND_SETTLE = 0.22  # how long the hands take to overshoot and settle after a landing
+LEAN_TIME = 0.4  # a lean, and the look that leads it, settle over this long
+EYE_LEAD = 0.12  # the eyes start a look-around this far ahead of the body
+GYM_AFTER = 50.0  # seconds of solid "working" before a Clawd goes and lifts something
+
+
+# ------------------------------------------------------------ frame sequences
+# Pixel shapes can't be tweened into each other, so these moments are drawn frame by frame.
+
+FLAG_W, FLAG_H = 6, 4  # the cloth that hangs off the pole, in cells
+
+
+def _flag_frames():
+    """Twelve drawings of the flag: three of it rising from limp to catching the air, then nine of the wave.
+    The rise only plays once -- after that the loop picks up at frame four, with the flag already up."""
+    frames = []
+    for i in range(3):  # the cloth lifts off the pole and fills out
+        reach, sag = (i + 1) * FLAG_W // 3, 2 - i
+        frames.append([(sag + r, col, col) for col in range(reach) for r in range(FLAG_H)])
+    for i in range(9):  # a ripple running out along the cloth, away from the pole
+        phase = i / 9.0 * 2 * math.pi
+        frames.append([(1 + int(round(math.sin(phase - col * 0.9))) + r, col, col)
+                       for col in range(FLAG_W) for r in range(FLAG_H)])
+    return frames
+
+
+FLAG_FRAMES = _flag_frames()
+FLAG_SEQ = Seq(range(12), [0.1] * 12, loop_from=3)
+# The body works against the flag: as the cloth swings out, the hand pulls back and the upper body leans away.
+FLAG_HAND_X = [0, -0.6, -1.1, -1.3, -0.8, -0.2, 0, 0, -0.4, -0.9, -1.5, -1.7]
+FLAG_SWAY_X = [0, 0, -0.5, -0.5, 0, 0.4, 0.4, 0.4, 0, 0, -0.5, -0.5]
+FLAG_HAND_Y = [0, 0, 0.4, 0.4, 0, 0, 0, 0, 0, 0, 0.4, 0.4]
+
+# Eight frames of the stomp: tilt one way, reach up, tilt the other, reach up again -- (tilt, left arm, right arm, dip)
+STOMP_FRAMES = [
+    (-0.6, 0, 1, 0.6), (-0.3, 0, 3, 0.0), (0.0, 0, 2, 0.4), (0.5, 1, 0, 0.8),
+    (0.6, 1, 0, 0.5), (0.3, 2, 0, 0.2), (0.0, 3, 0, 0.0), (-0.4, 2, 0, 0.4),
+]
+STOMP_SEQ = Seq(range(8), [0.125] * 8)
+STOMP_BURSTS = {1: 1, 6: -1}  # a burst leaves the hand that's at the top: frame -> which side it flies from
+
+# The gym: the curl, drawn in twelve positions. Frames 4-9 run twice, so the second rep comes for free.
+GYM_LIFT = [0, 0.4, 1.2, 2.2, 3.2, 4.2, 5.0, 5.4, 5.0, 4.0, 2.0, 0.4]
+GYM_ORDER = list(range(10)) + list(range(4, 10)) + [10, 11]
+
+
+def _gym_holds():
+    """Not every frame plays at the same speed: the dumbbell pauses at the top of the curl, the mascot holds
+    between reps, and the last frame sits a good while before the whole thing goes again."""
+    holds = []
+    for i, frame in enumerate(GYM_ORDER):
+        if i == len(GYM_ORDER) - 1:
+            holds.append(1.5)
+        elif frame == 7:
+            holds.append(0.27)  # the effort at the top of the lift
+        elif frame == 9:
+            holds.append(0.4)  # the breath between reps
+        else:
+            holds.append(0.085)
+    return holds
+
+
+GYM_SEQ = Seq(GYM_ORDER, _gym_holds())
+
+
 ONE_WINDOW_PORT = 47817  # a localhost port the open window holds, so a second launch can find it
 def desktop_bounds(sw, sh):
     """(left, top, width, height) of all monitors together on Windows; elsewhere just the main screen."""
@@ -103,8 +247,8 @@ FORCE_TRIP = None  # --trip picks one, for trying them out
 DEMO_LEAVE = 44  # --leave-at: when the demo's nova disconnects
 POLL_SECONDS = 1.5
 KEY_COLOR = "#0c0c0d"  # painted transparent on Windows
-ORANGE = "#D97757"
-ORANGE_DARK = "#B85F42"
+ORANGE = "#DD775B"  # the mascot's own orange, straight off the official clips
+ORANGE_DARK = "#BC5F47"
 GREY = "#8A8580"
 EYE = "#141413"
 INK = "#f0eee6"
@@ -303,7 +447,20 @@ class Clawd:
         self.partner = None
         self.bubble = None  # (text, until)
         self.blink_at = clock() + random.uniform(2, 6)
-        self.look = 0
+        self.look = 0  # where it wants to look; .gaze is where the eyes actually are
+        # motion with weight: the eyes lead a look-around, the body leans after them, a jump gathers
+        # itself before it goes, and the hands overshoot when it lands
+        self.gaze, self.look_was = 0.0, 0
+        self.gaze_from, self.gaze_at = 0.0, 0.0
+        self.lean, self.lean_from, self.lean_at = 0.0, 0.0, 0.0
+        self.arc = None  # the jump under way: {"start", "h", "up", "down"}
+        self.crouch = 0.0  # 0 to 1 through the gathering dip
+        self.crouch_until, self.pending = 0.0, 0.0
+        self.land_at = 0.0  # when it last touched down, for the hands' overshoot
+        # the frame sequences: which drawing is up, and the sway the frame asks the body for
+        self.sway = 0.0
+        self.flag = self.stomp = self.gym = None
+        self.burst_key = None
         self.arm = [0, 0]  # how far each arm is raised (cells)
         self.swing = "up"  # the blacksmith's hammer: "up" (wound up) or "down" (on the gear)
         self.heading_to, self.heading_at = 0.0, 0.0
@@ -342,8 +499,33 @@ class Clawd:
         self.bubble = (text, clock() + seconds)
 
     def hop(self, power=2.4):
-        if self.jump <= 0.01:
-            self.vy = power
+        """A jump with weight: a quick crouch to gather, then an arc that floats up and drops."""
+        if self.jump > 0.01 or self.arc or self.crouch_until:
+            return
+        self.crouch_until = clock() + CROUCH
+        self.pending = power
+
+    def launch(self, now, power):
+        """Off the ground. Up on sine.out and down on power3.in -- that difference is what reads as gravity."""
+        air = 2 * power / (0.45 * FPS)  # the airtime the old straight-line physics gave, kept so moves still land
+        self.arc = {"start": now, "h": power * power / 0.9, "up": air * 0.66, "down": air * 0.34}
+        self.crouch_until, self.pending, self.crouch = 0.0, 0.0, 0.0
+
+    def fly(self, now):
+        """Where the jump has got to. Returns False once it has landed."""
+        a = self.arc
+        t = now - a["start"]
+        was = self.jump
+        if t < a["up"]:
+            self.jump = a["h"] * sine_out(t / a["up"])
+        elif t < a["up"] + a["down"]:
+            self.jump = a["h"] * (1 - power3_in((t - a["up"]) / a["down"]))
+        else:
+            self.jump, self.arc, self.squash, self.land_at = 0.0, None, 3, now
+            self.vy = 0.0
+            return False
+        self.vy = (self.jump - was) * 0.5  # the painter stretches on the way up and squashes on landing
+        return True
 
     def walk_to(self, x, speed=0.35):
         self.heading_to, self.heading_at = x, clock()  # where it's going, for leapfrogging whoever's in the way
@@ -541,6 +723,7 @@ class World:
             c.x = c.trip["x0"]
         c.trip = {"kind": kind, "enter": enter, "start": now, "x0": c.x, "d": d, "said": set()}
         c.jump = c.vy = c.squash = 0
+        c.arc, c.crouch, c.crouch_until, c.pending = None, 0.0, 0.0, 0.0  # the trip flies the body itself
         c.hidden = enter and kind != "door"  # most arrivals start off-stage
         c.minis = []
         if not enter:
@@ -970,14 +1153,7 @@ class World:
             if now > c.blink_at:
                 c.blink_at = now + random.uniform(2.5, 6)
             self.act(c, now, clawds)
-            # gravity, squash and stretch
-            if c.jump > 0 or c.vy > 0:
-                c.jump += c.vy
-                c.vy -= 0.45
-                if c.jump <= 0:
-                    c.jump, c.vy, c.squash = 0, 0, 3
-            elif c.squash:
-                c.squash -= 1
+            self.weight(c, now)
             if not c.trip:  # trips may leave the stage on purpose
                 c.x = max(8, min(self.cols - 8, c.x))
         self.personal_space([c for c in clawds if not (c.trip or c.hidden)])
@@ -994,6 +1170,30 @@ class World:
                 p["vy"] = 0.5  # tears fall, everything else floats up
             p["life"] -= dt
         self.particles = [p for p in self.particles if p["life"] > 0][-260:]
+
+    def weight(self, c, now):
+        """What makes a Clawd feel heavy: the gaze leading a lean, the crouch before a jump, the arc, the
+        squash on landing. A trip (arriving or leaving) flies the body itself, so it's left alone."""
+        # the eyes get where they're looking first, then the body leans after them
+        if c.look != c.look_was:
+            c.look_was = c.look
+            c.gaze_from, c.gaze_at = c.gaze, now
+            c.lean_from, c.lean_at = c.lean, now + EYE_LEAD
+        c.gaze = toward(now, c.gaze_at, c.gaze_from, c.look, LEAN_TIME)
+        c.lean = toward(now, c.lean_at, c.lean_from, c.look * 0.5, LEAN_TIME)
+        if c.trip:
+            if c.squash:  # a trip flies the body itself, but its landings still settle
+                c.squash -= 1
+            return
+        if c.crouch_until:
+            if now >= c.crouch_until:
+                c.launch(now, c.pending)
+            else:  # the dip, quick and sudden: it reads as gathering momentum
+                c.crouch = power3_in(1 - (c.crouch_until - now) / CROUCH)
+        if c.arc:
+            c.fly(now)
+        elif c.squash:
+            c.squash -= 1
 
     def weather(self):
         """Funeral weather: rain, low fog, the odd lightning strike, and a ghost with opinions."""
@@ -1043,7 +1243,8 @@ class World:
                 # huggers, and anyone on their way to pat a sleeper, may come closer (or they'd moonwalk on the spot)
                 if self.carry and {a.name, b.name} == {self.carry["who"], self.carry["by"]}:
                     continue  # one is in the other's arms
-                near = 11 if (a.behavior in close or b.behavior in close or a.accepting or b.accepting) else 16
+                # the refreshed bodies are wider than the old ones, so they need a wider berth
+                near = 12 if (a.behavior in close or b.behavior in close or a.accepting or b.accepting) else 18
                 if self.funeral and self.funeral["name"] in (a.name, b.name):
                     near = 9.5  # mourners may come right up to the grave, but never stand on it
                 overlap = near - (b.x - a.x)
@@ -1062,6 +1263,8 @@ class World:
         c.bob = 0
         c.legs = 0
         c.bubble_lift = 0
+        c.sway = 0.0
+        c.flag = c.stomp = c.gym = None
         a = c.activity
         t = now
         if c.trip:
@@ -1143,6 +1346,8 @@ class World:
                 self.emit(c.x + random.uniform(-4, 4), self.ground - 9, "code")
             return self.worry_extra(c)
         if a == "working":
+            if c.since and now - c.since > GYM_AFTER:
+                return self.gym(c, now)  # it's been a long one: time to go and lift something
             # reading glasses on, sitting with a sheet of paper, sketching it all out
             c.mood, c.sit = "drafting", 1
             if random.random() < 0.004:
@@ -1177,19 +1382,11 @@ class World:
                 c.say(random.choice(["blah blah", "so basically…", "hey hey", "listen!"]), 2)
             return
         if a == "done":
-            return self.dance(c, t, solo=True)
-        if a == "cheer":
-            c.mood, c.arm = "happy", [3, 3]
             if c.dramatic:
-                c.arm = [3, 3] if int(t * 8) % 2 else [2, 2]
-                if c.jump == 0:
-                    c.hop(4.2)
-                if random.random() < 0.25:
-                    self.emit(c.x + random.uniform(-8, 8), self.ground - random.uniform(10, 22), "spark", "✦", "#E3B23C")
-                return
-            if c.jump == 0 and random.random() < 0.3:
-                c.hop(2.6)
-            return
+                return self.dance(c, t, solo=True)  # the full rave
+            return self.flag_wave(c, now)
+        if a == "cheer":
+            return self.confetti_stomp(c, now)
         # idle: worried about a teammate first, otherwise free play
         if c.worried and not self.at_peace(c):
             return self.worry(c, now)
@@ -1322,6 +1519,44 @@ class World:
         if random.random() < 0.004:
             c.say(random.choice(["poor pookie…", "hang in there", "we got you"]), 3)
 
+    def flag_wave(self, c, now):
+        """"Done!": the flag rises once, then the wave carries on, with the body swaying against the cloth --
+        as it swings out, the hand pulls back and the upper body leans the other way."""
+        f = FLAG_SEQ.frame(now - c.since)
+        c.mood, c.flag = "happy", f
+        c.sway = FLAG_SWAY_X[f]
+        c.arm = [1 if FLAG_HAND_Y[f] else 0, 3]  # the pole hand stays up; the other drops with the sway
+        if not c.bubble or c.bubble[1] < now:
+            if random.random() < 0.01:
+                c.say(random.choice(["done!", "ship it!", "that's the one", "flag's up!"]), 2.2)
+
+    def confetti_stomp(self, c, now):
+        """A new prompt: stomping foot to foot, and a burst thrown from whichever hand has just gone up."""
+        t = now - c.since
+        pos = STOMP_SEQ.pos(t)
+        tilt, al, ar = STOMP_FRAMES[pos][:3]
+        c.mood, c.stomp = "happy", pos
+        c.sway, c.arm = tilt, [al, ar]
+        side = STOMP_BURSTS.get(pos)
+        # one burst per raised hand per cycle -- keyed on this spell of cheering, so the next one fires again
+        key = (c.since, int(t / STOMP_SEQ.total), pos)
+        if side and c.burst_key != key:
+            c.burst_key = key
+            self.burst(c.x + side * 8, self.ground - 15, "confetti", 26 if c.dramatic else 14)
+            if c.dramatic:
+                self.burst(c.x + side * 8, self.ground - 15, "spark", 8)
+        if c.dramatic and (not c.bubble or c.bubble[1] < now) and random.random() < 0.02:
+            c.say(random.choice(["LET'S GOOOOO!!!", "A PROMPT?! FOR ME?!", "IT'S HAPPENING!!!"]), 2.2)
+
+    def gym(self, c, now):
+        """A long stretch of work: Clawd racks up a few curls, holding at the top of each one."""
+        c.mood = "focus"
+        c.gym = GYM_SEQ.frame(now - c.since - GYM_AFTER)
+        c.arm = [min(3, int(GYM_LIFT[c.gym] / 1.5))] * 2  # both hands stay on the bar
+        if (not c.bubble or c.bubble[1] < now) and random.random() < 0.004:
+            c.say(random.choice(["one more rep", "*grunt*", "feel the burn", "leg day tomorrow",
+                                 "gains, not regressions"]), 2.4)
+
     def dance(self, c, t, solo):
         c.mood = "happy"
         beat = int(t * 4) % 4
@@ -1421,7 +1656,7 @@ class World:
                                      "c'mon, gimme a task", "you're too slow!", "hellooo? prompt?"]), 2.6)
         elif b == "look":
             c.mood = "frantic"
-            c.look = random.choice((-1, 1))  # paranoid glancing
+            c.look = (-1, 1)[int(now * 3) % 2]  # paranoid glancing, each one held long enough for the eyes to lead
         elif b == "hop":
             c.mood = "happy"
             if c.jump == 0:
@@ -1592,6 +1827,30 @@ class Painter:
             self.cv.create_rectangle((x0 + c0) * p, (y0 + r) * p, (x0 + c1 + 1) * p, (y0 + r + 1) * p,
                                      fill=color, width=0, stipple=stipple)
 
+    def leg(self, x, top, height, color):
+        """One leg, drawn to a fractional height, so stretching into a lean reads smoothly."""
+        if height <= 0.02:
+            return
+        p = self.px
+        self.cv.create_rectangle(x * p, top * p, (x + 1) * p, (top + height) * p, fill=color, width=0)
+
+    def flag(self, c, x0, y, h, w1):
+        """The pole in the raised hand, and this frame's drawing of the cloth on it. The hand pulls back as
+        the flag swings out, so the cloth keeps hanging off the wrist instead of drifting away."""
+        f = c.flag
+        hx = x0 + w1 + 2 + FLAG_HAND_X[f]
+        top = y + max(0, h // 2) - 8
+        self.cells(hx, top, [(r, 0, 0) for r in range(9)], "#8a6a4a")  # the pole
+        for row, a, b in FLAG_FRAMES[f]:  # checkered cloth, in blocks of four cells like the real one
+            self.cells(hx + 1, top + row, [(0, a, b)], INK if (row // 2 + a // 2) % 2 else "#2b2b2e")
+
+    def dumbbell(self, c, x0, y, h, w0, w1):
+        """The bar and its plates, held in both hands and curled overhead."""
+        bar = y + max(0, h // 2) - GYM_LIFT[c.gym]
+        self.cells(x0, bar, [(0, w0 - 1, w1 + 1)], "#7d7d78")
+        for col in (w0 - 2, w1 + 1):
+            self.cells(x0, bar - 1, [(r, col, col + 1) for r in range(3)], "#3d3d3a")
+
     def trip_props(self, c, ground, now, before):
         """What a trip brings along: drawn behind the Clawd (before=True) or in front of it."""
         e = c.trip
@@ -1665,13 +1924,15 @@ class Painter:
         if c.mini:
             return self.mini(c, ground)
         color = ORANGE if c.online or c.trip else GREY
-        lift = c.jump + c.bob
         rim = c.sit == 3  # sitting on the stage's edge, legs dangling over it
         typing = c.activity == "typing" and c.online
         sq = 1 if c.squash else (-1 if c.vy > 0.5 else 0)
-        h = 8 - sq - (0 if rim else c.sit)  # body height in cells
-        w0, w1 = (3 - (1 if sq > 0 else 0), 10 + (1 if sq > 0 else 0))
-        x0 = c.x - 7
+        h = 7 - sq - (0 if rim else c.sit)  # body height in cells: the mascot is wider than it is tall
+        w0, w1 = (2 - (1 if sq > 0 else 0), 11 + (1 if sq > 0 else 0))
+        tilt = c.lean + c.sway  # the upper body leans and sways; the feet stay planted
+        dip = c.crouch * 1.2 + (STOMP_FRAMES[c.stomp][3] if c.stomp is not None else 0)
+        lift = c.jump + c.bob - dip - abs(tilt) * 0.8  # a lean settles the body down onto its legs
+        x0 = c.x - 7 + tilt
         legs_h = 0 if rim or c.sit >= 2 else (1 if c.sit == 1 else 2)
         y_body = ground - legs_h - h - lift + (1 if rim else 0)
         self.cells(x0, y_body, [(r, w0, w1) for r in range(h)], color)
@@ -1681,10 +1942,20 @@ class Painter:
             for i, col in enumerate((4, 9)):
                 self.cells(x0, y_body, [(h + r, col, col) for r in range(1 if i == kick else 2)], color)
         elif legs_h:
+            # into a lean the legs tilt and stretch, the ones nearer the lean most of all, so they look like
+            # they're carrying the body. The floor cuts them off: they never push through it.
+            room = ground - (y_body + h)
+            stretch = (1.35, 1.3, 1.2, 1.15) if tilt < 0 else (1.15, 1.2, 1.3, 1.35)
             for i, col in enumerate((3, 5, 8, 10)):
                 lifted = legs_h == 2 and c.legs == 1 + (i in (1, 3))  # (3, 8) step together, then (5, 10)
-                self.cells(x0, y_body, [(h + r, col, col) for r in range(1 if lifted else legs_h)], color)
+                tall = 1.0 if lifted else legs_h * (1 + (stretch[i] - 1) * min(1.0, abs(tilt)))
+                # the feet stay where they were planted; only the top of the leg goes with the body
+                self.leg(x0 - tilt * 0.7 + col, y_body + h, min(tall, room), color)
         self.face(c, x0, y_body, now)
+        if c.flag is not None:
+            self.flag(c, x0, y_body, h, w1)
+        if c.gym is not None:
+            self.dumbbell(c, x0, y_body, h, w0, w1)
         if typing:
             self.lap_laptop(c, x0, y_body, h, w0, w1, now, color)
         elif c.mood in ("thonk", "smug"):
@@ -1698,8 +1969,12 @@ class Painter:
             self.cells(x0, y_body, [(arm_row - 1, w0 - 1, w0 - 1), (arm_row, w0 - 2, w0 - 2), (arm_row + 1, w0 - 1, w0 - 1),
                                     (arm_row - 1, w1 + 1, w1 + 1), (arm_row, w1 + 2, w1 + 2), (arm_row + 1, w1 + 1, w1 + 1)], color)
         else:
-            # arms ride at the body's middle, raised by c.arm
-            arm_row = max(0, h // 2)
+            # arms ride at the body's middle, raised by c.arm. On a landing the hands carry on down past
+            # where they belong and settle back up -- without that the landing looks stiff.
+            over = c.crouch * 0.5
+            if c.land_at and now - c.land_at < LAND_SETTLE:
+                over += 1.6 * (1 - back_out((now - c.land_at) / LAND_SETTLE))
+            arm_row = max(0, h // 2) + over
             al, ar = c.arm
             self.cells(x0, y_body, [(arm_row - al, w0 - 2, w0 - 1), (arm_row - al + 1, w0 - 2, w0 - 1)] if al < 3 else
                        [(arm_row - 3, w0 - 1, w0 - 1), (arm_row - 2, w0 - 2, w0 - 1)], color)
@@ -1721,89 +1996,99 @@ class Painter:
                                 font=("Segoe UI Symbol", max(7, int(self.px * 1.8))))
 
     def face(self, c, x0, y, now):
+        """The real mascot's face: two big square eyes set high and wide on the body, and not much else."""
         mood = c.mood
         blinking = now > c.blink_at - 0.15 and mood not in ("asleep",)
-        look = c.look or (c.facing if mood in ("talk", "focus", "worried") else 0)
+        # the eyes lead a look-around, so this is the eased gaze, not the direction it has settled on
+        look = c.gaze or (c.facing if mood in ("talk", "focus", "worried") else 0)
         ey = 2 - (1 if mood == "up" else 0)
-        lx, rx = 5 + look, 8 + look
+        lx, rx = 3 + look, 9 + look  # each eye is two cells wide, over cols lx..lx+1
+        mouth = 6 + look
+
+        def both(rows):  # the same cells in each eye
+            return [(r, a + lx, b + lx) for r, a, b in rows] + [(r, a + rx, b + rx) for r, a, b in rows]
+
         if mood == "asleep" or blinking:
             for ex in (lx, rx):
-                self.cv.create_rectangle((x0 + ex) * self.px, (y + ey + 0.6) * self.px, (x0 + ex + 1) * self.px,
-                                         (y + ey + 1.0) * self.px, fill=EYE, width=0)
+                self.cv.create_rectangle((x0 + ex) * self.px, (y + ey + 0.4) * self.px, (x0 + ex + 2) * self.px,
+                                         (y + ey + 0.9) * self.px, fill=EYE, width=0)
             return
         if mood == "happy":
-            for ex in (lx, rx):
-                self.cells(x0, y, [(ey, ex - 1, ex - 1), (ey - 1, ex, ex), (ey, ex + 1, ex + 1)], EYE)
+            self.cells(x0, y, both([(ey, -1, -1), (ey - 1, 0, 1), (ey, 2, 2)]), EYE)  # two happy arches
             return
         if mood == "worried":
-            self.cells(x0, y, [(ey, lx, lx), (ey, rx, rx), (ey - 1, lx - 1, lx - 1), (ey - 1, rx + 1, rx + 1)], EYE)
+            self.cells(x0, y, both([(ey - 1, 0, 1), (ey, 0, 1)]), EYE)
+            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 2, rx + 2, rx + 2)], EYE)  # outer brows up
             return
         if mood == "frantic":
-            # huge eyes with tiny jittering pupils
+            # the eyes go huge and the pupils rattle around inside them
             j = int(now * 12) % 2
-            for ex in (lx - 1, rx):
-                self.cells(x0, y, [(ey - 1, ex, ex + 1), (ey, ex, ex + 1)], INK)
-                self.cells(x0, y, [(ey - 1 + j, ex + j, ex + j)], EYE)
+            self.cells(x0, y, both([(ey - 2, -1, 2), (ey - 1, -1, 2), (ey, -1, 2)]), INK)
+            self.cells(x0, y, both([(ey - 1 + j, j, j)]), EYE)
             return
         if mood == "drafting":
             # little reading glasses, eyes down on the paper
-            ed = ey + 1
-            self.cells(x0, y, [(ed, lx, lx), (ed, rx, rx)], EYE)
-            # thin wire frames, one line: a rim either side of each eye and the bridge between them ("-o-o-")
-            self.cells(x0, y, [(ed, lx - 1, lx - 1), (ed, lx + 1, rx - 1), (ed, rx + 1, rx + 1)], "#c9c6bd")
+            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
+            self.cells(x0, y, both([(ey - 1, 0, 1)]), "#d8d5cb")  # the lenses
+            self.cells(x0, y, [(ey - 1, lx - 1, lx - 1), (ey - 1, lx + 2, rx - 1),
+                               (ey - 1, rx + 2, rx + 2)], "#c9c6bd")  # the wire frames and the bridge
             return
         if mood == "annoyed":
             # brows down at you, a flat unimpressed mouth
-            self.cells(x0, y, [(ey, lx, lx), (ey, rx, rx), (ey - 2, lx - 1, lx - 1), (ey - 1, lx, lx), (ey - 1, rx, rx),
-                               (ey - 2, rx + 1, rx + 1), (ey + 2, 6, 7)], EYE)
+            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
+            self.cells(x0, y, [(ey - 2, lx - 1, lx), (ey - 1, lx + 1, lx + 1),
+                               (ey - 2, rx + 1, rx + 2), (ey - 1, rx, rx), (ey + 2, mouth, mouth + 1)], EYE)
             return
         if mood == "sigh":
             # eyes shut, a little 'o' letting the breath out
-            self.cells(x0, y, [(ey, lx - 1, lx), (ey, rx, rx + 1), (ey + 2, 6, 6)], EYE)
+            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
+            self.cells(x0, y, [(ey + 2, mouth, mouth)], EYE)
             return
         if mood == "smith":
             # squinting with focus under the hard hat, brows down, tongue out the side
-            self.cells(x0, y, [(ey, lx, lx), (ey, rx, rx), (ey - 1, lx - 1, lx), (ey - 1, rx, rx + 1)], EYE)
-            self.cells(x0, y, [(ey + 2, 7, 7)], "#e06c75")
+            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
+            self.cells(x0, y, [(ey - 1, lx - 1, lx + 1), (ey - 1, rx, rx + 2)], EYE)
+            self.cells(x0, y, [(ey + 2, mouth + 1, mouth + 1)], "#e06c75")
             return
         if mood == "hacker":
             # pink sunglasses and a smug little smirk
-            self.cells(x0, y, [(ey - 1, 4, 5), (ey - 1, 8, 9), (ey, 3, 3), (ey, 6, 7), (ey, 10, 10)], "#E88BB7")
-            self.cells(x0, y, [(ey, 4, 5), (ey, 8, 9)], "#2b1d2b")
-            self.cells(x0, y, [(ey + 3, 6, 7), (ey + 2, 8, 8)], EYE)
+            self.cells(x0, y, both([(ey - 2, -1, 2), (ey - 1, -1, 2), (ey, -1, 2)]), "#E88BB7")
+            self.cells(x0, y, both([(ey - 1, 0, 1), (ey, 0, 1)]), "#2b1d2b")
+            self.cells(x0, y, [(ey - 1, lx + 3, rx - 1)], "#E88BB7")  # the bridge
+            self.cells(x0, y, [(ey + 3, mouth, mouth + 1), (ey + 2, mouth + 2, mouth + 2)], EYE)
             return
         if mood == "thonk":
             # one eyebrow way up, the other flat and low, a slanted mouth
-            self.cells(x0, y, [(ey, 5, 5), (ey, 8, 8)], EYE)
-            self.cells(x0, y, [(ey - 2, 4, 5), (ey - 1, 6, 6)], EYE)  # the raised brow
-            self.cells(x0, y, [(ey - 1, 7, 9)], EYE)  # the flat brow
-            self.cells(x0, y, [(ey + 2, 5, 6), (ey + 3, 7, 8)], EYE)  # the mouth
+            self.cells(x0, y, both([(ey, 0, 1)]), EYE)
+            self.cells(x0, y, [(ey - 3, lx, lx + 1), (ey - 2, lx + 2, lx + 2)], EYE)  # the raised brow
+            self.cells(x0, y, [(ey - 1, rx - 1, rx + 2)], EYE)  # the flat brow
+            self.cells(x0, y, [(ey + 2, mouth - 1, mouth), (ey + 3, mouth + 1, mouth + 2)], EYE)
             return
         if mood == "smug":
             # half-lidded, glancing sideways, lips pursed for a sip
-            self.cells(x0, y, [(ey, 4, 5), (ey, 8, 9)], EYE)  # heavy lids
-            self.cells(x0, y, [(ey + 1, 5, 5), (ey + 1, 9, 9)], EYE)  # pupils looking at the tea
-            self.cells(x0, y, [(ey + 3, 6, 6)], EYE)  # a tiny 'o'
+            self.cells(x0, y, both([(ey - 1, 0, 1)]), EYE)  # heavy lids
+            self.cells(x0, y, both([(ey, 1, 1)]), EYE)  # pupils looking at the tea
+            self.cells(x0, y, [(ey + 3, mouth, mouth)], EYE)
             return
         if mood == "xx":
-            for ex in (lx, rx):
-                self.cells(x0, y, [(ey - 1, ex - 1, ex - 1), (ey - 1, ex + 1, ex + 1), (ey, ex, ex),
-                                   (ey + 1, ex - 1, ex - 1), (ey + 1, ex + 1, ex + 1)], EYE)
+            self.cells(x0, y, both([(ey - 2, -1, -1), (ey - 2, 2, 2), (ey - 1, 0, 1),
+                                    (ey, -1, -1), (ey, 2, 2)]), EYE)
             return
         if mood == "teary":
-            self.cells(x0, y, [(ey, lx, lx), (ey, rx, rx), (ey - 1, lx - 1, lx - 1), (ey - 1, rx + 1, rx + 1)], EYE)
-            self.cells(x0, y, [(ey + 1, lx, lx), (ey + 2, lx, lx), (ey + 1, rx, rx), (ey + 2, rx, rx)], "#6A9BCC")
+            self.cells(x0, y, both([(ey - 1, 0, 1), (ey, 0, 1)]), EYE)
+            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 2, rx + 2, rx + 2)], EYE)
+            self.cells(x0, y, both([(ey + 1, 0, 0), (ey + 2, 0, 0)]), "#6A9BCC")
             return
-        self.cells(x0, y, [(ey, lx, lx), (ey, rx, rx)], EYE)
+        self.cells(x0, y, both([(ey - 1, 0, 1), (ey, 0, 1)]), EYE)
         if mood == "talk" and int(now * 6) % 2:
-            self.cells(x0, y, [(ey + 2, 6 + look, 7 + look)], EYE)
+            self.cells(x0, y, [(ey + 2, mouth, mouth + 1)], EYE)
 
     def chin_pose(self, c, x0, y, h, w0, w1, color):
         """Hand on the chin, finger out (the 🤔 pose); the tea version holds a steaming cup in the other hand."""
         arm_row = max(0, h // 2)
         self.cells(x0, y, [(arm_row, w0 - 2, w0 - 1), (arm_row + 1, w0 - 2, w0 - 1)], color)  # the left arm, relaxed
         hand = ORANGE_DARK
-        self.cells(x0, y, [(6, 4, 5), (7, 4, 5), (6, 6, 7)], hand)  # fist under the mouth, finger along the chin
+        self.cells(x0, y, [(4, 4, 5), (5, 4, 5), (4, 6, 7)], hand)  # fist under the mouth, finger along the chin
         if c.mood == "smug":
             self.cells(x0, y, [(arm_row - 1, w1 + 1, w1 + 2), (arm_row, w1 + 1, w1 + 2)], color)  # arm raised
             self.cells(x0, y, [(arm_row - 3, w1 + 1, w1 + 3), (arm_row - 2, w1 + 1, w1 + 3)], "#f0eee6")  # teacup
@@ -1820,7 +2105,7 @@ class Painter:
         self.cells(x0 + shift, top - 1, [(0, 5, 8)], "#6b6b72")  # the crown's top edge, catching the light
         self.cells(x0 + shift, top, [(0, 4, 9)], "#3b3b40")  # the crown
         self.cells(x0 + shift, top + 1, [(0, 4, 9)], "#f0eee6")  # the band
-        self.cells(x0 + shift, top + 2, [(0, 2, 10), (-1, 11, 11)] if tipped else [(0, 2, 11)], "#3b3b40")  # the brim
+        self.cells(x0 + shift, top + 2, [(0, 1, 11), (-1, 12, 12)] if tipped else [(0, 1, 12)], "#3b3b40")  # the brim
     def drafting(self, c, x0, y, h, w0, w1, ground, now, color):
         """A sheet of paper on the floor in front, filling up with scribbles, and a pencil in hand."""
         f = c.facing or 1
@@ -1850,7 +2135,7 @@ class Painter:
                 self.cells(ax + f * dx, ay + r, [(0, 0, 0)], col)
 
         # the hard hat: a yellow dome with a brim, and a stripe down the middle
-        self.cells(x0, y, [(-2, 4, 9), (-1, 2, 11)], "#E3B23C")
+        self.cells(x0, y, [(-2, 4, 9), (-1, 1, 12)], "#E3B23C")
         self.cells(x0, y, [(-2, 6, 7)], "#c79a2a")
         # the other arm, relaxed at the side
         arm_row = max(0, h // 2)
@@ -1898,7 +2183,7 @@ class Painter:
         p = self.px
         if c.dramatic:
             return  # posing (🤔 or tea) says it all, no cloud needed
-        bx, by = (x0 + 13) * p, (y - 4) * p
+        bx, by = (x0 + 14) * p, (y - 4) * p
         self.cv.create_oval(bx - 0.6 * p, by + 2.4 * p, bx + 0.4 * p, by + 3.4 * p, fill=INK, width=0)
         self.cv.create_oval(bx + 0.5 * p, by + 0.8 * p, bx + 2 * p, by + 2.2 * p, fill=INK, width=0)
         self.cv.create_oval(bx + 1.5 * p, by - 4 * p, bx + 9 * p, by + 0.8 * p, fill=INK, width=0)
