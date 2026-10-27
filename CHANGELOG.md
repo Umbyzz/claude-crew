@@ -2,6 +2,13 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.18.6
+- **Friends can join again after the port move.** On some installs Claude Code refuses crew's settings saves (*"no /config row with key crew.name"*), so a teammate's settings kept the old port and the shared key. Every start, crew then found the relay on 7787 but went back to the key in settings, and the relay turned it away (*"… has a personal key"*). Now:
+  - **The right name:** crew looks up what this Claude Code calls each setting instead of assuming `crew.name`.
+  - **Its own copy:** when Claude Code won't save a setting, crew keeps its own copy, uses it right away, and starts from it next time.
+  - **The personal key stays:** a friend's personal key comes along when the relay's address changes, instead of falling back to the shared one.
+- No more doubled "crew: crew:" in the save message.
+
 ## 1.18.5
 - **The Clawds window and crew log follow the relay's new port too.** They read the relay's address from your settings, which can still hold an older crew entry from before the desktop app changed how it loads crew, so after 1.18.4 they'd keep trying 7777. The plugin now notes the address it really uses, and both windows use that first.
 

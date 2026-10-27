@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.18.5'
+const VERSION = '1.18.6'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -152,11 +152,38 @@ async function storedKey($: EngineInterface) {
 }
 
 async function rememberKey($: EngineInterface, key: string) {
-  cfg.key = key
   keyLoadedFor = cfg.base
-  await $.store.set(`keyFor:${cfg.base}`, key).catch(() => {})
-  const r = await $.config.set({ key: 'crew.key', value: key }).catch(err => ({ deny: String(err) }))
-  return r && 'deny' in r && r.deny ? String(r.deny) : ''
+  return saveOption($, 'key', key)
+}
+
+// The settings menu's name for one of crew's fields: "crew.<field>" on most installs, but it follows how this install
+// loaded crew (a teammate's said "no /config row with key crew.name"), so it's looked up instead of guessed.
+async function configKey($: EngineInterface, field: string) {
+  let rows: { key: string }[]
+  try {
+    rows = ((await $.config.list()) ?? []) as { key: string }[]
+  } catch {
+    return `crew.${field}` // no list to look in: the usual name
+  }
+  const row = rows.find(r => r.key === `crew.${field}`) ?? rows.find(r => /^crew(@[^.]*)?\./i.test(r.key) && r.key.endsWith(`.${field}`))
+  return row?.key ?? ''
+}
+
+// Set by register: a setting's new value, used right away.
+let applyOption: (field: string, value: string) => void = () => {}
+
+// Saves one of crew's settings: used at once, kept in crew's own store until Claude Code's settings take it (some
+// installs refuse plugin settings: then the store copy is what the next start uses). '' when saved, else why not.
+async function saveOption($: EngineInterface, field: string, value: string) {
+  if (field === 'key' && value) await $.store.set(`keyFor:${cfg.base}`, value).catch(() => {})
+  await $.store.set(`opt:${field}`, value).catch(() => {})
+  applyOption(field, value)
+  const k = await configKey($, field)
+  if (!k) return "this Claude Code has no settings row for it, so crew keeps its own copy"
+  const r: any = await $.config.set({ key: k, value }).catch(err => ({ deny: plainError(err instanceof Error ? err.message : String(err)) }))
+  if (r?.deny) return plainError(String(r.deny))
+  await $.store.set(`opt:${field}`, null).catch(() => {}) // the settings have it now
+  return ''
 }
 
 // The host's own relay refused the key: the right one is in crew_key.txt on this very PC, so take it from there.
@@ -2125,13 +2152,20 @@ function setLeader($: EngineInterface, name: string) {
 }
 
 function setOption($: EngineInterface, field: string, value: string) {
-  if (field === 'key' && value.trim()) void $.store.set(`keyFor:${cfg.base}`, value.trim()).catch(() => {})
   // Still setting up: Settings comes up open once you're in, so you can check it all before closing it.
-  if (!cfg.configured) void update($, settingsOpen, () => true)
-  void $.config
-    .set({ key: `crew.${field}`, value: value.trim() })
-    .then(r => $.ui.toast(r.deny ? `crew: ${r.deny}` : `crew: saved ${field}`))
-    .catch(err => $.ui.toast(`crew: couldn't save ${field} (${err instanceof Error ? err.message : err})`, { timeoutMs: 10000 }))
+  const wasSetUp = cfg.configured
+  if (!wasSetUp) void update($, settingsOpen, () => true)
+  void saveOption($, field, value.trim())
+    .then(why => {
+      if (!why) return $.ui.toast(`crew: saved ${field}`)
+      $.ui.toast(
+        `crew: kept ${field} (Claude Code's settings didn't take it: ${why}). Crew uses it anyway` +
+          (wasSetUp ? '.' : '; once the rest is filled in, restart Claude to connect.'),
+        { timeoutMs: 12000 },
+      )
+    })
+    .catch(err => $.ui.toast(`crew: couldn't save ${field} (${plainError(err instanceof Error ? err.message : String(err))})`, { timeoutMs: 10000 }))
+    .finally(() => void update($, settingsOpen, s => s)) // redraw with the new value
 }
 
 function testConnection($: EngineInterface, base: string) {
@@ -3117,8 +3151,10 @@ async function moveToBase($: EngineInterface, to: string, why: string) {
     if ((await $.store.get(nk)) === undefined) await $.store.set(nk, (await $.store.get(k)) as any)
   }
   retarget(to)
+  keyLoadedFor = ''
+  await storedKey($) // the key saved for this relay (a friend's personal key), not just the one in settings
   void noteRelay($) // the windows follow at once
-  void $.config.set({ key: 'crew.relayUrl', value: to }).catch(() => {})
+  void saveOption($, 'relayUrl', to).catch(() => {})
   $.ui.toast(`crew: ${why}`, { timeoutMs: 12000 })
 }
 
@@ -3170,6 +3206,11 @@ export const register: Register = (on, options) => {
   }
   apply(options as Record<string, unknown>)
   retarget = to => apply({ ...current, relayUrl: to })
+  applyOption = (field, value) => {
+    const inUse = cfg.key // a personal key from crew's store stays, unless it's the key being changed
+    apply({ ...current, [field]: value })
+    if (field !== 'key') cfg.key = inUse
+  }
 
   on('session.start', async ($, e, next) => {
     // Commands first, each on its own: if anything later fails, /crew is still there to show what went wrong.
@@ -3188,10 +3229,21 @@ export const register: Register = (on, options) => {
         // and saved under the new name, so the settings menu shows them (a refused save changes nothing: they're
         // read from the old name again next time)
         for (const field of ['relayUrl', 'name', 'key'])
-          void $.config.set({ key: `crew.${field}`, value: String(old[field]) }).catch(() => {})
+          void $.config.set({ key: `crew.${field}`, value: String(old[field]) }).catch(() => {}) // best effort: they're read from the old name anyway
       }
     }
     await adoptOldStore($)
+    // settings this Claude Code wouldn't save: crew's own copies (see saveOption)
+    const ownCopies: Record<string, string> = {}
+    for (const f of ['relayUrl', 'name', 'key']) {
+      const v = await $.store.get(`opt:${f}`).catch(() => null)
+      if (typeof v === 'string' && v) ownCopies[f] = v
+    }
+    if (Object.keys(ownCopies).length) {
+      apply({ ...current, ...ownCopies })
+      keyLoadedFor = ''
+      await storedKey($)
+    }
     // hosting on the old port: this PC's relay now listens on the new one
     if (configured && new RegExp(`^http://(127\\.0\\.0\\.1|localhost):${OLD_PORT}$`).test(base))
       await moveToBase($, HOST_URL, `your relay now uses port ${PORT} (7777 is Terraria's too). Teammates' crew follows by itself once they update.`)

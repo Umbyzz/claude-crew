@@ -2568,3 +2568,71 @@ test('a teammate whose relay moved to 7787 follows it there by itself (a game se
   expect(r.result).not.toContain("can't be reached")
 })
 
+test('a setting saves under the name this Claude Code gives it (crew@claude-crew.name, not crew.name)', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  on('config.list', async () => ({ value: [{ key: 'crew@claude-crew.name', label: 'Your name', kind: 'text', value: 'alice' }] }) as any)
+  const sets: any[] = []
+  on('config.set', async (_$: unknown, e: any) => (sets.push(e), { value: e.value }) as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'settings' })
+  await ui.input({ key: 'opt-name', text: 'alicia' })
+  await settle()
+  await ui.unmount()
+  expect(sets.map(s => s.key)).toEqual(['crew@claude-crew.name'])
+})
+
+test("with no settings row for crew, crew keeps its own copy and uses a new key at once", { options: OPTIONS }, async ($, on) => {
+  const kept = new Map<string, unknown>()
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$: unknown, e: any) => (toasts.push(e.text), { value: undefined }))
+  on('config.list', async () => ({ value: [] }) as any) // this install lists no rows for crew
+  const keys: string[] = []
+  on('http.fetch', async (_$: unknown, e: any) => (keys.push(e.init?.headers?.['X-Crew-Key']), { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'settings' })
+  await ui.input({ key: 'opt-key', text: 'personal-123' })
+  await settle()
+  await ui.unmount()
+  expect(kept.get('opt:key')).toBe('personal-123')
+  expect(kept.get('keyFor:http://relay.test:7777')).toBe('personal-123')
+  expect(toasts.join(' ')).toContain('kept key')
+  expect(toasts.join(' ')).not.toContain('crew: crew:')
+  keys.length = 0
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(keys.every(k => k === 'personal-123')).toBe(true)
+})
+
+test("a friend moved from the old port keeps their personal key (the relay turned the shared one away)", { options: { ...OPTIONS, relayUrl: 'http://10.0.0.9:7777', name: 'cori', key: 'shared-key' } }, async ($, on) => {
+  const kept = new Map<string, unknown>([['keyFor:http://10.0.0.9:7777', 'cori-personal']])
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
+  on('store.keys', async () => ({ value: [...kept.keys()] }) as any)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('config.list', async () => ({ value: [] }) as any) // and this Claude Code takes no plugin settings
+  const refused: string[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.startsWith('http://10.0.0.9:7777')) return { deny: 'Parse Error: Expected HTTP/' } as any // a game server
+    if (e.url === 'http://10.0.0.9:7787/health') return { value: { status: 200, ok: true, headers: {}, text: '{"ok": true, "version": "1.18.6"}' } }
+    if (e.url.startsWith('http://10.0.0.9:7787') && e.init?.headers?.['X-Crew-Key'] !== 'cori-personal') {
+      refused.push(e.url)
+      return { value: { status: 401, ok: false, headers: {}, text: '{"error": "cori has a personal key: use the invite the host sent you"}' } }
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  await startSession(on, $)
+  await settle()
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // 7777 fails, the relay is found on 7787
+  await settle()
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(r.result).toContain('T3 [open')
+  expect(refused).toEqual([]) // never sent the shared key to the new address
+  expect(kept.get('opt:relayUrl')).toBe('http://10.0.0.9:7787') // next start goes straight there
+})
+
