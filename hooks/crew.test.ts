@@ -1232,7 +1232,7 @@ test('/crewlog opens the crew log window', { options: OPTIONS }, async ($, on) =
     return { value: { exitCode: 0, stdout: '', stderr: '' } }
   })
   const r: any = await $.command.run({ command: 'crewlog', args: '' } as any)
-  expect(ran.some(a => a.join(' ').endsWith('crew_log.py'))).toBe(true)
+  expect(ran.some(a => a.join(' ').endsWith('crew_log.py --project main'))).toBe(true) // opens on this chat's project
   expect(String(r.text)).toContain('crew log is open')
 })
 
@@ -2635,4 +2635,56 @@ test("a friend moved from the old port keeps their personal key (the relay turne
   expect(refused).toEqual([]) // never sent the shared key to the new address
   expect(kept.get('opt:relayUrl')).toBe('http://10.0.0.9:7787') // next start goes straight there
 })
+
+test("the project's Claudes talking to each other show in /crew and crew_status, but never reach this Claude by themselves", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$: unknown, e: any) => (toasts.push(e.text), { value: undefined }))
+  const submitted: string[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => (submitted.push(e.text), e))
+  const team = [{ id: 9501, from: 'bob', to: 'carol', kind: 'request', text: 'does the gate use Config?', project: 'main', team: true, at: 0 }]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, team, cursor: 9501 }) } }))
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(r.result).toContain('bob -> carol [request]: does the gate use Config?')
+  expect(JSON.stringify(session.appended())).not.toContain('does the gate') // no tokens unless it asks
+  expect(submitted).toEqual([])
+  expect(toasts.join(' ')).not.toContain('does the gate')
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-chat' })
+  expect(await ui.find({ text: /does the gate use Config\?/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /bob's Claude · → carol/ } as any)).toBeDefined()
+  await ui.unmount()
+})
+
+for (const [autoRun, wakes] of [['project', true], ['leader', false], ['off', false]] as const) {
+  test(`Auto-run "${autoRun}": a project member's request ${wakes ? 'starts' : "doesn't start"} an idle Claude`, { options: { ...OPTIONS, autoRun } }, async ($, on) => {
+    mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+    mock.session(on)
+    on('ui.status', async () => ({ value: undefined }))
+    on('ui.toast', async () => ({ value: undefined }))
+    const submitted: string[] = []
+    on('prompt.submit', async (_$: unknown, e: any) => (submitted.push(e.text), e))
+    on('turn.complete', async () => ({ text: '' }) as any)
+    let polls = 0
+    on('http.fetch', async () => {
+      polls += 1
+      const messages =
+        polls === 1
+          ? [
+              { id: 9601, from: 'carol', to: 'alice', kind: 'request', text: 'gate question', project: 'main', at: 0 },
+              { id: 9602, from: 'carol', to: 'alice', kind: 'request', text: 'other project', project: 'Tweener', at: 0 },
+            ]
+          : []
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, leader: 'bob', messages, cursor: 9602 }) } }
+    })
+    await $.turn.complete({ reason: 'answer', text: 'done' } as any) // idle
+    await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+    await settle()
+    expect(submitted.some(s => s.includes('gate question'))).toBe(wakes)
+    expect(submitted.some(s => s.includes('other project'))).toBe(false) // a request from another project never does
+  })
+}
 

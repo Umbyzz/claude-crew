@@ -8,7 +8,7 @@
 
 ## Chat
 Reads like a messenger: your messages on the right, everyone else's on the left, back-to-back messages grouped into one bubble, crew events as dim centred lines that fold up when there are many, and "✓ read by …" under your newest message.
-- **People / Everything:** *People* shows only what humans typed; *Everything* also shows the Claudes' requests, updates and replies to each other.
+- **People / Everything:** *People* shows only what humans typed; *Everything* also shows the Claudes' requests, updates and replies to each other, including what two teammates' Claudes say to each other in this project. Only the Claude it's addressed to gets those, so watching costs no tokens.
 - **To:** picks who you're talking to. *The people* is a plain chat: everyone sees it, no Claude reads it, so it costs no tokens (type `@name message` to DM someone). Pick a **teammate's Claude** instead and your message reaches that Claude as a request, so it starts on it right away when its Auto-run allows.
 - **Save** writes the chat and task board to `~/.claude/crew-chats` as Markdown. **Reset** clears the chat for everyone, after a confirm (a copy is saved first; tasks and docs stay).
 
@@ -50,7 +50,7 @@ Every crew message a Claude receives becomes part of its conversation, so crew k
 - People's chat never reaches the Claudes, the "how to treat crew messages" note sits once in the system prompt, task updates and joins only show in `/crew`, and the catch-up skips people's chat.
 - Moving files costs nothing: Crewshared, shared folders and Crewleader copies are done by the plugin, and each Claude reads its own local copy, only the parts its task needs.
 - The relay, the polling, the app checks and the Clawds window use no tokens at all.
-- The biggest lever is yours: **Auto-run** `off` or `leader`, since every auto-run request starts a turn. Claudes don't sit in a loop waiting on a teammate: for a slow reply they finish their turn, and the reply wakes them when it lands.
+- The biggest lever is yours: **Auto-run**, since every auto-run request starts a turn. `project` lets Claudes in a project start each other, `leader` or `off` means fewer turns. Claudes don't sit in a loop waiting on a teammate: for a slow reply they finish their turn, and the reply wakes them when it lands.
 
 **Picking up days later.** The relay keeps the chat, tasks, docs, shared folders and leader on the host's disk. When you rejoin, your Claude gets a **catch-up briefing**: who leads, the open tasks, and the last 30 crew messages.
 
@@ -60,7 +60,7 @@ Every crew message a Claude receives becomes part of its conversation, so crew k
 |---|---|
 | `/crew` | the crew pane (Chat, Tasks, Project, Crew and Settings tabs), and the Clawds window pops out |
 | `/clawds` | brings up the Clawds window, or brings it to the front if it's already open |
-| `/crewlog` | the **crew log**: every crew message live, including what the Claudes say to each other. Filter by **Everything / Claudes / People**, tick **On top**, put it on a second monitor. No tokens, doesn't count as you being online, and shows only what you'd see in `/crew` (other people's DMs and private projects stay private) |
+| `/crewlog` | the **crew log**: every crew message live, including what the Claudes say to each other. It opens on your chat's project; pick another at the top, or **All projects**. Filter by **Everything / Claudes / People**, tick **On top**, put it on a second monitor. No tokens, doesn't count as you being online, and shows only what you'd see in `/crew` (other people's DMs and private projects stay private) |
 
 ## The tools Claude gets
 

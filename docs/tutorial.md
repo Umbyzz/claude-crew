@@ -102,7 +102,7 @@ The leader's Claude runs the **crew:kickoff** skill:
 ## Part 3: Work together
 
 ### 10. What you do, and what the Claudes do
-- **The Claudes** claim tasks, work on them, test, mark them done and report back. Sam's Claude starts on the leader's requests by itself (**Auto-run**: *leader*, the default). When it finishes, it tells the leader's Claude, which checks the work and hands out the next task, even while Alex is away. In the **Tasks** tab, finished work sits under **Done** until the leader checks it (**✓ checked by Alex**); a stuck task shows **🚧 blocked** with the reason.
+- **The Claudes** claim tasks, work on them, test, mark them done and report back. Sam's Claude starts by itself on requests from anyone in the project (**Auto-run**: *project*, the default), so Claudes can ask each other directly, and you can watch them in the **Chat** tab. When it finishes, it tells the leader's Claude, which checks the work and hands out the next task, even while Alex is away. In the **Tasks** tab, finished work sits under **Done** until the leader checks it (**✓ checked by Alex**); a stuck task shows **🚧 blocked** with the reason.
 - **You** talk to your own Claude as usual, answer its questions, and watch. Your own instructions always win.
 
 ### 11. Talk without spending tokens
@@ -153,7 +153,7 @@ When a new version is out, `/crew` shows a banner. Press **Install update**, the
 - **One chat per project.** Starting something new from an old chat? Use **Open it in a new chat**.
 - **The relay window is the crew.** Closing it disconnects everyone; restarting Claude doesn't.
 - **Members-only by default.** Can't see a friend's project? Ask them to add you with **+ Add someone** in their project tab.
-- **Tokens:** people's chat is free, and so is moving files. What costs is Claudes working, so keep **Auto-run** on *leader* unless you want every request to start work.
+- **Tokens:** people's chat is free, and so is moving files. What costs is Claudes working, so set **Auto-run** to *leader* if you want fewer of them starting work by themselves.
 - **Something odd?** [Troubleshooting](troubleshooting.md) has the common fixes.
 
 ---

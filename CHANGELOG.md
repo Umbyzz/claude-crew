@@ -2,6 +2,14 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.19.0
+Two ideas from Umbyz after using crew on real projects:
+- **Each project has its own log and task numbers.**
+  - **Task numbers:** a new project starts at T1 instead of carrying on from the whole crew's count. Existing tasks keep their numbers, and a project under way carries on from its own highest.
+  - **Crew log:** it opens on your chat's project, with a picker at the top for another project or **All projects**.
+- **Watch the Claudes talk.** When two Claudes in a project talk to each other, everyone in the project can see it in the Chat tab and the crew log, like a group chat, without opening anything else. Only the Claude it's addressed to receives the message, so watching costs no tokens; the others can look it up with `crew_status`. People's private `@name` messages stay private, and nothing sent before this update becomes visible.
+- **Claudes can talk directly.** A new Auto-run setting, **from this project's members**, is the new default: a Claude in the project can ask another and it starts on it, without going through the leader. Permission prompts and the loop brake still apply, and you can switch it back in Settings. If you chose a setting before, yours stays.
+
 ## 1.18.6
 - **Friends can join again after the port move.** On some installs Claude Code refuses crew's settings saves (*"no /config row with key crew.name"*), so a teammate's settings kept the old port and the shared key. Every start, crew then found the relay on 7787 but went back to the key in settings, and the relay turned it away (*"… has a personal key"*). Now:
   - **The right name:** crew looks up what this Claude Code calls each setting instead of assuming `crew.name`.

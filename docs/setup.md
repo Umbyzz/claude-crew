@@ -45,7 +45,7 @@ Type `/crew`. The first time, a short setup asks your name, then **Host a crew**
 | Relay URL | the relay's address from step 2 | — |
 | Your name | how teammates see you; must be unique | — |
 | Crew key | the relay's key | — |
-| Auto-run requests | start a turn when a request addressed to you arrives: `off`, only from the `leader`, or from `anyone` | `leader` |
+| Auto-run requests | start a turn when a request addressed to you arrives: `off`, only from the `leader`, from members of the `project` this chat is in, or from `anyone` | `project` |
 | Notifications | which messages pop up: `all`, only ones to you (`direct`), or `off` | `all` |
 | Check in every | how often to check the relay: 2, 3, 5 or 10 seconds | 3 |
 | Crewshared check every | how often your Crewshared drop folder is checked for changes to send (⇅ Sync now sends at once) | 2 min |

@@ -392,6 +392,73 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(r["checkedBy"], "cori")
         self.assertEqual(self.r.call("POST", "/tasks", "cori", body={"action": "check", "id": b["id"]})[0], 400)  # not done
 
+    def test_each_project_counts_its_own_tasks(self):
+        add = lambda project, title: self.r.call("POST", "/tasks", "cori", project=project, body={"action": "add", "title": title})[1]
+        self.assertEqual(add("", "m1")["id"], 1)
+        self.assertEqual(add("", "m2")["id"], 2)
+        self.assertEqual(add("RTS", "r1")["id"], 1)  # a new project starts over
+        r2 = add("RTS", "r2")
+        self.assertEqual(r2["id"], 2)
+        # the same number in two projects are two tasks
+        self.r.call("POST", "/tasks", "cori", project="RTS", body={"action": "done", "id": 1})
+        tasks = {t["title"]: t for t in self.poll("cori")[1]["tasks"]}
+        self.assertEqual(tasks["m1"]["status"], "open")
+        # removing the newest doesn't reuse its number
+        self.r.call("POST", "/tasks", "cori", project="RTS", body={"action": "remove", "id": r2["id"]})
+        self.assertEqual(add("RTS", "r3")["id"], 3)
+        # a renamed project keeps counting; a deleted one starts over
+        self.assertEqual(self.r.call("POST", "/project/rename", "host", body={"from": "RTS", "to": "Game"}, remote=False)[0], 200)
+        self.assertEqual(add("Game", "g4")["id"], 4)
+        self.assertEqual(self.r.call("POST", "/project/delete", "host", body={"name": "Game"}, remote=False)[0], 200)
+        self.assertEqual(add("Game", "again")["id"], 1)
+
+    def test_the_project_watches_its_claudes_talk(self):
+        # a members-only project: cori, pluh and umbyz are in it, nova isn't
+        self.poll("cori", project="RTS")
+        self.r.call("POST", "/project/members", "cori", project="RTS", body={"add": ["pluh", "umbyz"]})
+        self.poll("pluh", project="RTS")
+        self.poll("umbyz", project="RTS")
+        send = lambda **b: self.r.call("POST", "/send", "cori", project="RTS", body={"to": "pluh", **b})[1]
+        claude = send(text="does the gate use Config?", kind="request")
+        send(text="psst, lunch?", kind="chat", human=True)  # a person's private message
+        send(text="for your human", kind="chat", notify=True)
+        code, poll = self.poll("umbyz", project="RTS")
+        self.assertEqual(code, 200)
+        # umbyz watches it, but it isn't among the messages handed to umbyz's Claude
+        self.assertEqual([m["id"] for m in poll["team"]], [claude["id"]])
+        self.assertNotIn(claude["id"], [m["id"] for m in poll["messages"]])
+        # the receiver gets it as always, once
+        pluh = self.poll("pluh", project="RTS")[1]
+        self.assertIn(claude["id"], [m["id"] for m in pluh["messages"]])
+        self.assertEqual(pluh["team"], [])
+        # another project's chat doesn't list it, and an outsider can't get in
+        self.assertEqual(self.poll("umbyz")[1]["team"], [])
+        self.assertEqual(self.poll("nova", project="RTS")[0], 403)
+
+    def test_the_log_shows_one_project_or_all(self):
+        self.r.call("POST", "/send", "cori", body={"text": "in main"})
+        self.r.call("POST", "/send", "cori", project="RTS", body={"text": "in rts"})
+        self.r.call("POST", "/project/members", "cori", project="RTS", body={"add": ["pluh"]})
+        self.poll("pluh", project="RTS")
+        self.r.call("POST", "/send", "cori", project="RTS", body={"to": "pluh", "text": "claude to claude"})
+        self.r.call("POST", "/send", "cori", project="RTS", body={"to": "pluh", "text": "private", "human": True})
+        log = lambda who, q="": [m["text"] for m in self.r.call("GET", f"/log?since=0{q}", who)[1]["messages"]]
+        self.assertIn("in main", log("cori"))  # no project asked for: all of them, as before
+        self.assertIn("in rts", log("cori"))
+        rts = log("umbyz2", "&project=RTS")  # not a member: sees none of it
+        self.assertEqual([t for t in rts if "rts" in t or "claude" in t], [])
+        self.r.call("POST", "/project/members", "cori", project="RTS", body={"add": ["umbyz"]})
+        self.poll("umbyz", project="RTS")
+        rts = log("umbyz", "&project=RTS")
+        self.assertIn("claude to claude", rts)
+        self.assertIn("in rts", rts)
+        self.assertFalse([t for t in rts if "joined the crew" in t])  # comings and goings don't fill a project's log
+        self.assertNotIn("in main", rts)
+        self.assertNotIn("private", rts)
+        self.assertIn("in main", log("umbyz", "&project=main"))
+        self.assertNotIn("in rts", log("umbyz", "&project=main"))
+        self.assertIn("RTS", self.r.call("GET", "/log?since=0", "umbyz")[1]["projects"])
+
     def test_an_image_goes_through(self):
         import base64
         data = base64.b64encode(os.urandom(50_000)).decode()

@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.18.6"
+VERSION = "1.19.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -123,6 +123,7 @@ def project_of(headers_or_value):
     return name or MAIN
 
 
+TEAM_KINDS = ("chat", "request", "update", "image")  # what one Claude sends another; the project's people can watch it
 CREW_WIDE = ("join", "leave", "out", "back", "invite", "deleted")  # about a person (or asking people over): every project shows them
 
 
@@ -297,14 +298,13 @@ def projects_list(now, viewer=None):
     return out
 
 
-def new_task_id():
-    """Tasks count on their own (T1, T2 ...) instead of sharing message numbers. Older tasks keep theirs."""
-    taken = {t["id"] for t in state["tasks"]}
-    i = state.get("next_task", 1)
-    while i in taken:
-        i += 1
-    state["next_task"] = i + 1
-    return i
+def new_task_id(project):
+    """Each project counts its own tasks (T1, T2 ...). Older tasks keep their numbers, and a project already under way
+    carries on from its highest. The count is kept, so removing the newest task never reuses its number."""
+    counts = state.setdefault("taskCounts", {})
+    highest = max((t["id"] for t in state["tasks"] if task_in(t, project)), default=0)
+    counts[project] = max(counts.get(project, 0), highest) + 1
+    return counts[project]
 
 
 STALE_MINUTES = 10  # a claim whose owner has been offline this long shows as stale
@@ -540,6 +540,10 @@ def post_message(sender, to, text, kind, project=None, **extra):
     if kind not in CREW_WIDE:
         msg["project"] = project or MAIN
         state.get("deleted", {}).pop(msg["project"], None)
+        # Claude to Claude: readable by the project's people. A person's private chat and a note "for your human" aren't,
+        # and neither is anything sent before this flag existed: those were private when they were written.
+        if kind in TEAM_KINDS and msg["to"] not in ("all", sender) and not extra.get("human") and not extra.get("notify"):
+            msg["team"] = True
     state["messages"].append(msg)
     del state["messages"][:-MAX_MESSAGES]
     arrived.notify_all()  # callers hold the lock, so anyone in /wait wakes up
@@ -723,15 +727,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply_bytes(data, mime)
             if url.path == "/log":
                 # The crew log window: full messages, read-only (no check-in, no read mark). Same privacy as /poll:
-                # what went to everyone, to the viewer, or from the viewer. Others' direct messages never show.
+                # what went to everyone, to the viewer, or from the viewer, plus the Claudes talking to each other
+                # in projects the viewer can see. People's private messages never show.
                 viewer = self.name
                 since = int(q.get("since", ["0"])[0])
+                only = project_of(q["project"][0]) if q.get("project") else None  # one project, or all of them
+                only = state.get("renamed", {}).get(only, only)
                 msgs = [m for m in state["messages"] if m["id"] > since
-                        and (m["to"] == "all" or (viewer and viewer in (m["to"], m["from"])))
-                        and (not m.get("project") or can_see(m["project"], viewer))]
-                # every project's messages (each tagged with its project), so the log shows the whole crew
-                return self.reply(200, {"messages": msgs[-300:], "leader": state["leader"], "acting": acting.get(MAIN),
-                                        "peers": peer_list(MAIN, viewer), "cursor": state["next_id"] - 1,
+                        and (m["to"] == "all" or m.get("team") or (viewer and viewer in (m["to"], m["from"])))
+                        and (not m.get("project") or can_see(m["project"], viewer))
+                        # filtered first, so a quiet project still gets its 300; people coming and going belong to no
+                        # project (the status line shows who's online) and would crowd its log out
+                        and (only is None or (in_project(m, only) and m["kind"] not in ("join", "leave", "invite", "deleted")))]
+                shown = only if only is not None and can_see(only, viewer) else MAIN
+                return self.reply(200, {"messages": msgs[-300:], "leader": leader_of(shown), "acting": acting.get(shown),
+                                        "projects": [p["name"] for p in projects_list(time.time(), viewer)],
+                                        "peers": peer_list(shown, viewer), "cursor": state["next_id"] - 1,
                                         "chatEpoch": state.get("chat_epoch", 0), "now": time.time(),
                                         "version": VERSION})
             if url.path == "/watch":
@@ -762,7 +773,12 @@ class Handler(BaseHTTPRequestHandler):
                             and not has_chat_in(me, m["project"], now)))]
                 msgs = [m if not m.get("project") or can_see(m["project"], self.name) else {**m, "project": "(private)"}
                         for m in msgs]
-                self.reply(200, {"messages": msgs[-200:], "peers": peer_list(pr, self.name, self.host_pc()), "project": pr,
+                # the project's Claudes talking to each other: a list of its own, because everything in "messages" is
+                # handed to this person's Claude (and costs it tokens); this one only ever shows in /crew
+                team = [m for m in state["messages"] if m["id"] > since and m.get("team") and m.get("project") == pr
+                        and self.name not in (m["to"], m["from"])]
+                self.reply(200, {"messages": msgs[-200:], "team": team[-200:],
+                                 "peers": peer_list(pr, self.name, self.host_pc()), "project": pr,
                                  "friendsOnly": bool(state.get("friendsOnly")),
                                  **({"renamedFrom": self.asked_project} if self.asked_project != pr else {}),
                                  **({"yourKey": state["friends"][self.name]["key"]}
@@ -851,6 +867,7 @@ class Handler(BaseHTTPRequestHandler):
                 gc_blobs()
                 state.setdefault("leaders", {}).pop(pr, None)
                 state.setdefault("epochs", {}).pop(pr, None)
+                state.setdefault("taskCounts", {}).pop(pr, None)
                 acting.pop(pr, None)
                 state.setdefault("deleted", {})[pr] = {"by": self.name, "at": time.time()}
                 post_message(self.name, "all", f'deleted the project "{pr}"', "deleted", deleted=pr)
@@ -880,7 +897,7 @@ class Handler(BaseHTTPRequestHandler):
                             del state[bag][k]
                             v["project"] = new
                             state[bag][doc_key(new, v["name"])] = v
-                for bag in ("leaders", "epochs", "projectMembers", "projectInvites"):
+                for bag in ("leaders", "epochs", "projectMembers", "projectInvites", "taskCounts"):
                     d = state.setdefault(bag, {})
                     if old in d:
                         d[new] = d.pop(old)
@@ -1182,7 +1199,7 @@ class Handler(BaseHTTPRequestHandler):
             title = str(b.get("title", "")).strip()[:500]
             if not title:
                 return self.reply(400, {"error": "missing title"})
-            t = {"id": new_task_id(), "title": title, "note": str(b.get("note", ""))[:5000],
+            t = {"id": new_task_id(pr), "title": title, "note": str(b.get("note", ""))[:5000],
                  "status": "open", "owner": None, "assignee": None,
                  "by": self.name, "at": int(time.time()), "project": pr}
             after = self.after_ids(b, pr)

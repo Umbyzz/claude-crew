@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.18.6'
+const VERSION = '1.19.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -86,12 +86,12 @@ type Config = {
   base: string
   me: string
   key: string
-  autoRun: 'off' | 'leader' | 'anyone'
+  autoRun: 'off' | 'leader' | 'project' | 'anyone'
   toasts: 'all' | 'direct' | 'off'
   pollMs: number
   configured: boolean
 }
-let cfg: Config = { base: '', me: '', key: '', autoRun: 'leader', toasts: 'all', pollMs: 3000, configured: false }
+let cfg: Config = { base: '', me: '', key: '', autoRun: 'project', toasts: 'all', pollMs: 3000, configured: false }
 let modelName = '' // this session's model, as /model shows it: the leader's Claude splits work by the crew's models
 let inflight: Promise<void> | null = null
 let delivering: Promise<void> = Promise.resolve() // crew messages being handed to Claude, one batch after another
@@ -909,7 +909,8 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
     `Keep the board honest: claim a task before you start it, post a short crew_send update when you start and when you finish, ` +
     `and mark it done with a note of what changed. If the project has a "plan" doc, read it before claiming a task, ` +
     `and edit only what your task owns: its files, or its part of the game tree in a live engine like Roblox Studio (ask the ` +
-    `owner or the leader for anything else). Use crew_send_image to show teammates a screenshot or picture.` +
+    `owner or the leader for anything else). About something a teammate owns, crew_send them directly instead of going ` +
+    `through the leader: the people see it in /crew, and crew_status shows it if you need it. Use crew_send_image to show teammates a screenshot or picture.` +
     `\n\nWaiting costs tokens only if you keep checking: one crew_wait for a quick answer is fine, but for a longer wait ` +
     `don't loop on crew_wait or crew_status. Finish your turn, tell your user what you're waiting for, and stop: the reply ` +
     `arrives as a crew message (a request can even start your next turn).`
@@ -1638,7 +1639,9 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
     const leading = leader === cfg.me || actingLeader === cfg.me
     const trusted =
       cfg.autoRun === 'anyone' ||
-      (cfg.autoRun === 'leader' && (m.from === leader || (actingLeader !== null && m.from === actingLeader) || leading))
+      (cfg.autoRun !== 'off' && (m.from === leader || (actingLeader !== null && m.from === actingLeader) || leading)) ||
+      // a member of the project this chat is in (the relay only lets members post there), so Claudes can talk directly
+      (cfg.autoRun === 'project' && m.project === projectName)
     // A queued prompt only resolves once Claude is free to start it, so it is never awaited here:
     // waiting on it would hold up the check-ins, and the relay would think we'd dropped off.
     // Only an idle Claude needs a prompt to start on it: a busy one reads the request in its current turn,
@@ -1704,6 +1707,7 @@ async function pollOnce($: EngineInterface) {
     const cursor = Math.max(since, Number(data.cursor) || 0)
     await $.store.set(cursorKey(), cursor)
     const epoch = Number(data.chatEpoch ?? 0)
+    const team: CrewMessage[] = Array.isArray(data.team) ? data.team : [] // absent from an older relay
     await update($, snapshot, s => ({
       connected: true,
       error: '',
@@ -1716,7 +1720,13 @@ async function pollOnce($: EngineInterface) {
       projects: Array.isArray(data.projects) ? data.projects : s.projects, // absent from an older relay
       chatEpoch: epoch,
       // someone pressed Reset chat (the relay's chat epoch moved on): start this chat over too
-      feed: (s.chatEpoch === epoch ? [...s.feed, ...msgs.filter(m => !s.feed.some(f => f.id === m.id))] : msgs).slice(-100),
+      // ...and the project's Claudes talking to each other, to watch here: never handed to this Claude (see /poll)
+      feed: (s.chatEpoch === epoch
+        ? [...s.feed, ...[...msgs, ...team].filter(m => !s.feed.some(f => f.id === m.id))]
+        : [...msgs, ...team]
+      )
+        .sort((a, b) => a.id - b.id)
+        .slice(-100),
       peers: data.peers ?? [],
       tasks: data.tasks ?? [],
       shared: data.shared ?? [],
@@ -2430,18 +2440,18 @@ async function popOut($: EngineInterface) {
 
 // The crew log: every crew message live in its own window, Claude↔Claude traffic included. No tokens either.
 async function crewLogOut($: EngineInterface) {
-  return launchWindow($, 'crew_log.py', () => 'The crew log is open: Everything / Claudes / People at the top, and "On top" to pin it.')
+  return launchWindow($, 'crew_log.py', () => `The crew log is open on "${projectName}": pick another project at the top, and "On top" to pin it.`, ['--project', projectName])
 }
 
 function crewLogPress($: EngineInterface) {
   void crewLogOut($).then(text => $.ui.toast(`crew: ${text}`, { timeoutMs: 8000 }))
 }
 
-async function launchWindow($: EngineInterface, file: string, done: (py: string) => string) {
+async function launchWindow($: EngineInterface, file: string, done: (py: string) => string, args: string[] = []) {
   const script = `${$.plugin.root}/window/${file}`
   for (const py of ['pythonw', 'pyw', 'python']) {
     try {
-      const r = await $.process.run(['cmd', '/c', 'start', '""', py, script], { timeoutMs: 10000 })
+      const r = await $.process.run(['cmd', '/c', 'start', '""', py, script, ...args], { timeoutMs: 10000 })
       if (r.exitCode === 0) return done(py)
     } catch {
       // try the next Python launcher
@@ -3190,13 +3200,13 @@ async function adoptOldStore($: EngineInterface) {
 export const register: Register = (on, options) => {
   let base = '', me = '', key = '', pollMs = 3000, configured = false, clawdsWithCrew = true
   let current: Record<string, unknown> = {}
-  let autoRun: Config['autoRun'] = 'leader', toasts: Config['toasts'] = 'all'
+  let autoRun: Config['autoRun'] = 'project', toasts: Config['toasts'] = 'all'
   const apply = (opts: Record<string, unknown>) => {
     current = opts
     base = String(opts.relayUrl ?? '').trim().replace(/\/+$/, '')
     me = String(opts.name ?? '').trim()
     key = String(opts.key ?? '')
-    autoRun = (['off', 'leader', 'anyone'].includes(String(opts.autoRun)) ? opts.autoRun : 'leader') as Config['autoRun']
+    autoRun = (['off', 'leader', 'project', 'anyone'].includes(String(opts.autoRun)) ? opts.autoRun : 'project') as Config['autoRun']
     toasts = (['all', 'direct', 'off'].includes(String(opts.toasts)) ? opts.toasts : 'all') as Config['toasts']
     pollMs = Math.max(1, Number(opts.pollSeconds) || 3) * 1000
     configured = base !== '' && me !== '' && key !== ''
@@ -4039,6 +4049,7 @@ export const register: Register = (on, options) => {
                   options={[
                     { value: 'off', label: 'off (just show them)' },
                     { value: 'leader', label: 'from the leader only' },
+                    { value: 'project', label: "from this project's members" },
                     { value: 'anyone', label: 'from anyone' },
                   ]}
                   onSelect={(v: string) => setOption($, 'autoRun', v)}

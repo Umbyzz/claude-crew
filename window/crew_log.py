@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
@@ -30,6 +31,7 @@ ORANGE, AMBER, BLUE = "#D97757", "#E3B23C", "#6A9BCC"
 NAME_COLORS = ["#D97757", "#6A9BCC", "#788C5D", "#C46686", "#E3B23C", "#8E7CC3"]
 EVENTS = ("join", "leave", "update", "out", "back")
 FILTERS = (("all", "Everything"), ("claudes", "Claudes"), ("people", "People"))
+ALL_PROJECTS = "*"
 
 
 _held = []  # keeps the single-instance mutex alive for as long as the window runs
@@ -140,8 +142,9 @@ def kind_of(m):
 class Feed:
     """Polls the relay's read-only /log in the background; the window takes new messages from .take()."""
 
-    def __init__(self, relay, key, name, reread):
+    def __init__(self, relay, key, name, reread, project="main"):
         self.relay, self.key, self.name, self.reread = (relay or "").rstrip("/"), key, name, reread
+        self.project, self.projects = project, []
         self.cursor, self.epoch = 0, None
         self.new, self.reset, self.error, self.peers, self.leader = [], False, "", [], None
         self.lock = threading.Lock()
@@ -165,14 +168,23 @@ class Feed:
                     self.error = friendly(err) if self.relay else "set up the crew plugin first (/crew -> Settings)"
             time.sleep(POLL_SECONDS)
 
+    def show_project(self, project):
+        with self.lock:
+            self.project, self.cursor, self.epoch, self.reset, self.new = project, 0, None, True, []
+
     def fetch(self):
         if not (self.relay and self.key):
             raise RuntimeError("not set up")
-        req = urllib.request.Request(f"{self.relay}/log?since={self.cursor}",
+        asked = self.project
+        which = "" if asked == ALL_PROJECTS else f"&project={urllib.parse.quote(asked)}"
+        req = urllib.request.Request(f"{self.relay}/log?since={self.cursor}{which}",
                                      headers={"X-Crew-Key": self.key, "X-Crew-Name": self.name or ""})
         with urllib.request.urlopen(req, timeout=5) as res:
             data = json.loads(res.read().decode("utf-8"))
         with self.lock:
+            if asked != self.project:  # switched while this was on its way: it's about the old one
+                return
+            self.projects = data.get("projects") or self.projects
             if self.epoch is not None and data.get("chatEpoch") != self.epoch:  # Reset chat: start over
                 self.reset, self.new, self.cursor = True, [], 0
                 self.epoch = data.get("chatEpoch")
@@ -202,8 +214,10 @@ class App:
             c = crew_config()
             return c.get("relayUrl", ""), c.get("key", ""), c.get("name", "")
 
-        self.feed = Feed(relay, key, name, None if given else reread)
         self.prefs = load_json(PREFS, {})
+        self.project = args.project or self.prefs.get("project") or "main"
+        self.feed = Feed(relay, key, name, None if given else reread, self.project)
+        self.menu_names = None
         self.filter = self.prefs.get("filter", "all")
         self.messages = []
         self.colors = {}
@@ -224,6 +238,12 @@ class App:
             b.pack(side="left")
             b.bind("<Button-1>", lambda e, k=key_: self.set_filter(k))
             self.buttons[key_] = b
+        self.picker = tk.Menubutton(bar, bg=PANEL, fg=AMBER, activebackground=EDGE, activeforeground=AMBER, relief="flat",
+                                    padx=8, pady=2, cursor="hand2", font=("Segoe UI", 9, "bold"))
+        self.picker_menu = tk.Menu(self.picker, tearoff=0, bg=PANEL, fg=INK, activebackground=EDGE, activeforeground=INK)
+        self.picker["menu"] = self.picker_menu
+        self.picker.pack(side="left", padx=(8, 0))
+        self.paint_picker()
         pin = tk.Checkbutton(bar, text="On top", variable=self.pinned, command=self.toggle_pin, bg=PANEL, fg=DIM,
                              selectcolor=PANEL, activebackground=PANEL, activeforeground=INK, font=("Segoe UI", 9))
         pin.pack(side="right")
@@ -252,7 +272,7 @@ class App:
     # -- prefs
 
     def save(self):
-        self.prefs.update(filter=self.filter, pinned=self.pinned.get(), geometry=self.root.geometry())
+        self.prefs.update(filter=self.filter, project=self.project, pinned=self.pinned.get(), geometry=self.root.geometry())
         try:
             with open(PREFS, "w", encoding="utf-8") as f:
                 json.dump(self.prefs, f)
@@ -277,6 +297,30 @@ class App:
         for k, b in self.buttons.items():
             b.configure(fg=INK if k == self.filter else DIM, bg=EDGE if k == self.filter else PANEL)
 
+    def set_project(self, project):
+        if project == self.project:
+            return
+        self.project = project
+        self.feed.show_project(project)
+        self.paint_picker()
+        self.save()
+
+    def paint_picker(self):
+        self.picker.configure(text=("All projects" if self.project == ALL_PROJECTS else self.project) + " ▾")
+
+    def fill_picker(self):
+        names = list(self.feed.projects)
+        if self.project != ALL_PROJECTS and self.project not in names:
+            names.append(self.project)
+        if names == self.menu_names:
+            return
+        self.menu_names = names
+        self.picker_menu.delete(0, "end")
+        for n in names:
+            self.picker_menu.add_command(label=n, command=lambda p=n: self.set_project(p))
+        self.picker_menu.add_separator()
+        self.picker_menu.add_command(label="All projects", command=lambda: self.set_project(ALL_PROJECTS))
+
     # -- drawing
 
     def color(self, name):
@@ -293,7 +337,7 @@ class App:
         t = self.text
         stamp = datetime.fromtimestamp(m.get("at", 0)).strftime("%H:%M:%S")
         t.insert("end", f"{stamp}  ", "time")
-        if m.get("project") and m["project"] != "main":  # the log shows every crew project, each one tagged
+        if self.project == ALL_PROJECTS and m.get("project") and m["project"] != "main":  # all of them: each one tagged
             t.insert("end", f"[{m['project']}] ", "tag")
         if kind_of(m) == "event":
             who = f"{m['from']} " if m["kind"] == "update" else ""
@@ -321,6 +365,7 @@ class App:
         self.text.see("end")
 
     def tick(self):
+        self.fill_picker()
         new, reset, err, peers, leader, me = self.feed.take()
         if reset:
             self.messages = []
@@ -337,7 +382,7 @@ class App:
                 self.text.see("end")
         online = [p["name"] + (" ★" if p.get("leader") else "") for p in peers if p.get("online")]
         self.status.configure(text=f"○ {err}" if err else f"● {len(online)} online: {', '.join(online) or 'nobody'}"
-                              f"  ·  you see what's sent to everyone, to you, or by you")
+                              f"  ·  everything except people's private messages")
         self.root.after(500, self.tick)
 
 
@@ -347,8 +392,21 @@ def listen(server, app):
         while True:
             try:
                 conn, _ = server.accept()
+                conn.settimeout(1)
+                try:
+                    project = conn.recv(200).decode("utf-8", "replace").strip()  # the chat that asked: its project
+                except OSError:
+                    project = ""
                 conn.close()
-                app.root.after(0, lambda: (app.root.deiconify(), app.root.lift(), app.root.focus_force()))
+
+                def front(p=project):
+                    if p:
+                        app.set_project(p)
+                    app.root.deiconify()
+                    app.root.lift()
+                    app.root.focus_force()
+
+                app.root.after(0, front)
             except OSError:
                 return
     threading.Thread(target=serve, daemon=True).start()
@@ -359,6 +417,7 @@ def main():
     p.add_argument("--relay")
     p.add_argument("--key")
     p.add_argument("--name")
+    p.add_argument("--project", help="the crew project to open on")
     args = p.parse_args()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -370,7 +429,8 @@ def main():
         server.listen(4)
     except OSError:
         try:
-            socket.create_connection(("127.0.0.1", ONE_WINDOW_PORT), timeout=2).close()
+            with socket.create_connection(("127.0.0.1", ONE_WINDOW_PORT), timeout=2) as knock:
+                knock.sendall((args.project or "").encode("utf-8"))
         except OSError:
             pass
         return

@@ -1,6 +1,6 @@
 {
   "name": "crew",
-  "version": "1.18.6",
+  "version": "1.19.0",
   "description": "Link Claude Code sessions across machines: a leader, shared chat, task board and docs through a small relay.",
   "author": { "name": "Umbyz" },
   "license": "MIT",
@@ -28,9 +28,9 @@
     "autoRun": {
       "type": "string",
       "title": "Auto-run requests",
-      "description": "Start a turn when a request addressed to you arrives: never, only from the crew leader, or from anyone. Tool permission prompts still apply.",
-      "options": ["off", "leader", "anyone"],
-      "default": "leader"
+      "description": "Start a turn when a request addressed to you arrives: never, only from the crew leader, from members of the project this chat is in, or from anyone. Tool permission prompts still apply.",
+      "options": ["off", "leader", "project", "anyone"],
+      "default": "project"
     },
     "toasts": {
       "type": "string",

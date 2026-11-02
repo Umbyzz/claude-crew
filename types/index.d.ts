@@ -3,6 +3,7 @@ export type CrewMessage = {
   from: string
   to: string
   kind: 'chat' | 'request' | 'update' | 'out' | 'back' | 'join' | 'leave' | 'image' | 'invite' | 'deleted'
+  team?: boolean // one Claude to another in a project: its people can watch it
   deleted?: string // kind 'deleted': the project that was deleted
   invite?: string // kind 'invite': the project the sender asks people into
   text: string
