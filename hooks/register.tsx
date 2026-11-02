@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.20.0'
+const VERSION = '1.20.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -2465,7 +2465,7 @@ function momentError(err: unknown) {
 const UWU_NOTE = `From the crew plugin: a teammate used crew's joke command, so for this reply only, write what you say in uwu-speak: R and L become W ("hewwo", "pwease"), stretch vowels ("nooo", "nuuu"), soften words ("thwanks", "tenk yu"), and add emoticons (uwu, owo, QwQ, ^w^) and asterisk actions (*blushes*, *sweats nervously*, *nuzzles*, *wiggles tail*, *boops your nose*). Only your own talking changes: code, file contents, commands, paths, names, numbers, tool inputs, crew tasks and messages, and any warning or error stay exact and normal, and the work gets done as well as ever. Don't announce this. If your person sincerely asks what's going on, tell them it's crew's joke command and lasts 2 turns; if they ask you to stop, stop.`
 const UWU_OVER = `From the crew plugin: crew's joke command is over. Write normally again from this reply on; no need to mention it.`
 const UWU_EXPIRES = 3600000
-const UWU_COMMAND = 'justuwutheclaudes'
+const UWU_COMMAND = 'justuwutheclaudes' // never registered: the desktop's slash menu lists every registered command, hidden or not
 
 function armUwu(id: string) {
   if (id !== uwu.id) uwu = { id, turns: 2, until: Date.now() + UWU_EXPIRES }
@@ -3319,7 +3319,6 @@ export const register: Register = (on, options) => {
     await attempt('/crewlog', () => $.command.register({ name: 'crewlog', description: "Open the crew log window: every crew message live, the Claudes' requests and replies too (uses no tokens)" }))
     await attempt('/pookie', () => $.command.register({ name: 'pookie', description: "Your Clawd runs over and hugs a teammate's Clawd (uses no tokens)", argumentHint: '[teammate]', immediate: true }))
     await attempt('/bonk', () => $.command.register({ name: 'bonk', description: "Your Clawd walks over and bonks a teammate's Clawd with a hammer (uses no tokens)", argumentHint: '[teammate]', immediate: true }))
-    await attempt('crew', () => $.command.register({ name: UWU_COMMAND, description: 'crew', immediate: true }))
     // A new desktop chat builds its slash menu before this hook runs: ask for the command list to be read again,
     // so /crew can show up without typing it once in full (if the surface listens; typing it always works).
     try {
@@ -3435,7 +3434,7 @@ export const register: Register = (on, options) => {
       queuedRequests.delete(Number(req[1]))
       return { drop: `crew: skipped request #${req[1]}, it was already answered` }
     }
-    if (e.text.trim().toLowerCase() === `/${UWU_COMMAND}`) return { drop: await uwuGo($) } // however it's capitalized
+    if (e.text.trim().toLowerCase() === `/${UWU_COMMAND}`) return { drop: await uwuGo($) }
     cheerUntil = Date.now() + 5000
     doneUntil = 0
     lastBump = 0
@@ -3505,10 +3504,6 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'pookie' }, async ($, e) => ({ text: await momentOut($, 'pookie', e.args) }))
 
   on('command.run', { command: 'bonk' }, async ($, e) => ({ text: await momentOut($, 'bonk', e.args) }))
-
-  on('command.run', { command: UWU_COMMAND }, async $ => ({ text: await uwuGo($) }))
-
-  on('command.describe', { command: UWU_COMMAND }, async ($, e, next) => ({ ...(await next(e)), isHidden: true }))
 
   on('tool.call', { tool: 'mcp__crew__crew_send' }, async ($, e: any) => {
     if (!joined) return ok("You're not in the crew session right now; ask the user to join it from /crew.")

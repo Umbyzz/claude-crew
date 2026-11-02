@@ -1287,8 +1287,8 @@ function uwuSession($: any, on: any, extra: Record<string, unknown> = {}) {
 
 test('the joke command lasts two turns, then says it is over, then nothing', { options: OPTIONS }, async ($, on) => {
   const contexts = uwuSession($, on)
-  const r: any = await $.command.run({ command: 'justuwutheclaudes', args: '' } as any)
-  expect(String(r.text)).toContain('2 turns')
+  const r: any = await $.prompt.submit({ text: '/justuwutheclaudes' } as any)
+  expect(String(r.drop)).toContain('2 turns')
   for (const text of ['one', 'two', 'three', 'four']) await $.prompt.submit({ text } as any)
   expect(contexts[0]?.[0]).toContain('uwu-speak')
   expect(contexts[0]?.[0]).toContain('stay exact') // the code stays code
@@ -1299,7 +1299,7 @@ test('the joke command lasts two turns, then says it is over, then nothing', { o
 
 test('a prompt delivered into a running turn carries the joke but uses up no turn', { options: OPTIONS }, async ($, on) => {
   const contexts = uwuSession($, on)
-  await $.command.run({ command: 'justuwutheclaudes', args: '' } as any)
+  await $.prompt.submit({ text: '/justuwutheclaudes' } as any)
   await $.prompt.submit({ text: 'one' } as any)
   await $.prompt.submit({ text: 'typed over it', turnId: 't1' } as any)
   await $.prompt.submit({ text: 'two' } as any)
@@ -1321,14 +1321,23 @@ test('a teammate using the joke reaches this Claude once, on its check-in', { op
   expect(contexts[2]?.[0]).toContain('is over')
 })
 
-test('the joke command typed any way never reaches the model, and is hidden from the menu', { options: OPTIONS }, async ($, on) => {
+test('the joke command typed any way never reaches the model, and is never in the slash menu', { options: OPTIONS }, async ($, on) => {
   const contexts = uwuSession($, on)
-  on('command.describe', async (_$: unknown, e: any) => e)
+  const names: string[] = []
+  mock.clock(on)
+  on('tool.register', async () => ({ value: undefined }) as any)
+  on('command.register', async (_$: unknown, e: any) => {
+    names.push(e.name)
+    return { value: undefined } as any
+  })
+  on('session.start', async (_$: unknown, e: any) => e)
+  await $.session.start({ source: 'startup', cwd: '/tmp' } as any)
+  await settle()
   const typed: any = await $.prompt.submit({ text: '/JustUwuTheClaudes' } as any)
   expect(String(typed.drop)).toContain('2 turns')
   expect(contexts.length).toBe(0)
-  const row: any = await $.command.describe({ command: 'justuwutheclaudes', description: 'crew', isHidden: false } as any)
-  expect(row.isHidden).toBe(true)
+  expect(names).toContain('bonk')
+  expect(names).not.toContain('justuwutheclaudes')
 })
 
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {

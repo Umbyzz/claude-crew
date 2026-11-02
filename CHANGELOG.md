@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.20.1
+- A small tidy-up of the slash menu.
+
 ## 1.20.0
 - **`/pookie` and `/bonk`** (idea: Umbyz): your Clawd runs over and hugs a teammate's Clawd, or walks over in a hard hat and bonks them with the hammer. It plays the same on everyone's Clawds window and costs no tokens. Add a name (`/bonk pluh`), or leave it out for a random teammate who's online. 1 in 5 times they're WAY over the top.
 - **All your settings survive a restart.** 1.18.6 kept crew's own copy of the address, name and key when Claude Code wouldn't save them. Auto-run, notifications, check-in and file-sync speed and the Clawds window setting now get the same treatment, so your choice no longer resets when you restart.
