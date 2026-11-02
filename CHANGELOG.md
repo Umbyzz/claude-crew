@@ -2,6 +2,10 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.20.0
+- **`/pookie` and `/bonk`** (idea: Umbyz): your Clawd runs over and hugs a teammate's Clawd, or walks over in a hard hat and bonks them with the hammer. It plays the same on everyone's Clawds window and costs no tokens. Add a name (`/bonk pluh`), or leave it out for a random teammate who's online. 1 in 5 times they're WAY over the top.
+- **All your settings survive a restart.** 1.18.6 kept crew's own copy of the address, name and key when Claude Code wouldn't save them. Auto-run, notifications, check-in and file-sync speed and the Clawds window setting now get the same treatment, so your choice no longer resets when you restart.
+
 ## 1.19.1
 - **A setup guide from scratch:** [every step](docs/radmin-guide.md) from installing Radmin VPN to friends connected, for anyone setting up crew for the first time. (Asked by Umbyz, for a friend.)
 - **Firewall advice corrected.** The docs said to allow the relay on Private networks, but Windows often treats a Radmin network as Public, which would keep friends out. They now say to allow both.

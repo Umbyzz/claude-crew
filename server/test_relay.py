@@ -465,6 +465,43 @@ class RelayTest(unittest.TestCase):
         code, r = self.r.call("POST", "/files", "cori", body={"to": "all", "name": "shot.png", "mime": "image/png", "data": data})
         self.assertEqual(code, 200, r)
         self.assertEqual(r["kind"], "image")
+    def test_moments_reach_the_clawds_windows_and_stay_out_of_the_chat(self):
+        self.poll("alice")
+        self.poll("bob")
+        code, got = self.r.call("POST", "/moment", "alice", body={"kind": "bonk", "to": "@BOB"})
+        self.assertEqual((code, got["to"]), (200, "bob"))
+        code, _ = self.r.call("POST", "/moment", "alice", body={"kind": "bonk", "to": "bob"})
+        self.assertEqual(code, 429)  # one at a time
+        code, got = self.r.call("POST", "/moment", "bob", body={"kind": "pookie"})
+        self.assertEqual((code, got["to"]), (200, "alice"))  # no name: a random teammate
+        code, watch = self.r.call("GET", "/watch", "carol")
+        self.assertEqual([(m["kind"], m["from"], m["to"]) for m in watch["moments"]],
+                         [("bonk", "alice", "bob"), ("pookie", "bob", "alice")])
+        code, polled = self.poll("alice")
+        self.assertFalse([m for m in polled["messages"] if m["kind"] in ("pookie", "bonk")])
+
+    def test_a_moment_needs_a_teammate_who_is_online(self):
+        self.poll("alice")
+        code, got = self.r.call("POST", "/moment", "alice", body={"kind": "pookie"})
+        self.assertEqual(code, 404)
+        self.poll("bob")
+        self.assertEqual(self.r.call("POST", "/moment", "alice", body={"kind": "pookie", "to": "alice"})[0], 400)
+        self.assertEqual(self.r.call("POST", "/moment", "alice", body={"kind": "nuke", "to": "bob"})[0], 400)
+        code, got = self.r.call("POST", "/moment", "alice", body={"kind": "bonk", "to": "dave"})
+        self.assertEqual(code, 404)
+        self.assertIn("bob", got["error"])
+
+    def test_uwu_stays_in_its_project_and_out_of_every_list(self):
+        self.poll("alice", project="game")
+        code, got = self.r.call("POST", "/uwu", "alice", project="game", body={})
+        self.assertEqual(code, 200)
+        self.assertEqual(self.poll("alice", project="game")[1]["uwu"], got["id"])
+        self.assertNotIn("uwu", self.poll("alice")[1])  # another project: untouched
+        self.assertEqual(self.r.call("POST", "/uwu", "alice", project="game", body={})[0], 429)
+        code, polled = self.poll("alice", project="game")
+        self.assertFalse([m for m in polled["messages"] if "uwu" in m["text"].lower()])
+        code, log = self.r.call("GET", "/log", "alice")
+        self.assertNotIn(got["id"], json.dumps(log))
 
 
 if __name__ == "__main__":

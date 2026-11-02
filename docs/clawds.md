@@ -15,6 +15,8 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | sending the crew a request | holds a **meetup**: an easel whiteboard rolls in, the sender presents (*"synergy."*) while the diagram draws itself, and everyone else sits around a table on office chairs, taking notes, nodding, or dozing off (*"could this have been an email?"*) |
 | connecting / disconnecting | arrives and leaves in one of five ways: a **car** (pulls up, hop in, *"vroom vroom"*), a **Henry Stickmin teleport** (*"\*presses teleport button\*"*, glitches out), **Superman** (*"UP, UP AND AWAY!"* / a superhero landing), a **door** that fades in, opens and slowly fades away, or a **leap off the window** caught by a passing bird. Arrivals are the same five in reverse, and everyone waves goodbye |
 | joining the crew | gets a group hug |
+| `/pookie` | runs over and hugs a teammate's Clawd, with a line like *"proud of u"* or *"pls review my code"* |
+| `/bonk` | walks over in a hard hat and bonks a teammate's Clawd on the head with the hammer (*"go to code jail"*). They flatten, see stars and have something to say about it |
 | doing nothing | vibes, strolls (leapfrogging anyone in the way), hops, sits on the rim swinging its legs, waves, chases, high-fives |
 
 **1 in 5 times, everything is WAY over the top:**
@@ -29,6 +31,8 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | chatting | sprints over and yells in ALL CAPS |
 | using tools | the blacksmith: a hard hat, a hammer and a mini gear, sparks on every *CLANG* |
 | someone joins | *"THE LEGEND HAS ARRIVED"* and a dogpile |
+| `/pookie` | lifts them right off the floor in a shower of hearts, shouting it in ALL CAPS |
+| `/bonk` | three bonks instead of one |
 | idle | taps a foot at you, hands on hips: *"Are you gonna prompt yet?"*; moon-hops, *"HIIIIIII!!!"* waves, dramatic sighs |
 
 **The Clawds window** is a small frameless window that stays on top of your desktop while everyone works. It pops out on its own when you open `/crew`. You can switch that off in Settings, and bring the window back any time with `/clawds`, the **Clawds** button in `/crew`, or by double-clicking `window/Clawds.bat`. Only one window ever runs: opening it again brings the existing one to the front.

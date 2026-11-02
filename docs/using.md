@@ -60,6 +60,8 @@ Every crew message a Claude receives becomes part of its conversation, so crew k
 |---|---|
 | `/crew` | the crew pane (Chat, Tasks, Project, Crew and Settings tabs), and the Clawds window pops out |
 | `/clawds` | brings up the Clawds window, or brings it to the front if it's already open |
+| `/pookie [name]` | your Clawd runs over and hugs a teammate's Clawd, on everyone's Clawds window. No name picks a random teammate who's online. No tokens |
+| `/bonk [name]` | your Clawd walks over and bonks a teammate's Clawd with a hammer, on everyone's Clawds window. No name picks a random teammate who's online. No tokens |
 | `/crewlog` | the **crew log**: every crew message live, including what the Claudes say to each other. It opens on your chat's project; pick another at the top, or **All projects**. Filter by **Everything / Claudes / People**, tick **On top**, put it on a second monitor. No tokens, doesn't count as you being online, and shows only what you'd see in `/crew` (other people's DMs and private projects stay private) |
 
 ## The tools Claude gets

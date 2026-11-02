@@ -245,6 +245,14 @@ DRAMA = 0.2  # the chance that anything a Clawd does is the WAY over-the-top ver
 TRIPS = ("car", "teleport", "superman", "door", "bird")  # ways to arrive and leave
 FORCE_TRIP = None  # --trip picks one, for trying them out
 DEMO_LEAVE = 44  # --leave-at: when the demo's nova disconnects
+# /pookie and /bonk
+MOMENT_FRESH = 8  # older than this when the window first hears of it: it's over, so it isn't played
+MOMENT_MAX = 20  # seconds before one gives up (someone got carried off, say)
+POOKIE_LINES = ["proud of u", "pls review my code", "u got this, pookie", "no bugs, only hugs", "ur code is so pretty",
+                "who's my favourite Claude", "tests pass because of u", "take a break, pookie"]
+POOKIE_REPLIES = ["aww", "pookie!!", "stoppp", "*melts*", "ok fine, one more", "I'll review it"]
+BONK_LINES = ["bonk.", "*bonk*", "go to code jail", "that's for the merge conflict", "read the plan.", "no more TODOs"]
+BONK_REPLIES = ["ow!", "hey!!", "what did I do", "I'll remember this", "*sees stars*", "worth it"]
 POLL_SECONDS = 1.5
 KEY_COLOR = "#0c0c0d"  # painted transparent on Windows
 ORANGE = "#DD775B"  # the mascot's own orange, straight off the official clips
@@ -439,7 +447,10 @@ class DemoCrew:
                                     "text": random.choice(["can you take the tests?", "pushed the fix!",
                                                            "nice one", "I'll do the UI part"])})
                 self.next_id += 1
-        return {"peers": peers, "leader": "umbyz", "recent": self.recent[-10:], "now": now, "version": "demo"}
+        # late in each loop: a hug, then what nova thinks of that
+        moments = [{"id": f"demo-{loop}-{kind}", "kind": kind, "from": by, "to": to, "at": now - (t - at)}
+                   for at, kind, by, to in ((28, "pookie", "umbyz", "nova"), (35, "bonk", "nova", "umbyz")) if at <= t < at + 4]
+        return {"peers": peers, "leader": "umbyz", "recent": self.recent[-10:], "moments": moments, "now": now, "version": "demo"}
 
 
 # ---------------------------------------------------------------- the Clawds
@@ -485,6 +496,7 @@ class Clawd:
         self.burst_key = None
         self.arm = [0, 0]  # how far each arm is raised (cells)
         self.swing = "up"  # the blacksmith's hammer: "up" (wound up) or "down" (on the gear)
+        self.bonking = False  # /bonk: the same hammer, with no gear, coming down on a head
         self.heading_to, self.heading_at = 0.0, 0.0
         self.accepted = ""  # the outage this Clawd has made peace with ("name:since")
         self.accepting = None  # the sigh-then-pat in progress
@@ -579,6 +591,8 @@ class World:
         self.flash = 0  # frames of lightning left
         self.desk = None  # the subagents' mini office: {"x", "width", "seats", "by"}
         self.huddle = None  # "Claude's plan!!": {"start", "until", "x", "dramatic", "spots"}
+        self.moment = None  # the /pookie or /bonk on stage: the relay's {"id", "kind", "from", "to"} plus how far it's got
+        self.moment_queue = []  # the ones waiting their turn
 
     # -- syncing with the crew
 
@@ -632,6 +646,12 @@ class World:
                     and (snap or {}).get("now", clock()) - joined < 15 and clock() - self.started > 4):
                 self.group_hug(c)
             self.seen_join[p["name"]] = joined
+        for m in (snap or {}).get("moments", []):
+            if m["id"] not in self.seen_ids:
+                self.seen_ids.add(m["id"])
+                # not the "first" check the messages use: /pookie opens the window, and that window should play it too
+                if (snap or {}).get("now", clock()) - m["at"] < MOMENT_FRESH:
+                    self.moment_queue.append(m)
         for m in (snap or {}).get("recent", []):
             if m["id"] in self.seen_ids:
                 continue
@@ -1098,6 +1118,90 @@ class World:
                 self.end_carry(s)
         return True
 
+    def next_moment(self, now):
+        """One /pookie or /bonk on stage at a time; the rest wait their turn."""
+        k = self.moment
+        if k and now - k["start"] > MOMENT_MAX:
+            self.moment = k = None
+        if k or not self.moment_queue:
+            return
+        m = self.moment_queue.pop(0)
+        if m["from"] in self.clawds and m["to"] in self.clawds:
+            self.moment = {**m, "phase": "go", "start": now, "t": now, "hits": 0, "hit_at": 0.0, "answered": False,
+                           "big": roll(m["id"], "big") < DRAMA}  # the same in every window, like everything else
+
+    def moment_step(self, c, now):
+        """Plays c's part in a /pookie or /bonk, if there is one. Returns True while it does."""
+        k = self.moment
+        if not k or c.name not in (k["from"], k["to"]):
+            return False
+        by, to = self.clawds.get(k["from"]), self.clawds.get(k["to"])
+        if not by or not to or by.gone or to.gone or by.trip or to.trip or not by.online or not to.online:
+            self.moment = None
+            return False
+        hug = k["kind"] == "pookie"
+        side = 1 if to.x >= by.x else -1
+        if k["phase"] == "go":
+            if c is to:
+                return False  # carries on, blissfully unaware
+            c.mood, c.arm = ("happy", [3, 3]) if hug else ("focus", [0, 0])
+            if c.walk_to(to.x - side * (12 if hug else 14), 0.8 if hug else 0.45):
+                k["phase"], k["t"] = "do", now
+                lines = POOKIE_LINES if hug else BONK_LINES
+                text = lines[seed(k["id"], "line") % len(lines)]
+                c.say(text.upper() + "!!!" if k["big"] else text, 3)
+                if hug:
+                    self.burst(to.x, self.ground - 14, "heart", 20 if k["big"] else 6)
+            return True
+        t = now - k["t"]
+        return self.hugging(c, by, to, side, k, t, now) if hug else self.bonking(c, by, to, side, k, t, now)
+
+    def hugging(self, c, by, to, side, k, t, now):
+        if t > (4.5 if k["big"] else 3.2):
+            self.moment = None
+            return False
+        if c is to and c.activity == "out":
+            return False  # sleeps right through it
+        c.mood, c.arm = "happy", [3, 3]
+        c.facing = side if c is by else -side
+        if c is to:
+            if k["big"]:
+                c.bob = 6  # lifted right off the floor
+            if t > 1 and not k["answered"]:
+                k["answered"] = True
+                c.say(POOKIE_REPLIES[seed(k["id"], "reply") % len(POOKIE_REPLIES)], 2.2)
+        elif random.random() < 0.12:
+            self.emit((by.x + to.x) / 2, self.ground - 14, "heart", "♥", "#C46686")
+        return True
+
+    def bonking(self, c, by, to, side, k, t, now):
+        hits, beat, wind = (3 if k["big"] else 1), 0.9, 0.6  # a slow wind-up, then the blow
+        if t > hits * beat + 1.6:
+            self.moment = None
+            return False
+        if c is by:
+            c.mood, c.sit, c.look, c.arm, c.bonking, c.facing = "smith", 0, 0, [0, 0], True, side
+            c.swing = "down" if t >= hits * beat or t % beat > wind else "up"
+            landed = min(hits, int(t / beat) + (1 if t % beat > wind else 0))
+            if landed > k["hits"]:
+                k["hits"], k["hit_at"] = landed, now
+                to.squash = 3
+                self.burst(to.x, self.ground - 11, "spark", 14 if k["big"] else 8)
+                self.emit(to.x, self.ground - 14, "steam", "BONK!", "#E3B23C")
+            return True
+        if c.activity == "out":
+            return False  # sleeps right through it
+        c.facing = -side  # stands still from here: the hammer's already on its way
+        if not k["hits"]:
+            c.mood = "worried"
+            return True
+        c.mood = "xx"
+        c.sit = 2 if now - k["hit_at"] < 0.25 else 0  # flattened for a moment
+        if not k["answered"]:
+            k["answered"] = True
+            c.say(BONK_REPLIES[seed(k["id"], "reply") % len(BONK_REPLIES)], 2.2)
+        return True
+
     def in_meeting(self, c, now):
         """Plays c's part in the meetup, if there is one. Returns True while it does."""
         m = self.meeting
@@ -1169,6 +1273,7 @@ class World:
     def step(self, dt):
         now = clock()
         clawds = list(self.clawds.values())
+        self.next_moment(now)
         anyone_out = any(c.activity == "out" for c in clawds)
         for c in clawds:
             c.worried = anyone_out and c.activity != "out"
@@ -1265,6 +1370,8 @@ class World:
                 # huggers, and anyone on their way to pat a sleeper, may come closer (or they'd moonwalk on the spot)
                 if self.carry and {a.name, b.name} == {self.carry["who"], self.carry["by"]}:
                     continue  # one is in the other's arms
+                if self.moment and {a.name, b.name} & {self.moment["from"], self.moment["to"]}:
+                    continue  # no hugging (or bonking) from a distance, and nobody shoves them off their mark
                 # the refreshed bodies are wider than the old ones, so they need a wider berth
                 near = 12 if (a.behavior in close or b.behavior in close or a.accepting or b.accepting) else 18
                 if self.funeral and self.funeral["name"] in (a.name, b.name):
@@ -1287,6 +1394,7 @@ class World:
         c.bubble_lift = 0
         c.sway = 0.0
         c.flag = c.stomp = c.gym = None
+        c.bonking = False
         a = c.activity
         t = now
         if c.trip:
@@ -1296,6 +1404,8 @@ class World:
             return
         c.hidden = False
         if self.carry_step(c, now):
+            return
+        if self.moment_step(c, now):
             return
         if a == "out" and not c.dramatic and not (self.funeral and self.funeral["name"] == c.name):
             c.mood, c.sit = "asleep", 1
@@ -2175,12 +2285,13 @@ class Painter:
         arm_row = max(0, h // 2)
         back = w0 - 2 if f > 0 else w1 + 1
         self.cells(x0, y, [(arm_row, back, back + 1), (arm_row + 1, back, back + 1)], color)
-        # the mini gear: bronze, toothy, with a dark hole in the middle
-        gx, gy = c.x + f * 12 - 3, ground - 7
-        self.cells(gx, gy, [(0, 2, 2), (0, 4, 4), (1, 1, 5), (2, 0, 6), (3, 1, 5), (4, 0, 6), (5, 1, 5), (6, 2, 2), (6, 4, 4)],
-                   "#c98a4b")
-        self.cells(gx, gy, [(1, 2, 3), (2, 1, 1)], "#e8b37a")  # a glint
-        self.cells(gx, gy, [(3, 3, 3)], "#4a2e17")  # the axle hole
+        if not c.bonking:
+            # the mini gear: bronze, toothy, with a dark hole in the middle
+            gx, gy = c.x + f * 12 - 3, ground - 7
+            self.cells(gx, gy, [(0, 2, 2), (0, 4, 4), (1, 1, 5), (2, 0, 6), (3, 1, 5), (4, 0, 6), (5, 1, 5), (6, 2, 2), (6, 4, 4)],
+                       "#c98a4b")
+            self.cells(gx, gy, [(1, 2, 3), (2, 1, 1)], "#e8b37a")  # a glint
+            self.cells(gx, gy, [(3, 3, 3)], "#4a2e17")  # the axle hole
         hx = c.x + f * 5  # the hammer hand's column
         handle, head = "#a0703a", "#7d7d78"
         if c.swing == "up":
@@ -2188,6 +2299,11 @@ class Painter:
             dots(hx, y, [(arm_row - 1, 0), (arm_row - 2, 1), (arm_row - 3, 1)], color)
             dots(hx, y, [(arm_row - 4, 1), (arm_row - 5, 1), (arm_row - 6, 1)], handle)
             dots(hx, y, [(arm_row - 7, 0), (arm_row - 7, 1), (arm_row - 7, 2), (arm_row - 8, 0), (arm_row - 8, 1), (arm_row - 8, 2)], head)
+        elif c.bonking:
+            # the bonk: arm out, the handle reaching up and over, the head coming down on theirs
+            dots(hx, y, [(arm_row, 0), (arm_row, 1)], color)
+            dots(hx, ground, [(-8, 2), (-9, 3), (-10, 4), (-10, 5), (-11, 6)], handle)
+            dots(hx, ground, [(r, d) for r in (-12, -11, -10) for d in (7, 8, 9, 10)], head)
         else:
             # the blow: arm out, handle level, the head down on the gear
             dots(hx, y, [(arm_row, 0), (arm_row, 1)], color)

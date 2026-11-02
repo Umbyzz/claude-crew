@@ -1236,6 +1236,101 @@ test('/crewlog opens the crew log window', { options: OPTIONS }, async ($, on) =
   expect(String(r.text)).toContain('crew log is open')
 })
 
+test('/pookie and /bonk ask the relay for a Clawd moment and open the window, without the model', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const sent: any[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.endsWith('/moment')) sent.push(JSON.parse(e.init.body))
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(e.url.endsWith('/moment') ? { to: 'bob' } : POLL) } }
+  })
+  const ran: string[][] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push([...e.argv])
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  const hug: any = await $.command.run({ command: 'pookie', args: '' } as any)
+  const bonk: any = await $.command.run({ command: 'bonk', args: '@bob' } as any)
+  await settle()
+  expect(String(hug.text)).toContain('hug bob')
+  expect(String(bonk.text)).toContain('bonks bob')
+  expect(sent).toEqual([{ kind: 'pookie', to: '' }, { kind: 'bonk', to: '@bob' }])
+  expect(ran.some(a => a.join(' ').includes('clawd_window.py'))).toBe(true)
+})
+
+test('/bonk says plainly why it could not', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  let answer = { status: 404, text: '{"error":"dave isn\'t online. Online now: bob"}' }
+  on('http.fetch', async () => ({ value: { ok: false, headers: {}, ...answer } }))
+  const missing: any = await $.command.run({ command: 'bonk', args: 'dave' } as any)
+  expect(String(missing.text)).toBe("dave isn't online. Online now: bob")
+  answer = { status: 404, text: '{"error":"not found"}' } // a relay from before this version
+  const old: any = await $.command.run({ command: 'bonk', args: 'bob' } as any)
+  expect(String(old.text)).toContain('needs updating')
+})
+
+function uwuSession($: any, on: any, extra: Record<string, unknown> = {}) {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const contexts: (readonly string[] | undefined)[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => {
+    contexts.push(e.context)
+    return e
+  })
+  on('http.fetch', async (_$: unknown, e: any) => {
+    const body = e.url.endsWith('/uwu') ? { id: 'mark1' } : { ...POLL, ...extra }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  return contexts
+}
+
+test('the joke command lasts two turns, then says it is over, then nothing', { options: OPTIONS }, async ($, on) => {
+  const contexts = uwuSession($, on)
+  const r: any = await $.command.run({ command: 'justuwutheclaudes', args: '' } as any)
+  expect(String(r.text)).toContain('2 turns')
+  for (const text of ['one', 'two', 'three', 'four']) await $.prompt.submit({ text } as any)
+  expect(contexts[0]?.[0]).toContain('uwu-speak')
+  expect(contexts[0]?.[0]).toContain('stay exact') // the code stays code
+  expect(contexts[1]?.[0]).toContain('uwu-speak')
+  expect(contexts[2]?.[0]).toContain('is over')
+  expect(contexts[3]).toBeUndefined()
+})
+
+test('a prompt delivered into a running turn carries the joke but uses up no turn', { options: OPTIONS }, async ($, on) => {
+  const contexts = uwuSession($, on)
+  await $.command.run({ command: 'justuwutheclaudes', args: '' } as any)
+  await $.prompt.submit({ text: 'one' } as any)
+  await $.prompt.submit({ text: 'typed over it', turnId: 't1' } as any)
+  await $.prompt.submit({ text: 'two' } as any)
+  await $.prompt.submit({ text: 'three' } as any)
+  expect(contexts.map(c => (c?.[0] ?? '').includes('uwu-speak'))).toEqual([true, true, true, false])
+  expect(contexts[3]?.[0]).toContain('is over')
+})
+
+test('a teammate using the joke reaches this Claude once, on its check-in', { options: OPTIONS }, async ($, on) => {
+  const contexts = uwuSession($, on, { uwu: 'mark9' })
+  await startSession(on, $)
+  await settle()
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await $.prompt.submit({ text: 'one' } as any)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // the same mark again: no fresh two turns
+  await $.prompt.submit({ text: 'two' } as any)
+  await $.prompt.submit({ text: 'three' } as any)
+  expect(contexts[0]?.[0]).toContain('uwu-speak')
+  expect(contexts[2]?.[0]).toContain('is over')
+})
+
+test('the joke command typed any way never reaches the model, and is hidden from the menu', { options: OPTIONS }, async ($, on) => {
+  const contexts = uwuSession($, on)
+  on('command.describe', async (_$: unknown, e: any) => e)
+  const typed: any = await $.prompt.submit({ text: '/JustUwuTheClaudes' } as any)
+  expect(String(typed.drop)).toContain('2 turns')
+  expect(contexts.length).toBe(0)
+  const row: any = await $.command.describe({ command: 'justuwutheclaudes', description: 'crew', isHidden: false } as any)
+  expect(row.isHidden).toBe(true)
+})
+
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
   const seen: { url: string; init: any }[] = []
   mock.store(on)
@@ -2685,6 +2780,27 @@ for (const [autoRun, wakes] of [['project', true], ['leader', false], ['off', fa
     await settle()
     expect(submitted.some(s => s.includes('gate question'))).toBe(wakes)
     expect(submitted.some(s => s.includes('other project'))).toBe(false) // a request from another project never does
+  })
+}
+
+for (const [kept, wakes] of [['leader', false], ['', true]] as const) {
+  test(`an Auto-run choice Claude Code wouldn't save still counts after a restart (${kept || 'none kept'})`, { options: OPTIONS }, async ($, on) => {
+    mock.store(on, { 'cursor:http://relay.test:7777': 1, ...(kept ? { 'opt:autoRun': kept } : {}) })
+    mock.session(on)
+    on('ui.status', async () => ({ value: undefined }))
+    on('ui.toast', async () => ({ value: undefined }))
+    const submitted: string[] = []
+    on('prompt.submit', async (_$: unknown, e: any) => (submitted.push(e.text), e))
+    let polls = 0
+    on('http.fetch', async (_$: unknown, e: any) => {
+      if (!e.url.includes('/poll')) return { value: { status: 200, ok: true, headers: {}, text: '{}' } }
+      polls += 1
+      const messages = polls === 1 ? [{ id: 9701, from: 'carol', to: 'alice', kind: 'request', text: 'gate question', project: 'main', at: 0 }] : []
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, leader: 'bob', messages, cursor: 9701 }) } }
+    })
+    await startSession(on, $)
+    await settle()
+    expect(submitted.some(s => s.includes('gate question'))).toBe(wakes)
   })
 }
 

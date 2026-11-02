@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.19.1"
+VERSION = "1.20.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -380,6 +380,12 @@ def show_busiest(p, now):
 LEADER_AWAY_SECONDS = 180  # the leader offline this long (or out of tokens): someone else acts as leader meanwhile
 acting = {}  # project -> the acting leader while that project's true leader is away (memory only)
 edits = {}  # project -> {path (lowercase): {"path", "name", "at"}}: who last edited which file there (memory only)
+moments = []  # the latest /pookie and /bonk, for everyone's Clawds window (memory only)
+moment_at = {}  # name -> when they last sent one
+MOMENT_SECONDS = 30  # how long a moment stays on offer to the windows
+MOMENT_GAP = 2  # seconds between one person's moments
+uwu = {}  # project -> {"id", "at"} (memory only: not a message, so in no chat, log or saved state)
+UWU_SECONDS = 300  # how long it's on offer to the project's chats, and how long before it can be used again
 EDIT_SECONDS = 600
 
 
@@ -759,6 +765,7 @@ class Handler(BaseHTTPRequestHandler):
                           for m in state["messages"][-30:]
                           if m["kind"] in ("chat", "request", "out", "back", "join", "leave", "image")]
                 self.reply(200, {"peers": peer_list(MAIN, viewer), "leader": state["leader"], "acting": acting.get(MAIN), "recent": recent,
+                                 "moments": [m for m in moments if time.time() - m["at"] < MOMENT_SECONDS],
                                  "now": time.time(), "version": VERSION})
             elif url.path == "/poll":
                 since = int(q.get("since", ["0"])[0])
@@ -780,6 +787,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"messages": msgs[-200:], "team": team[-200:],
                                  "peers": peer_list(pr, self.name, self.host_pc()), "project": pr,
                                  "friendsOnly": bool(state.get("friendsOnly")),
+                                 **({"uwu": uwu[pr]["id"]} if pr in uwu and now - uwu[pr]["at"] < UWU_SECONDS else {}),
                                  **({"renamedFrom": self.asked_project} if self.asked_project != pr else {}),
                                  **({"yourKey": state["friends"][self.name]["key"]}
                                     if self.via_shared and state.get("friends", {}).get(self.name, {}).get("pending") else {}),
@@ -1063,6 +1071,33 @@ class Handler(BaseHTTPRequestHandler):
                 post_message(self.name, "all", f"{self.name} cleared the crew chat", "update", pr)
                 save()
                 return self.reply(200, {"ok": True, "chatEpoch": epoch_of(pr)})
+            if path == "/moment":  # /pookie and /bonk: a scene on everyone's Clawds stage, and nothing else
+                now = time.time()
+                kind = str(b.get("kind") or "")
+                want = str(b.get("to") or "").strip().lstrip("@")[:40]
+                if kind not in ("pookie", "bonk") or not self.name:
+                    return self.reply(400, {"error": "unknown moment"})
+                if want.lower() == self.name.lower():
+                    return self.reply(400, {"error": "pick a teammate, not yourself"})
+                if now - moment_at.get(self.name, 0) < MOMENT_GAP:
+                    return self.reply(429, {"error": "one at a time, your Clawd is still on its way"})
+                online = sorted(n for n, p in peers.items() if n != self.name and is_online(p, now))
+                if not online:
+                    return self.reply(404, {"error": "nobody else is online"})
+                to = next((n for n in online if n.lower() == want.lower()), None) if want else secrets.choice(online)
+                if not to:
+                    return self.reply(404, {"error": f"{want} isn't online. Online now: {', '.join(online)}"})
+                moment_at[self.name] = now
+                moments[:] = [m for m in moments if now - m["at"] < MOMENT_SECONDS][-19:]
+                moments.append({"id": secrets.token_hex(4), "kind": kind, "from": self.name, "to": to, "at": now})
+                return self.reply(200, {"to": to})
+            if path == "/uwu":
+                now = time.time()
+                mark = uwu.get(self.project)
+                if mark and now - mark["at"] < UWU_SECONDS:
+                    return self.reply(429, {"error": f"try again in {int(UWU_SECONDS - (now - mark['at'])) // 60 + 1} min"})
+                uwu[self.project] = {"id": secrets.token_hex(4), "at": now}
+                return self.reply(200, {"id": uwu[self.project]["id"]})
             if path == "/ping":  # crew_ping: ask a teammate's plugin to echo (it answers on its next check-in)
                 now = time.time()
                 for old in [i for i, pg in pings.items() if now - pg["at"] > PING_SECONDS]:
