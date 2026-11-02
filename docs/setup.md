@@ -7,7 +7,7 @@ The host needs Python 3.8 or newer, and nothing else.
 
 > Start relay sometimes needs a double-click in the desktop app: the first click can just focus the pane. That's the desktop app's behavior, not crew's.
 
-**Or the classic way:** double-click **`server/start-relay.bat`**. The first time, it creates a random key, then prints the key and your IP addresses. The key and the saved chat, tasks and docs live in **`%USERPROFILE%\.claude\crew-relay`** (`crew_key.txt`, `crew_state.json`), so they survive plugin updates; older versions kept them next to the .bat, and the first start moves the newest copy over. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow the relay on **private** networks.
+**Or the classic way:** double-click **`server/start-relay.bat`**. The first time, it creates a random key, then prints the key and your IP addresses. The key and the saved chat, tasks and docs live in **`%USERPROFILE%\.claude\crew-relay`** (`crew_key.txt`, `crew_state.json`), so they survive plugin updates; older versions kept them next to the .bat, and the first start moves the newest copy over. Keep the window open, because closing it stops the relay. When Windows Firewall asks, allow it on **both Private and Public**: Windows often treats a Radmin network as Public, and with only Private ticked friends can't connect. On a network you don't trust, close the relay.
 
 On another OS, run:
 
@@ -17,7 +17,7 @@ python server/relay.py --key-file crew_key.txt
 
 ## 2. Put everyone on one network
 - **Tailscale (recommended):** free and encrypted, with no port forwarding. Use `http://<host's 100.x IP>:7787`.
-- **Radmin VPN:** everyone joins the same network. Use `http://<host's 26.x IP>:7787`.
+- **Radmin VPN:** everyone joins the same network ([step-by-step guide](radmin-guide.md)). Use `http://<host's 26.x IP>:7787`.
 - **Same LAN:** use the host's LAN IP.
 
 Never expose the relay to the open internet. The shared key is its only lock, and the traffic is plain HTTP; the VPN is what encrypts it.

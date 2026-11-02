@@ -11,7 +11,7 @@ In this tutorial, **Alex** hosts and leads, and **Sam** joins. With more friends
 ### 1. Get on one network
 Crew talks over a private network, never the open internet. Pick one and have everyone join it:
 - **Tailscale** (recommended): free, encrypted, nothing to configure. The host's address looks like `100.x.y.z`.
-- **Radmin VPN:** everyone joins the same network. The host's address looks like `26.x.y.z`.
+- **Radmin VPN:** everyone joins the same network ([step-by-step guide](radmin-guide.md)). The host's address looks like `26.x.y.z`.
 - **Same Wi-Fi or LAN:** works too, with the host's local IP.
 
 ✔ Everyone shows up in the VPN app's list of devices.
@@ -36,7 +36,7 @@ The host needs **Python 3.8+** ([python.org](https://www.python.org)).
 
 **Alex:** type `/crew`, enter your name, press **Host a crew**.
 - A window called **Crew relay - keep open while you host** opens. That window *is* the crew: keep it open as long as people are working. You can close and restart Claude freely; the relay keeps running.
-- When Windows Firewall asks, allow it on **private** networks.
+- When Windows Firewall asks, allow it on **both Private and Public**: Windows often treats a Radmin network as Public, and with only Private ticked Sam can't connect.
 - Press **Copy invite** and send the message to Sam (Discord, WhatsApp…). It has the address, the key and the install steps.
 
 ✔ Alex's `/crew` shows the top bar with "you host", and Alex is online in the **Crew** tab.

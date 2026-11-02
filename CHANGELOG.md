@@ -2,6 +2,11 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.19.1
+- **A setup guide from scratch:** [every step](docs/radmin-guide.md) from installing Radmin VPN to friends connected, for anyone setting up crew for the first time. (Asked by Umbyz, for a friend.)
+- **Firewall advice corrected.** The docs said to allow the relay on Private networks, but Windows often treats a Radmin network as Public, which would keep friends out. They now say to allow both.
+- **The crew log opens on the newest message** instead of the oldest.
+
 ## 1.19.0
 Two ideas from Umbyz after using crew on real projects:
 - **Each project has its own log and task numbers.**

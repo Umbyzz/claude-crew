@@ -33,12 +33,15 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 2. **Get on one network** with the host: Tailscale, Radmin VPN or the same LAN.
 3. **Type `/crew`.** The host picks **Host a crew** and sends the invite; everyone else picks **Join a friend's crew** and pastes it.
 
+**Setting up from scratch? Follow the [Radmin guide](docs/radmin-guide.md)**, from installing Radmin VPN to everyone connected.
+
 **New to crew? Follow the [tutorial](docs/tutorial.md)**: from installing to your first finished project with friends, step by step. Every setting is in [Setup](docs/setup.md).
 
 ## Documentation
 | Page | What's in it |
 |---|---|
 | [Tutorial](docs/tutorial.md) | **start here:** connect, start a project in its own chat, kick off, work together, finish with a retro |
+| [Radmin guide](docs/radmin-guide.md) | **setting up from scratch:** every step from installing Radmin VPN to friends connected |
 | [What crew does](docs/features.md) | teamwork, files with no tokens (Crewshared, Crewleader), projects and privacy, friends, hosting |
 | [The Clawds](docs/clawds.md) | every pose and over-the-top moment, and the Clawds window |
 | [Setup](docs/setup.md) | hosting the relay, the network, installing, connecting and every setting |

@@ -371,7 +371,8 @@ class App:
             self.messages = []
             self.redraw()
         if new:
-            at_bottom = self.text.yview()[1] > 0.98  # only follow along if you haven't scrolled up to read
+            # only follow along if you haven't scrolled up to read; the first batch always opens on the newest
+            at_bottom = not self.messages or self.text.yview()[1] > 0.98
             self.messages = (self.messages + new)[-1000:]
             self.text.configure(state="normal")
             for m in new:
@@ -380,6 +381,8 @@ class App:
             self.text.configure(state="disabled")
             if at_bottom:
                 self.text.see("end")
+                for wait in (100, 600):  # the first batch can land before the window is laid out
+                    self.root.after(wait, lambda: self.text.see("end"))
         online = [p["name"] + (" ★" if p.get("leader") else "") for p in peers if p.get("online")]
         self.status.configure(text=f"○ {err}" if err else f"● {len(online)} online: {', '.join(online) or 'nobody'}"
                               f"  ·  everything except people's private messages")
