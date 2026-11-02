@@ -39,6 +39,7 @@ The project belongs to the Claude Code chat: switch in one chat and the others s
   - The **Friends** card: who's a friend, when and from where they last connected, **Copy invite**, **Remove**, and a box to invite someone who isn't connected yet.
   - The **Invite friends** card: **Copy invite**, **Stop hosting…** (it asks first), **🔑 New crew key…** and **Keep this PC awake while anyone's connected**.
 - **For everyone else:** a short Friends note (are you on the host's friends list?).
+- **Quack?** at the very bottom: three buff ducks, in three windows. Close them one at a time, or leave them there. It's your screen.
 
 ## ⚙ Settings
 **Connection** (Relay URL, your name, crew key, **Test connection**; for the host, **Who can join**), **Preferences** (Auto-run, notifications, check-in interval, **Crewshared check every**, the Clawds window, where new project folders go) and **Updates**.

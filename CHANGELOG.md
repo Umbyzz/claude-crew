@@ -2,6 +2,9 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.20.2
+- **Quack?** A button at the very bottom of the Crew tab opens three buff ducks in three windows, spread over your screen. (Idea: Umbyz. Why not.)
+
 ## 1.20.1
 - A small tidy-up of the slash menu.
 

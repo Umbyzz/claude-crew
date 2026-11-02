@@ -1340,6 +1340,22 @@ test('the joke command typed any way never reaches the model, and is never in th
   expect(names).not.toContain('justuwutheclaudes')
 })
 
+test('Quack? at the bottom of the Crew tab opens the duck', { options: OPTIONS }, async ($, on) => {
+  fakeRelay(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  const ran: string[][] = []
+  on('process.run', async (_$: unknown, e: any) => {
+    ran.push([...e.argv])
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  await ui.press({ key: 'quack' })
+  await settle()
+  expect(ran.some(a => a.join(' ').endsWith('quack.py'))).toBe(true)
+  await ui.unmount()
+})
+
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
   const seen: { url: string; init: any }[] = []
   mock.store(on)
