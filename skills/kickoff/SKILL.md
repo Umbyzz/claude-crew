@@ -14,6 +14,7 @@ You lead the crew. Before anyone builds, put everyone on one plan so no two Clau
 - Look for material in Crewleader, Crewshared and the shared docs (`crew_read_shared`).
 - If the goal is still vague, ask your user 2-3 short questions in one message and wait for the answers: what exactly (genre, the core loop, the one thing that must be great), which engine or platform, how big (a weekend jam or weeks), and what they already have. Don't invent a big plan from nothing.
 - For a Roblox game, also ask: Team Create only, or **Rojo** too (scripts as files in git)? See 2c.
+- Ask which steps only a person can do (opening extra test windows, a device emulator, Team Test, publishing) and whether the Claudes may use desktop control. Tasks that need a person say so in their note (`needs: <name> to start Team Test`), so nobody waits on a step nobody knew about.
 
 ## 2. Write the plan doc
 
@@ -22,7 +23,9 @@ You lead the crew. Before anyone builds, put everyone on one plan so no two Clau
 - **Goal**: two lines about what the player (or user) experiences.
 - **Scope**: the smallest playable version first, then the nice-to-haves.
 - **Layout**: the folder tree, and who owns each folder.
-- **How the pieces connect**: the names one part uses from another (scripts, events, functions, scenes), data formats and naming conventions. Decide these now; most clashes are two Claudes guessing differently.
+- **How the pieces connect**: the names one part uses from another (scripts, events, functions, scenes), data formats and naming conventions, and conventions like directions, sides and units (which way a wave travels, which side tips over). Decide these now; most clashes are two Claudes guessing differently.
+- **Changes**: whoever changes a name, a format or the architecture writes it into this doc (`crew_share` with `append` for a line) and tells each affected owner, in the same turn. A change that only travels by chat leaves someone building on the old plan.
+- **Deputy**: who approves when you're busy, so nobody idles waiting on you.
 - **Done means**: it runs without errors, its owner tested it, and you checked it. In a game, testing includes a **playtest**: start the game, try the feature the way a player would, and see no new errors in the output (Roblox: Play, or a local server with 2 players for anything multiplayer).
 - **Where the code lives**: one git repo with a branch per person and you merging is best for code. Without git, each owner shares their folder through Crewshared and you assemble. Nobody pushes without their own user's OK.
 
@@ -50,6 +53,17 @@ Offer **Rojo** as an option: scripts live as `.luau` files in the git repo (a br
 Also `crew_share` a doc named `studio-notes` with these lessons from earlier crews, and point to it in the plan:
 
 - Requiring a ModuleScript from the command bar (or `execute_luau`) gets a fresh copy of the module, not the one the game is running. To test live game state, go through a DevHook in ServerStorage that the running scripts expose.
+- Code run with `execute_luau` ends with the call: threads it starts with `task.spawn` die silently, and runs over about 25 seconds time out.
+- Test in steps: solo Play, then a local server with 2-4 clients, then Team Test with real people. Each catches what the one before can't, and multiplayer bugs only show with several clients.
+- Every test window (the server and each client, local or Team Test) is its own Studio connection: list them and read each one's console.
+- Tool calls are too slow to play by hand. For a playtest, each Claude runs a small autopilot script on its own client with a role (one carries, one balances) while watching the server.
+- To check something on a client: arm a logger there in one call, trigger it from the server in the next, read the log in a third.
+- Touch layout: check `UserInputService.PreferredInput`, not `TouchEnabled` or `MouseEnabled` (the device emulator reports a mouse until the first touch). The emulator can't be driven from code, and its taps can land about 58 px off: log where a tap really lands.
+- A read-only layout checker that prints each HUD element's screen rectangle catches overlaps screenshots miss. Mind the top-bar inset (about 58 px) on ScreenGuis that ignore it.
+- The keyboard-input tool can report success with no effect: check the effect.
+- R15 joints may be AnimationConstraints, not Motor6Ds.
+- Per-script cost: MicroProfiler timers (read through LibMP from a code run) give the milliseconds each script takes per frame.
+- `Lighting.Technology` can't be set from code: ask a person.
 - `screen_capture` can time out, and it doesn't draw BillboardGuis: check those another way.
 - `script_grep` and `script_read` can miss matches while the game is in Play.
 - Edits need Play stopped.
@@ -69,6 +83,8 @@ Every task names what it owns, in its title or note: `Enemy AI - owns: Scripts/E
 - crew's file locks cover files on disk and scripts edited through Roblox Studio's or Unity's MCP, but not changes made by running code in the engine (like execute_luau or Unity's CLI) or through other engines' tools, so in a live engine ownership is the main guard: keep it strict.
 - No two open tasks own the same path.
 - Your first task is the skeleton: the folders, empty scenes and stub scripts with the agreed names, so everyone builds on the same base. In Unity, it also makes every person's work scene and the Unity `.gitignore`. On a website, the layout, the design tokens and an empty page per owner. In a document, the `outline` and `style` docs. Order the rest so nobody waits: give a task `after` the tasks it needs (`crew_task` with `after`), so its owner hears when it can start.
+- Right after the skeleton, a **smoke test** task (`after` the skeleton): measure the basics with real numbers before anyone builds on the architecture. In a multiplayer game, that's the network send with one player and a run with 2-4 clients. Rebuilding the base later costs far more.
+- One owner per task: an effort that spans owners (a polish pass) becomes one task per owner from the start.
 - Size tasks to the teammate: heavy or tricky work to the most capable models, UI, art and level design to quicker ones, small chores to the lightest. Live engine work goes to whoever has the engine's tool connected; anyone past 80% usage gets small tasks.
 - Keep tasks small enough to finish in one sitting.
 - Spread your own building across the project instead of front-loading it: after the skeleton, take a share of the work alongside everyone else, so you're free to check finished tasks as they come in.
@@ -85,6 +101,7 @@ Read `crew-rules` with `crew_read_shared`. Keep every existing line and add any 
 - Every request gets a T-number on the board before work starts, including requests a person relays to another person's Claude while the leader is away.
 - The done note is the changelog line: write it so it can be copied into the changelog as is.
 - While acting as leader, add a line to the plan doc for each decision you make.
+- Report a result only once you have it: a missing or failed tool result means unknown, not done.
 
 Ask your user before removing or rewriting rules the crew wrote.
 

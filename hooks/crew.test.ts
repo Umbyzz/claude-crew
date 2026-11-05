@@ -1356,6 +1356,110 @@ test('Quack? at the bottom of the Crew tab opens the duck', { options: OPTIONS }
   await ui.unmount()
 })
 
+function deliverySession(on: any, poll: Record<string, unknown>) {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const submitted: string[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => {
+    submitted.push(e.text)
+    return e
+  })
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, ...poll }) } }))
+  return { submitted, rows: () => session.appended().map((r: any) => JSON.stringify(r.message.content)) }
+}
+
+test("an update a teammate's Claude wrote reaches this Claude, the relay's own task lines don't, and neither starts a turn", { options: OPTIONS }, async ($, on) => {
+  const got = deliverySession(on, {
+    cursor: 3,
+    messages: [
+      { id: 2, from: 'bob', to: 'all', kind: 'update', said: true, text: 'T11 split approved: raft budget 250', at: 0, project: 'main' },
+      { id: 3, from: 'bob', to: 'all', kind: 'update', text: 'claim task T3: Write login tests', at: 0, project: 'main' },
+    ],
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle(100)
+  expect(got.rows().some(r => r.includes('T11 split approved'))).toBe(true) // the lost-decision bug (#1903)
+  expect(got.rows().some(r => r.includes('claim task T3'))).toBe(false)
+  expect(got.submitted.length).toBe(0)
+})
+
+test('a request for a task the board already shows done is shown, but starts nothing', { options: OPTIONS }, async ($, on) => {
+  const got = deliverySession(on, {
+    cursor: 2,
+    tasks: [{ ...POLL.tasks[0], status: 'done' }],
+    messages: [{ id: 2, from: 'bob', to: 'alice', kind: 'request', text: 'T3 can start: T1 is done, and so is everything it waited for. (Write login tests)', at: Date.now() / 1000, project: 'main' }],
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle(100)
+  expect(got.submitted.length).toBe(0)
+  expect(got.rows().some(r => r.includes('already done on the board'))).toBe(true)
+})
+
+test('the Chat tab shows an update someone wrote in full, as a message, and still folds the board lines', { options: OPTIONS }, async ($, on) => {
+  const board = [3, 4, 5, 6, 7].map(id => ({ id, from: 'bob', to: 'all', kind: 'update', text: `claim task T${id}: thing`, at: 1791700000 + id }))
+  deliverySession(on, {
+    cursor: 7,
+    messages: [{ id: 2, from: 'bob', to: 'all', kind: 'update', said: true, text: 'Board complete: T1-T19 all done and checked', at: 1791700000 }, ...board],
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /^Board complete: T1-T19 all done and checked$/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /more updates/ } as any)).toBeDefined()
+  await ui.unmount()
+})
+
+test("a catch-up keeps the leader's word, says who leads now, and leaves out the board's own lines", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'membership:http://relay.test:7777': 'joined', 'cursor:http://relay.test:7777': 9 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const chatter = Array.from({ length: 40 }, (_, i) => ({ id: 11 + i, from: 'carol', to: 'all', kind: 'chat', text: `chatter ${i}`, at: 1791700000 + i }))
+  const messages = [
+    { id: 10, from: 'bob', to: 'all', kind: 'update', said: true, text: 'T11 split approved, raft budget 250', at: 1791699990 },
+    ...chatter,
+    { id: 51, from: 'bob', to: 'all', kind: 'update', text: 'removed alice from the project', at: 1791700100 },
+    { id: 52, from: 'bob', to: 'all', kind: 'update', text: 'assign task T3 to carol (taken over from alice): Write login tests', at: 1791700101 },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, leader: 'bob', acting: 'carol', messages, cursor: 52 }) } }))
+  await startSession(on, $)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'rejoin' })
+  await settle(100)
+  await ui.unmount()
+  const brief = session.appended().map((r: any) => JSON.stringify(r.message.content)).find(r => r.includes('crew-catchup')) ?? ''
+  expect(brief).toContain('T11 split approved') // the leader's decision, though 40 newer messages came after it
+  expect(brief).toContain('chatter 39')
+  expect(brief).not.toContain('chatter 0\\n')
+  expect(brief).toContain('older messages not shown')
+  expect(brief).not.toContain('removed alice') // an old board line isn't news
+  expect(brief).toContain('About your tasks while you were away')
+  expect(brief).toContain('taken over from alice')
+  expect(brief).toContain('carol is acting leader')
+})
+
+test('crew_share append adds to a doc, and refuses on a relay too old to know append', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const seen: { url: string; init: any }[] = []
+  let version = '1.20.2'
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    const body = e.url.includes('/shared') ? { ok: true, name: 'plan', appended: true } : { ...POLL, version }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const old: any = await $.tool.call({ tool: 'mcp__crew__crew_share', name: 'plan', content: '- T11 split approved', append: true } as any)
+  expect(String(old.result)).toContain('too old') // an old relay would replace the whole plan with that one line
+  expect(seen.some(s => s.url.includes('/shared'))).toBe(false)
+  version = '1.21.0'
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_share', name: 'plan', content: '- T11 split approved', append: true } as any)
+  expect(String(r.result)).toContain('Added to "plan"')
+  expect(JSON.parse(seen.find(s => s.url.includes('/shared'))?.init.body).append).toBe(true)
+})
+
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
   const seen: { url: string; init: any }[] = []
   mock.store(on)

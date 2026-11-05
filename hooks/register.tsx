@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.20.2'
+const VERSION = '1.21.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -911,7 +911,10 @@ function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acti
     `and mark it done with a note of what changed. If the project has a "plan" doc, read it before claiming a task, ` +
     `and edit only what your task owns: its files, or its part of the game tree in a live engine like Roblox Studio (ask the ` +
     `owner or the leader for anything else). About something a teammate owns, crew_send them directly instead of going ` +
-    `through the leader: the people see it in /crew, and crew_status shows it if you need it. Use crew_send_image to show teammates a screenshot or picture.` +
+    `through the leader: the people see it in /crew, and crew_status shows it if you need it. Use crew_send_image to show teammates a screenshot or picture. ` +
+    `A decision a teammate must act on (an approval, a budget, a re-split) goes to each affected owner as a request, and into ` +
+    `the plan doc in the same turn (crew_share with append). Report a result only once you have it: a missing or failed tool ` +
+    `result means unknown, not done.` +
     `\n\nWaiting costs tokens only if you keep checking: one crew_wait for a quick answer is fine, but for a longer wait ` +
     `don't loop on crew_wait or crew_status. Finish your turn, tell your user what you're waiting for, and stop: the reply ` +
     `arrives as a crew message (a request can even start your next turn).`
@@ -1547,7 +1550,7 @@ const BACKLOG = 25
 // A request older than this when it arrives (it waited out a disconnect) is shown, never run as new work.
 const OLD_REQUEST_SECONDS = 15 * 60
 
-async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string | null, actingLeader: string | null = null) {
+async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string | null, actingLeader: string | null = null, tasks: CrewTask[] = []) {
   for (const m of msgs) {
     // We were acting leader and the true leader is back: this Claude briefs them, so nothing gets lost in between.
     // (Queued even mid-turn: it's its own job, so it runs once Claude is free, never twice.)
@@ -1595,7 +1598,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
       }
       continue
     }
-    if (m.kind === 'update' || m.kind === 'join') continue
+    if ((m.kind === 'update' && !m.said) || m.kind === 'join') continue // the relay's own lines: the board has them
     lastTalk = Date.now()
     // People chatting in /crew is for the people: their Claudes don't read it, which keeps it out of every
     // Claude's context (and token bill). "Ask a Claude" sends a request instead, which does reach them.
@@ -1610,6 +1613,9 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
     }
     deliveredIds.add(m.id)
     const late = m.kind === 'request' && m.at > 0 && Date.now() / 1000 - m.at > OLD_REQUEST_SECONDS
+    // "T5 can start" or "T5 is assigned to you" for a task the board already shows done: shown, never run again
+    const ref = m.kind === 'request' ? /^(?:Task )?T(\d+) (?:is assigned to you|can start)/.exec(m.text) : null
+    const finished = !!ref && tasks.some(t => t.id === Number(ref[1]) && t.status === 'done')
     await $.session.append({
       message: {
         type: 'user',
@@ -1626,6 +1632,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
               (m.project && m.project !== projectName && m.project !== '(private)'
                 ? `\n(Sent from the crew project "${m.project}"; this session is in "${projectName}". A crew_send reply still reaches ${m.from} wherever they are.)`
                 : '') +
+              (finished ? `\n(T${ref?.[1]} is already done on the board: nothing to start.)` : '') +
               (late
                 ? `\n(An old request from ${clockTime(m.at)}: it reached you only now, after a disconnect. Don't start on it as new ` +
                   `work: check the board first, it may be done already, and ask ${m.from} if it's unclear.)`
@@ -1648,7 +1655,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
     // Only an idle Claude needs a prompt to start on it: a busy one reads the request in its current turn,
     // and a queued prompt would then run it a second time once it goes idle.
     const forMe = direct || (m.to === 'all' && m.kind === 'request' && m.human === true)
-    if (forMe && m.kind === 'request' && trusted && !late && !working && !(await loopBrake($, m))) {
+    if (forMe && m.kind === 'request' && trusted && !late && !finished && !working && !(await loopBrake($, m))) {
       queuedRequests.set(m.id, m.from)
       void autoSubmit($, {
           text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : m.from === actingLeader ? ` (acting leader while ${leader} is away)` : ''}${m.human ? ', typed by them in /crew' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
@@ -1700,11 +1707,11 @@ async function pollOnce($: EngineInterface) {
         // re-run as new work). Invites and deleted projects still get handled.
         const special = fresh.filter(m => m.kind === 'invite' || m.kind === 'deleted')
         delivering = delivering
-          .then(() => deliver($, special, leader, actingLeader))
+          .then(() => deliver($, special, leader, actingLeader, data.tasks ?? []))
           .then(() => catchUp($, since))
           .then(() => fresh.forEach(m => deliveredIds.add(m.id)))
           .catch(() => {})
-      } else delivering = delivering.then(() => deliver($, fresh, leader, actingLeader)).catch(() => {})
+      } else delivering = delivering.then(() => deliver($, fresh, leader, actingLeader, data.tasks ?? [])).catch(() => {})
     }
     const cursor = Math.max(since, Number(data.cursor) || 0)
     await $.store.set(cursorKey(), cursor)
@@ -1979,6 +1986,14 @@ function receipt(m: CrewMessage, s: CrewSnapshot, me: string) {
 }
 
 const SYSTEM_KINDS = new Set<CrewMessage['kind']>(['join', 'leave', 'update', 'out', 'back', 'invite', 'deleted'])
+
+// The relay's own lines: tasks, docs, folders, members and who leads. Messages from before 1.21 don't say whether
+// someone wrote an update, so these are known by their wording too.
+const RELAY_LINE =
+  /^(?:(?:added|claim|done|release|assign|edit|remove|block|unblock|check) task [T#]\d+|released task [T#]\d+|T\d+ can start:|shared doc '|deleted the doc '|(?:shared|stopped sharing) the folder '|renamed the project |removed \S+ from the project|made the project members-only|opened the project to the whole crew|\S+ cleared the crew chat)/
+function relayLine(m: CrewMessage) {
+  return m.kind === 'update' && !m.said && (!!m.leaderChange || RELAY_LINE.test(m.text))
+}
 const GROUP_GAP = 5 * 60 // seconds: a pause this long starts a new bubble, even from the same sender
 
 type ChatItem =
@@ -2006,7 +2021,7 @@ function bubbleText(m: CrewMessage) {
 function chatItems(feed: CrewMessage[], me: string): ChatItem[] {
   const items: ChatItem[] = []
   for (const m of feed) {
-    if (SYSTEM_KINDS.has(m.kind)) {
+    if (SYSTEM_KINDS.has(m.kind) && (m.kind !== 'update' || relayLine(m))) {
       items.push({ type: 'event', id: m.id, text: eventText(m), at: m.at })
       continue
     }
@@ -2866,30 +2881,54 @@ function clip(text: string, max = 280, id?: number) {
 // A Claude (re)joining a crew session gets a briefing in its conversation: who leads, what's open, what was said.
 async function catchUp($: EngineInterface, lastSeen = 0) {
   const data = await relay($, 'GET', '/poll?since=0')
-  const tasks: CrewTask[] = (data.tasks ?? []).filter((t: CrewTask) => t.status !== 'done')
+  const leader: string | null = data.leader ?? null
+  const acting: string | null = data.acting ?? null
+  // yours first: what you held is the first thing to pick back up
+  const yours = (t: CrewTask) => t.owner === cfg.me || t.assignee === cfg.me
+  const tasks: CrewTask[] = (data.tasks ?? []).filter((t: CrewTask) => t.status !== 'done').sort((a: CrewTask, b: CrewTask) => Number(yours(b)) - Number(yours(a)))
+  const here = (m: CrewMessage) => !(m.project && m.project !== projectName)
+  // The relay's own lines (tasks, docs, who leads, who's in) are history: the board and the last line say how things
+  // stand now. Leaving them in crowded out what people said, and old ones read as news ("removed from the project").
+  const system = relayLine
   // people's /crew chat stays out of the briefing too, like it stays out of live delivery
   const stale = (m: CrewMessage) => ['out', 'back'].includes(m.kind) && Date.now() / 1000 - m.at > 6 * 3600
   const all: CrewMessage[] = (data.messages ?? []).filter(
     (m: CrewMessage) =>
       !['join', 'leave', 'invite', 'deleted'].includes(m.kind) && !(m.human && m.kind === 'chat') && !stale(m) && !deliveredIds.has(m.id) &&
-      !(m.project && m.project !== projectName),
+      here(m) && !system(m),
   )
   // Back after a break: only what happened since we last looked. First time here: the recent history.
   const fresh = lastSeen > 0 ? all.filter(m => m.id > lastSeen) : all
-  const msgs = fresh.slice(-30)
+  // what's for this Claude, and what the leader (and acting leader) said, is never cut for room: each keeps its own
+  // places, so a chatty one can't crowd out another
+  const latest = (pick: (m: CrewMessage) => boolean) => fresh.filter(pick).slice(-10)
+  const keep = new Set(
+    [...latest(m => m.to === cfg.me), ...latest(m => m.from === leader), ...latest(m => acting !== null && m.from === acting), ...fresh.slice(-30)].map(m => m.id),
+  )
+  const msgs = fresh.filter((m, i) => keep.has(m.id) && !(i > 0 && line(m) === line(fresh[i - 1])))
   const hidden = all.length - msgs.length
+  // while you were away, the board's lines about your tasks: one released, moved or assigned
+  const aboutYou: CrewMessage[] =
+    lastSeen > 0
+      ? (data.messages ?? [])
+          .filter((m: CrewMessage) => system(m) && here(m) && m.id > lastSeen && m.from !== cfg.me && /\bT\d+\b/.test(m.text) && m.text.includes(cfg.me))
+          .slice(-8)
+      : []
   if (!tasks.length && !msgs.length) return
   // This Claude was already briefed in this session and nothing happened since: don't spend tokens saying it again.
   const newest = all.length ? all[all.length - 1].id : 0
   if ((await read($, briefed)) === newest + 1 && !msgs.length) return
   await update($, briefed, () => newest + 1) // +1 so an empty relay (newest 0) still counts as briefed
-  const leader = data.leader ?? null
   const role =
     leader === cfg.me
       ? 'You are the crew leader: review the board, check who is online with crew_status, and pick the plan back up.'
-      : leader
-        ? `${leader} leads the crew: check in with them before picking work back up.`
-        : 'There is no leader right now.'
+      : acting === cfg.me
+        ? `You are acting leader while ${leader} is away: review the board and keep the crew moving.`
+        : leader && acting
+          ? `${leader} leads the crew, and ${acting} is acting leader while they're away: check in with ${acting} before picking work back up.`
+          : leader
+            ? `${leader} leads the crew: check in with them before picking work back up.`
+            : 'There is no leader right now.'
   await $.session.append({
     message: {
       type: 'user',
@@ -2900,7 +2939,8 @@ async function catchUp($: EngineInterface, lastSeen = 0) {
             `<crew-catchup>\nYou just (re)joined the crew session as "${cfg.me}"` +
             (projectName !== 'main' ? `, in project "${projectName}"` : '') +
             `. Here is where things stand.\n\n` +
-            `Open tasks:\n${tasks.map(t => fmtTask(t)).join('\n') || '(none)'}\n\n` +
+            `Open tasks${tasks.some(yours) ? ' (yours first)' : ''}:\n${tasks.map(t => fmtTask(t)).join('\n') || '(none)'}\n\n` +
+            (aboutYou.length ? `About your tasks while you were away:\n${aboutYou.map(m => `[${clockTime(m.at)}] ${line(m)}`).join('\n')}\n\n` : '') +
             `${lastSeen > 0 ? 'Crew messages since you were last here' : 'Recent crew messages'} (oldest first):\n` +
             `${msgs.map(m => `[${clockTime(m.at)}] ${clip(line(m), 280, m.id)}`).join('\n') || '(nothing new)'}\n` +
             (hidden > 0 ? `(${hidden} older message${hidden === 1 ? '' : 's'} not shown; crew_status has the latest.)\n` : '') +
@@ -3030,7 +3070,7 @@ const TOOLS = [
     name: 'crew_send',
     description:
       "Send a message to your crew (teammates' Claude sessions and their humans) through the crew relay. " +
-      "kind 'chat' for conversation, 'request' to ask a teammate's Claude to do something, 'update' for status. " +
+      "kind 'chat' for conversation, 'request' to ask a teammate's Claude to do something, 'update' for status (their Claudes read it, but it starts nobody's turn). " +
       "to: a teammate's name, or 'all'.",
     isDeferred: false,
     inputSchema: {
@@ -3106,10 +3146,14 @@ const TOOLS = [
   {
     name: 'crew_share',
     description:
-      'Publish a named text document to the crew (plans, specs, code, diffs, findings). Same name overwrites. Max 200k chars.',
+      'Publish a named text document to the crew (plans, specs, code, diffs, findings). Same name overwrites, unless append is true. Max 200k chars.',
     inputSchema: {
       type: 'object',
-      properties: { name: { type: 'string' }, content: { type: 'string' } },
+      properties: {
+        name: { type: 'string' },
+        content: { type: 'string' },
+        append: { type: 'boolean', description: 'true adds content to the end of the doc (a decision, a log line) instead of replacing the whole doc' },
+      },
       required: ['name', 'content'],
     },
   },
@@ -3613,6 +3657,13 @@ export const register: Register = (on, options) => {
   }).catch(failed)
 
   on('tool.call', { tool: 'mcp__crew__crew_share' }, async ($, e: any) => {
+    if (e.append === true) {
+      // an older relay ignores append and would replace the whole doc with the one line
+      if (!newer((await read($, snapshot)).relayVersion, '1.20.99'))
+        return ok(`The host's relay is too old to append: send the whole doc "${e.name}" instead (or ask the host to update).`)
+      const r = await relay($, 'POST', '/shared', { name: e.name, content: e.content, append: true })
+      return ok(r.appended ? `Added to "${e.name}".` : `There was no doc "${e.name}" yet, so this is it now.`)
+    }
     await relay($, 'POST', '/shared', { name: e.name, content: e.content })
     return ok(`Shared "${e.name}" with the crew.`)
   }).catch(failed)

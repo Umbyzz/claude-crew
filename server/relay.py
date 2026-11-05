@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.20.2"
+VERSION = "1.21.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -1158,6 +1158,8 @@ class Handler(BaseHTTPRequestHandler):
                 extra = {"notify": True} if b.get("notify") else {}  # "for your human": shown to them, not just their Claude
                 if b.get("human"):
                     extra["human"] = True
+                if kind == "update":
+                    extra["said"] = True  # written by someone, unlike the relay's own task, doc and leader lines
                 if kind == "invite":
                     to = str(b.get("to") or "all")[:40]
                     if members_of(self.project) is not None:
@@ -1206,14 +1208,19 @@ class Handler(BaseHTTPRequestHandler):
                 content = str(b.get("content", ""))
                 if not name:
                     return self.reply(400, {"error": "missing name"})
+                pr = self.project
+                old = state["shared"].get(doc_key(pr, name)) if b.get("append") else None
+                added = len(content)
+                if old:  # a decision or a log line, without sending the whole doc again
+                    content = old["content"].rstrip("\n") + "\n" + content
                 if len(content) > MAX_SHARED:
                     return self.reply(413, {"error": f"content over {MAX_SHARED} chars"})
-                pr = self.project
                 state["shared"][doc_key(pr, name)] = {"name": name, "by": self.name, "project": pr,
                                                       "at": int(time.time()), "content": content}
-                post_message(self.name, "all", f"shared doc '{name}' ({len(content)} chars)", "update", pr)
+                post_message(self.name, "all", f"shared doc '{name}' (+{added} chars, {len(content)} in all)" if old
+                             else f"shared doc '{name}' ({len(content)} chars)", "update", pr)
                 save()
-                return self.reply(200, {"ok": True, "name": name})
+                return self.reply(200, {"ok": True, "name": name, "appended": bool(old)})
         self.reply(404, {"error": "not found"})
 
     def assign(self, t, assignee):
@@ -1252,6 +1259,7 @@ class Handler(BaseHTTPRequestHandler):
         t = next((t for t in tasks if t["id"] == wanted and task_in(t, pr)), None)
         if t is None:
             return self.reply(404, {"error": f"no task T{wanted} in project {pr}"})
+        taken = ""
         if action == "claim":
             stale = t.get("owner") and away_for(t["owner"], time.time()) >= STALE_MINUTES * 60
             if t["status"] == "claimed" and t["owner"] not in (None, self.name) and not stale:
@@ -1278,6 +1286,12 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "assign":
             if b.get("note"):
                 t["note"] = str(b["note"])[:5000]
+            old = t.get("owner") if t["status"] == "claimed" else None
+            if old and old != assignee:  # the claim goes with the task, or the board keeps showing the old owner
+                t.update(status="open", owner=None)
+                taken = f" (taken over from {old})"
+                post_message(self.name, old, f"T{t['id']} is now assigned to {assignee or 'nobody'}, so it's off "
+                                             f"your list: {t['title']}", "chat", pr)
             self.assign(t, assignee)
         elif action == "remove":
             tasks.remove(t)
@@ -1294,7 +1308,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {"error": "action must be add|claim|done|release|assign|edit|remove|block|unblock|check"})
         if b.get("note") and action not in ("assign", "block"):
             t["note"] = str(b["note"])[:5000]
-        who = f" to {assignee}" if action == "assign" else ""
+        who = f" to {assignee}{taken}" if action == "assign" else ""
         why = f" ({t['blocked']})" if action == "block" else ""
         post_message(self.name, "all", f"{action} task T{t['id']}{who}: {t['title']}{why}", "update", pr)
         if action == "done":
@@ -1316,9 +1330,12 @@ class Handler(BaseHTTPRequestHandler):
             if task_view(d, now).get("waiting"):
                 continue  # still waiting for something else
             who = d.get("owner") or d.get("assignee")
+            if who == self.name:
+                continue  # they just finished what it waited for, so they know
+            started = d["status"] == "claimed"  # already on it: a heads-up, not a request that starts it again
             post_message(self.name, who or "all",
                          f"T{d['id']} can start: T{t['id']} is done, and so is everything it waited for. ({d['title']})",
-                         "request" if who else "update", pr)
+                         ("chat" if started else "request") if who else "update", pr)
 
 
 class RelayServer(ThreadingHTTPServer):

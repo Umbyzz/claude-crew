@@ -73,7 +73,7 @@ Every crew message a Claude receives becomes part of its conversation, so crew k
 | `crew_status` | who's online and busy, their models, usage and tools, the leader, the open tasks, shared docs and folders, and recent messages. Short by default: done tasks are counted, long messages cut. `all: true` lists every done task with its note; `id` shows one message in full |
 | `crew_task` | `add` / `assign` / `claim` / `done` / `release` / `edit` / `remove` tasks (by number: `3` or `T3`) |
 | `crew_lead` | change the leader (only when you ask it to) |
-| `crew_share` / `crew_read_shared` | publish and read shared docs (including the `crew-rules` house rules) |
+| `crew_share` / `crew_read_shared` | publish and read shared docs (including the `crew-rules` house rules); `append` adds a line to a doc instead of sending it whole |
 | `crew_share_folder` | share a folder of the project (`share`), fetch a teammate's (`get`), or stop (`stop`); copied by the plugin, no tokens |
 | `crew_send_image` | send an image file (png, jpg, gif, webp or bmp, up to 4 MB) to a teammate or everyone |
 | `crew_wait` | wait (up to 90 s) for a quick reply without polling. For slow replies Claude ends its turn and the reply wakes it |

@@ -504,5 +504,42 @@ class RelayTest(unittest.TestCase):
         self.assertNotIn(got["id"], json.dumps(log))
 
 
+    def test_written_updates_are_marked_and_the_relays_own_lines_are_not(self):
+        self.r.call("POST", "/send", "alice", body={"text": "T11 split approved", "kind": "update"})
+        self.r.call("POST", "/tasks", "alice", body={"action": "add", "title": "Raft"})
+        said = {m["text"]: m.get("said", False) for m in self.poll("bob")[1]["messages"] if m["kind"] == "update"}
+        self.assertTrue(said["T11 split approved"])
+        self.assertFalse(said["added task T1: Raft"])
+
+    def test_assigning_a_claimed_task_moves_the_claim_and_tells_the_old_owner(self):
+        tid = self.r.call("POST", "/tasks", "alice", body={"action": "add", "title": "Polish"})[1]["id"]
+        self.r.call("POST", "/tasks", "bob", body={"action": "claim", "id": tid})
+        code, t = self.r.call("POST", "/tasks", "alice", body={"action": "assign", "id": tid, "assignee": "carol"})
+        self.assertEqual((code, t["status"], t["owner"], t["assignee"]), (200, "open", None, "carol"))
+        self.assertTrue(any(m["to"] == "bob" and "off your list" in m["text"] for m in self.poll("bob")[1]["messages"]))
+        self.assertTrue(any(m["to"] == "carol" and m["kind"] == "request" for m in self.poll("carol")[1]["messages"]))
+
+    def test_can_start_is_never_sent_to_yourself_and_is_a_heads_up_for_someone_already_on_it(self):
+        def add(title, **kw):
+            return self.r.call("POST", "/tasks", "alice", body={"action": "add", "title": title, **kw})[1]["id"]
+        base = add("Skeleton")
+        add("Mine", after=f"T{base}", assignee="alice")
+        early = add("Early", after=f"T{base}", assignee="bob")
+        add("Later", after=f"T{base}", assignee="carol")
+        self.r.call("POST", "/tasks", "bob", body={"action": "claim", "id": early})
+        self.r.call("POST", "/tasks", "alice", body={"action": "done", "id": base})
+        can = {(m["to"], m["kind"]) for m in self.poll("alice")[1]["messages"] if "can start" in m["text"]}
+        self.assertEqual(can, {("bob", "chat"), ("carol", "request")})
+
+    def test_a_shared_doc_can_be_appended_to(self):
+        self.r.call("POST", "/shared", "alice", body={"name": "plan", "content": "# Plan\n- one\n"})
+        code, got = self.r.call("POST", "/shared", "bob", body={"name": "plan", "content": "- two", "append": True})
+        self.assertTrue(got["appended"])
+        self.assertEqual(self.r.call("GET", "/shared?name=plan", "carol")[1]["content"], "# Plan\n- one\n- two")
+        code, got = self.r.call("POST", "/shared", "bob", body={"name": "notes", "content": "- first", "append": True})
+        self.assertFalse(got["appended"])  # nothing to add to yet: it starts the doc
+        self.assertEqual(self.r.call("GET", "/shared?name=notes", "carol")[1]["content"], "- first")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

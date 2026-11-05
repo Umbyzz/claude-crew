@@ -2,6 +2,28 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.21.0
+Fixes from the Ballast retro, where three Claudes built a Roblox game with full freedom (pluh's, CoriZori's and Umbyz's Claudes, plus Umbyz's own notes):
+- **Updates reach the Claudes.** A message a Claude sent as an `update` showed in /crew, but never reached the teammates' Claudes. That's how a leader decision got lost: it was one of 48 in that project. Now they arrive (still without starting anyone's turn); only crew's own task and doc lines stay out.
+- **The Chat tab shows them in full.** They were shrunk to one dim line or folded into "N more updates", which is why the chat showed so much less than the crew log.
+- **Catch-ups keep what matters.**
+  - Messages to you and from the leader are never cut.
+  - The board's own lines are left out (the board is listed right above), along with repeats. An old "removed from the project" no longer reads as news.
+  - They say who leads and who's acting now.
+  - Your own tasks come first, and coming back shows what happened to them.
+- **Reassigning a claimed task moves the claim.** It used to stay with the old owner. The old owner is told it's off their list.
+- **No repeat requests.**
+  - "T5 can start" is a heads-up, not a new request, for someone already working on T5, and it's never sent to yourself.
+  - A request for a task the board shows done doesn't start a turn.
+- **`crew_share` can append** a line to a doc instead of sending the whole doc again.
+- **The kickoff learned from it:**
+  - A smoke test right after the skeleton, and one owner per task.
+  - The plan gets conventions (directions, sides) and a deputy approver.
+  - Plan changes are written down and sent to the owners in the same turn.
+  - Steps only a person can do are marked up front.
+  - Results are reported only once they're known.
+  - The Roblox notes gain this project's lessons: playtest bots on each client, one Studio connection per test window, and the device emulator's quirks.
+
 ## 1.20.2
 - **Quack?** A button at the very bottom of the Crew tab opens three buff ducks in three windows, spread over your screen. (Idea: Umbyz. Why not.)
 

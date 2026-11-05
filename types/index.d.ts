@@ -16,6 +16,8 @@ export type CrewMessage = {
   caption?: string
   notify?: boolean // flagged "for your human" by the sender
   human?: boolean // typed by a person in /crew rather than sent by their Claude
+  said?: boolean // kind 'update': written by a person or a Claude, not one of the relay's own task, doc and leader lines
+  leaderChange?: boolean // kind 'update': the relay saying who leads or acts as leader now
   handover?: string // an acting leader handing back: the true leader who's back
   project?: string // which crew project it belongs to (none: crew-wide, like joins and leaves)
 }
