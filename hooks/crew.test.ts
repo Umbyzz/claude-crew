@@ -1460,6 +1460,32 @@ test('crew_share append adds to a doc, and refuses on a relay too old to know ap
   expect(JSON.parse(seen.find(s => s.url.includes('/shared'))?.init.body).append).toBe(true)
 })
 
+test('crew_stage asks the relay to set the project backdrop', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const sent: any[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.endsWith('/stage')) sent.push(JSON.parse(e.init.body))
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(e.url.endsWith('/stage') ? { stage: 'ocean' } : POLL) } }
+  })
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_stage', theme: 'ocean' } as any)
+  expect(sent).toEqual([{ theme: 'ocean' }])
+  expect(String(r.result)).toContain('"ocean"')
+})
+
+test('a task released because its owner dropped out reaches the Claudes, and the leader re-plans it', { options: OPTIONS }, async ($, on) => {
+  const got = deliverySession(on, {
+    cursor: 2,
+    messages: [{ id: 2, from: 'bob', to: 'all', kind: 'update', notice: true, text: "released task T3: bob has been offline for 30+ minutes, so it's open again: Write login tests", at: 0, project: 'main' }],
+  })
+  on('turn.complete', async () => ({ text: '' }) as any)
+  await $.turn.complete({ reason: 'answer', text: 'done' } as any) // idle
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle(100)
+  expect(got.rows().some(r => r.includes('released task T3'))).toBe(true)
+  expect(got.submitted.some(t => t.includes('Re-plan it'))).toBe(true) // alice leads
+})
+
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
   const seen: { url: string; init: any }[] = []
   mock.store(on)

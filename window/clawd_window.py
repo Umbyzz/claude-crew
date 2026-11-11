@@ -24,9 +24,40 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
+import traceback
 import urllib.request
 
-FPS = 15
+try:
+    import stages  # the backdrops, window/stages.py; without that file the stage is the plain one
+except ImportError:
+    stages = None
+
+FPS = 15  # how often the World takes a step: every speed, hop and frame count in it is tuned to this
+DRAW_FPS = 30  # how often the stage is drawn while something is on the move, gliding between the World's steps
+# What glides between steps: where a Clawd is, how it's leaning, how far through a stride, how high each arm
+# is, and the eased values World.ease() keeps (its bob, squat, walking lean, sitting-down drop and squash).
+GLIDE = ("x", "jump", "bob", "crouch", "sway", "lean", "gaze", "wobble", "stride", "arm_l", "arm_r",
+         "bob_at", "dip_at", "drive", "ease_y", "sq_at")
+SITS = (0, 2, 3, 4)  # how far below standing height each way of sitting (.sit) puts the underside of the body
+
+
+def next_blink(name, now):
+    """When a Clawd blinks next: once in every four-second stretch of the shared clock, at a moment roll()
+    picks, so it blinks at the same instant in every window, however long each has been open."""
+    n = int(now / 4)
+    at = n * 4 + roll(name, "blink", n) * 3.5
+    return at if at > now else (n + 1) * 4 + roll(name, "blink", n + 1) * 3.5
+
+
+def closer(v, target, k=0.6, snap=0.05):
+    """One step of easing out: v moves the fraction k of the way to target, and lands on it once it's close."""
+    return target if abs(target - v) < snap else v + (target - v) * k
+# ...and which of those are worth the extra drawings, and how much they must change in one step to count:
+# getting about, jumping and waving -- not breathing, a slow lean, or the little sway of someone thinking.
+# (The window runs all day, and a drawing costs the same however little has changed.)
+BRISK = {"x": 0.1, "jump": 0.02, "crouch": 0.02, "wobble": 0.05, "stride": 0.02, "arm_l": 0.02, "arm_r": 0.02,
+         "bob_at": 0.2, "dip_at": 0.05, "ease_y": 0.05, "sq_at": 0.05}
 CLOCK_OFFSET = 0.0  # the relay's clock minus ours: every window animates on the same shared clock
 
 
@@ -133,31 +164,38 @@ GYM_AFTER = 50.0  # seconds of solid "working" before a Clawd goes and lifts som
 # ------------------------------------------------------------ frame sequences
 # Pixel shapes can't be tweened into each other, so these moments are drawn frame by frame.
 
-FLAG_W, FLAG_H = 6, 4  # the cloth that hangs off the pole, in cells
+FLAG_W, FLAG_H = 6, 8  # the cloth: six columns of checks, each check two fine cells square, four checks tall
+# Twelve drawings of the flag, each (side, reach, droop): which side of the pole the cloth flies on (1 is out,
+# away from the body; -1 is back over the head), how many of its columns show, and how far its far end hangs.
+# The first three are the flag rising from limp; then the wave swings it back over the head and out again.
+FLAG_SHAPES = [(1, 2, 5), (1, 4, 3), (1, 6, 1), (1, 6, 0), (1, 3, 1), (-1, 3, 1),
+               (-1, 6, 0), (-1, 6, 0), (-1, 4, 1), (1, 2, 2), (1, 5, 1), (1, 6, 0)]
 
 
 def _flag_frames():
-    """Twelve drawings of the flag: three of it rising from limp to catching the air, then nine of the wave.
+    """Each drawing as a list of (x, top, i): the cloth's i-th column, its left edge x fine cells from the pole
+    (negative is back over the head) and its top that far below the pole's. A ripple runs out along the cloth.
     The rise only plays once -- after that the loop picks up at frame four, with the flag already up."""
     frames = []
-    for i in range(3):  # the cloth lifts off the pole and fills out
-        reach, sag = (i + 1) * FLAG_W // 3, 2 - i
-        frames.append([(sag + r, col, col) for col in range(reach) for r in range(FLAG_H)])
-    for i in range(9):  # a ripple running out along the cloth, away from the pole
-        phase = i / 9.0 * 2 * math.pi
-        frames.append([(1 + int(round(math.sin(phase - col * 0.9))) + r, col, col)
-                       for col in range(FLAG_W) for r in range(FLAG_H)])
+    for f, (side, reach, droop) in enumerate(FLAG_SHAPES):
+        cols = []
+        for i in range(reach):
+            ripple = math.sin(f * 1.3 - i * 1.1) * min(1.0, i / 2.0)
+            cols.append((1 + 2 * i if side > 0 else -2 - 2 * i, int(round(droop * i / max(1, reach - 1) + ripple)), i))
+        frames.append(cols)
     return frames
 
 
 FLAG_FRAMES = _flag_frames()
 FLAG_SEQ = Seq(range(12), [0.1] * 12, loop_from=3)
-# The body works against the flag: as the cloth swings out, the hand pulls back and the upper body leans away.
-FLAG_HAND_X = [0, -0.6, -1.1, -1.3, -0.8, -0.2, 0, 0, -0.4, -0.9, -1.5, -1.7]
+# The body works against the flag: as the cloth swings out, the hand pulls back (in fine cells) and the upper
+# body leans away (in World cells). These are the real mascot's numbers, at our scale.
+FLAG_HAND_X = [0, -1, -2, -3, -2, 0, 0, 0, -1, -2, -3, -3]
 FLAG_SWAY_X = [0, 0, -0.5, -0.5, 0, 0.4, 0.4, 0.4, 0, 0, -0.5, -0.5]
 FLAG_HAND_Y = [0, 0, 0.4, 0.4, 0, 0, 0, 0, 0, 0, 0.4, 0.4]
 
-# Eight frames of the stomp: tilt one way, reach up, tilt the other, reach up again -- (tilt, left arm, right arm, dip)
+# Eight frames of the stomp: tilt one way, reach up, tilt the other, reach up again -- (tilt, left arm, right arm, dip).
+# Tilted, the legs on the high side come off the floor: that's the stomp.
 STOMP_FRAMES = [
     (-0.6, 0, 1, 0.6), (-0.3, 0, 3, 0.0), (0.0, 0, 2, 0.4), (0.5, 1, 0, 0.8),
     (0.6, 1, 0, 0.5), (0.3, 2, 0, 0.2), (0.0, 3, 0, 0.0), (-0.4, 2, 0, 0.4),
@@ -165,28 +203,22 @@ STOMP_FRAMES = [
 STOMP_SEQ = Seq(range(8), [0.125] * 8)
 STOMP_BURSTS = {1: 1, 6: -1}  # a burst leaves the hand that's at the top: frame -> which side it flies from
 
-# The gym: the curl, drawn in twelve positions. Frames 4-9 run twice, so the second rep comes for free.
-GYM_LIFT = [0, 0.4, 1.2, 2.2, 3.2, 4.2, 5.0, 5.4, 5.0, 4.0, 2.0, 0.4]
-GYM_ORDER = list(range(10)) + list(range(4, 10)) + [10, 11]
-
-
-def _gym_holds():
-    """Not every frame plays at the same speed: the dumbbell pauses at the top of the curl, the mascot holds
-    between reps, and the last frame sits a good while before the whole thing goes again."""
-    holds = []
-    for i, frame in enumerate(GYM_ORDER):
-        if i == len(GYM_ORDER) - 1:
-            holds.append(1.5)
-        elif frame == 7:
-            holds.append(0.27)  # the effort at the top of the lift
-        elif frame == 9:
-            holds.append(0.4)  # the breath between reps
-        else:
-            holds.append(0.085)
-    return holds
-
-
-GYM_SEQ = Seq(GYM_ORDER, _gym_holds())
+# The gym, drawn in twenty positions, like the real one's: a sweatband goes on, two dumbbells come up off the
+# floor, there's a curl on each side, and it all goes back. Each is (dip, tilt, left hand, right hand, band,
+# held): how far the body squats, which way it leans, how high each hand is (0 to 3), where the band is
+# (0 nowhere, 1 in the left hand, 2 stretched overhead, 3 on) and whether the dumbbells are in its hands.
+GYM_FRAMES = [
+    (0, 0, 0, 0, 0, 0), (0, 0, 1, 0, 1, 0), (0, 0, 3, 3, 2, 0), (0, 0, 2, 2, 3, 0), (0, 0, 0, 0, 3, 0),
+    (1.5, 0, 0, 0, 3, 0), (2.2, 0, 0, 0, 3, 1), (0.8, 0, 0, 0, 3, 1), (0, 0, 0, 0, 3, 1),
+    (0, -0.3, 0, 2, 3, 1), (0, -0.5, 0, 3, 3, 1), (0, -0.3, 0, 2, 3, 1),
+    (0, 0.3, 2, 0, 3, 1), (0, 0.5, 3, 0, 3, 1), (0, 0.3, 2, 0, 3, 1),
+    (1.5, 0, 0, 0, 3, 1), (2.2, 0, 0, 0, 3, 0), (0, 0, 0, 0, 3, 0), (0, 0, 3, 3, 2, 0), (0, 0, 0, 0, 0, 0),
+]
+GYM_ORDER = list(range(15)) + list(range(9, 15)) + list(range(15, 20))  # the two curls run twice: a second rep
+# Not every frame plays at the same speed: a breath before the squat, the effort of the pick-up, a pause at the
+# top of each curl, and the last frame sits a good while before the whole thing goes again.
+GYM_HOLDS = {4: 0.3, 6: 0.27, 10: 0.4, 13: 0.4}
+GYM_SEQ = Seq(GYM_ORDER, [GYM_HOLDS.get(frame, 0.13) for frame in GYM_ORDER[:-1]] + [1.5])
 
 
 ONE_WINDOW_PORT = 47817  # a localhost port the open window holds, so a second launch can find it
@@ -267,7 +299,95 @@ CONFETTI = ["#D97757", "#E3B23C", "#6A9BCC", "#788C5D", "#C46686", "#f0eee6"]
 CODE = list("{}<>/;=()[]01#$")
 PREFS = os.path.join(os.path.expanduser("~"), ".claude", "crew-clawds.json")
 SETTINGS = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
-SIZES = {"small": 4, "medium": 5, "large": 7}
+SIZES = {"small": 4, "medium": 6, "large": 8}  # pixels to a World cell: even, so a fine cell is whole pixels
+# The art is drawn on a fine grid, SUB fine cells to one World cell. The World (positions, speeds, jumps) still
+# counts in World cells: 110 x 47 of them, which is 220 x 94 fine cells, with the stage line at fine row 66.
+SUB = 2
+STAND = 3  # how long a standing Clawd's legs are, in World cells (the real mascot's: a bit under half its body)
+SHADOW = "#171716"  # a Clawd's shadow on the stage
+TONES = {}
+
+
+def tones(color):
+    """A body colour's two neighbours: lit, for an edge that faces up, and shaded, for an underside."""
+    if color not in TONES:
+        rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+        TONES[color] = ("#%02x%02x%02x" % tuple(round(v + (255 - v) * 0.2) for v in rgb),
+                        "#%02x%02x%02x" % tuple(round(v * 0.84) for v in rgb))
+    return TONES[color]
+def sprite(art, pal, width=None):
+    """Text art, worked out once into as few rectangles as it takes: each letter is a colour in pal, anything
+    else is empty. A run of one colour along a row is one rectangle, and equal runs in neighbouring rows stack
+    into one. Returns (width, [(colour, col, row, last col, last row)]), for Painter.sprite()."""
+    runs = {}
+    for r, line in enumerate(art):
+        c = 0
+        while c < len(line):
+            e = c
+            while e + 1 < len(line) and line[e + 1] == line[c]:
+                e += 1
+            if line[c] in pal:
+                runs.setdefault((pal[line[c]], c, e), []).append(r)
+            c = e + 1
+    parts = []
+    for (color, a, b), rows in runs.items():
+        start = prev = rows[0]
+        for r in rows[1:] + [None]:
+            if r is None or r != prev + 1:
+                parts.append((color, a, start, b, prev))
+                start = r
+            prev = r
+    return width or max(len(line) for line in art), parts
+
+
+# The car, facing right: 38 fine cells long. Its wheels are drawn on top, turning.
+CAR = sprite([
+    "." * 10 + "r" * 18,
+    "." * 9 + "R" * 20,
+    "." * 8 + "RR" + "w" * 7 + "RR" + "w" * 9 + "RR",
+    "." * 8 + "RR" + "w" * 7 + "RR" + "w" * 9 + "RR",
+    "." * 7 + "RRR" + "w" * 7 + "RR" + "w" * 9 + "RRR",
+    "." * 7 + "RRR" + "w" * 7 + "RR" + "w" * 9 + "RRR",
+    "." + "r" * 36,
+    "R" * 38,
+    "R" * 16 + "kk" + "R" * 18 + "yy",
+    "t" + "R" * 35 + "yy",
+    "D" * 38,
+], {"r": "#d9534a", "R": "#c0392b", "D": "#8f2b20", "k": "#8f2b20", "w": "#88b0d8", "y": "#E3B23C", "t": "#ff8a80"})
+_TYRE = {"t": "#2b2b2e", "h": "#8a8a86", "s": "#c9c7be"}
+WHEELS = (sprite([".tttt.", "tttttt", "tthstt", "ttshtt", "tttttt", ".tttt."], _TYRE),
+          sprite([".tttt.", "tttttt", "ttshtt", "tthstt", "tttttt", ".tttt."], _TYRE))
+
+# The seagull, facing right, wings up and wings down.
+_GULL = {"W": "#f0eee6", "g": "#c9c6bb", "e": EYE, "o": ORANGE}
+BIRD_UP = sprite([
+    "......gg",
+    ".....gggg",
+    ".....ggggg",
+    "......ggggg...WWWW",
+    ".......ggggg.WWWWeW",
+    "..WWWWWWgggWWWWWWWWoo",
+    "gWWWWWWWWWWWWWWWWWW",
+    ".gWWWWWWWWWWWWWWWW",
+    "...WWWWWWWWWWWWW",
+    ".....WWWWWWWWW",
+], _GULL, 22)
+BIRD_DOWN = sprite([
+    "",
+    "",
+    "",
+    "..............WWWW",
+    ".............WWWWeW",
+    "..WWWWWWWWWWWWWWWWWoo",
+    "gWWWWWWgggggWWWWWWW",
+    ".gWWWWWgggggWWWWWW",
+    "...WWWWWgggggWWW",
+    ".....WWWWggggW",
+    ".........gggg",
+    "..........gg",
+], _GULL, 22)
+
+
 STATUS_WORDS = {
     "idle": "", "thinking": "thinking…", "typing": "typing", "working": "tinkering",
     "chatting": "chatting", "done": "done!", "cheer": "new prompt!", "out": "out of tokens",
@@ -475,11 +595,11 @@ class Clawd:
         self.subagents = 0
         self.chat_to = None
         self.behavior = "vibe"
-        self.until = clock() + random.uniform(1, 4)
+        self.until = 0.0  # free to pick an idle move at once: on the shared beat, the same one as in every other window
         self.target = x
         self.partner = None
         self.bubble = None  # (text, until)
-        self.blink_at = clock() + random.uniform(2, 6)
+        self.blink_at = next_blink(name, clock())
         self.look = 0  # where it wants to look; .gaze is where the eyes actually are
         # motion with weight: the eyes lead a look-around, the body leans after them, a jump gathers
         # itself before it goes, and the hands overshoot when it lands
@@ -495,6 +615,14 @@ class Clawd:
         self.flag = self.stomp = self.gym = None
         self.burst_key = None
         self.arm = [0, 0]  # how far each arm is raised (cells)
+        # motion between the World's steps: the arms ease towards where .arm wants them, a walk's legs follow
+        # the stride, and .was is where everything in GLIDE stood before the last step
+        self.arm_l = self.arm_r = 0.0
+        self.bob_at = self.dip_at = self.drive = self.ease_y = self.sq_at = 0.0  # see World.ease()
+        self.rest = 0  # how far its pose has sat it down (SITS), so a change of pose can be eased
+        self.eased = False  # True once the World is easing this Clawd (one drawn on its own uses .arm and the rest)
+        self.striding = False
+        self.was = self.trip_was = None
         self.swing = "up"  # the blacksmith's hammer: "up" (wound up) or "down" (on the gear)
         self.bonking = False  # /bonk: the same hammer, with no gear, coming down on a head
         self.heading_to, self.heading_at = 0.0, 0.0
@@ -641,6 +769,11 @@ class World:
             c.chat_to = p.get("chatTo")
             if prev != c.activity and not self.first:
                 self.on_change(c, prev)
+            elif self.first and c.activity in ("thinking", "typing", "working", "done", "cheer", "chatting"):
+                # A window opened in the middle of something: no shout and no entrance, but the same rolls every
+                # other window made when it began, so this one shows the same version of it (over the top or not).
+                c.dramatic = roll(c.name, c.activity, c.since) < DRAMA
+                c.think_pose = ("thonk", "tea")[int(roll(c.name, "pose", c.since) * 2)]
             joined = p.get("joinedAt") or 0
             if (not self.first and joined and joined > self.seen_join.get(p["name"], 0) + 1
                     and (snap or {}).get("now", clock()) - joined < 15 and clock() - self.started > 4):
@@ -679,12 +812,17 @@ class World:
     def on_change(self, c, prev):
         was_dramatic = c.dramatic
         c.dramatic = roll(c.name, c.activity, c.since) < DRAMA  # same roll in every window
+        eureka = None
         if prev == "thinking" and was_dramatic and c.activity != "out":
             c.say(random.choice(["EUREKA!!!", "I'VE GOT IT!!!", "GENIUS. PURE GENIUS."]), 2.5)
+            eureka = c.bubble
             c.hop(4)
             self.burst(c.x, self.ground - 18, "spark", 16)
         if c.dramatic:
-            return self.on_change_dramatic(c, prev)
+            self.on_change_dramatic(c, prev)
+            if eureka:
+                c.bubble = eureka  # whatever the next thing opens with, it doesn't talk over the shout
+            return
         if c.activity == "out":
             for o in self.others(c):
                 o.worried = True
@@ -1226,7 +1364,8 @@ class World:
         seat = m["seats"][c.name]
         if c.walk_to(seat, 0.55):
             c.facing, c.sit, c.look, c.bob = -1, 3, -1, 3  # up on the chair, legs dangling
-            c.mood = "asleep" if (int(now / 3) + hash(c.name)) % 7 == 0 else "idle"  # someone always dozes off
+            # someone always dozes off -- the same someone in every window, so roll(), not hash()
+            c.mood = "asleep" if (int(now / 3) + int(roll(c.name, "doze") * 7)) % 7 == 0 else "idle"
             if t > 4 and (not c.bubble or c.bubble[1] < now) and random.random() < 0.008:
                 c.say(random.choice(["*takes notes*", "makes sense", "could this have been an email?",
                                      "wait, what's synergy", "*nods*", "love that"]), 2.2)
@@ -1278,11 +1417,14 @@ class World:
         for c in clawds:
             c.worried = anyone_out and c.activity != "out"
             if now > c.blink_at:
-                c.blink_at = now + random.uniform(2.5, 6)
+                c.blink_at = next_blink(c.name, now)
+            stride = c.stride
             self.act(c, now, clawds)
             self.weight(c, now)
             if not c.trip:  # trips may leave the stage on purpose
                 c.x = max(8, min(self.cols - 8, c.x))
+            c.striding = c.stride != stride
+            self.ease(c)
         self.personal_space([c for c in clawds if not (c.trip or c.hidden)])
         self.plan_desk(clawds)
         for c in clawds:
@@ -1297,6 +1439,89 @@ class World:
                 p["vy"] = 0.5  # tears fall, everything else floats up
             p["life"] -= dt
         self.particles = [p for p in self.particles if p["life"] > 0][-260:]
+
+    def ease(self, c):
+        """Nothing snaps. What a Clawd is told to do this step (arms up, sit down, squat, bob) is where it's
+        heading; these are where it has got to, and they're what's drawn."""
+        c.eased = True
+        c.arm_l, c.arm_r = closer(c.arm_l, c.arm[0], 0.8), closer(c.arm_r, c.arm[1], 0.8)
+        c.bob_at = closer(c.bob_at, c.bob, 0.6)
+        dip = STOMP_FRAMES[c.stomp][3] if c.stomp is not None else GYM_FRAMES[c.gym][0] if c.gym is not None else 0
+        c.dip_at = closer(c.dip_at, dip, 0.7)
+        # walking off, it leans into the walk; stopping, it comes back upright
+        c.drive = closer(c.drive, 0.3 * c.facing if c.striding and not c.trip else 0.0, 0.4, 0.02)
+        # sitting down and getting up: the body starts from where it was and settles into the new pose, with
+        # a little squash as it lands on its seat
+        rest = SITS[c.sit] if c.sit in (0, 1, 2, 3) else 0
+        if rest != c.rest:
+            c.ease_y, c.rest = c.ease_y + rest - c.rest, rest
+        dropping = c.ease_y > 0.4
+        c.ease_y = closer(c.ease_y, 0.0, 0.55)
+        if dropping and c.ease_y <= 0.4 and not c.arc and not c.trip:
+            c.squash = max(c.squash, 2)  # touched down
+        # squash and stretch follow what the body's doing: flat on a landing and in a crouch, long when it's
+        # moving fast, up or down. Going flat is sudden (that's the impact); everything else eases.
+        speed = abs(c.vy)
+        want = ((1.0 if c.squash >= 2 else 0.5 if c.squash else 0.0) + 0.5 * c.crouch
+                - (min(1.0, speed * 2) if speed > 0.1 else 0.0))
+        c.sq_at = want if want > c.sq_at and want >= 0.5 else closer(c.sq_at, want, 0.6)
+
+    # -- gliding: the stage is drawn more often than the World steps, part-way from one step to the next
+
+    def everyone(self):
+        for c in list(self.clawds.values()):
+            yield c
+            yield from c.minis
+
+    def remember(self):
+        """Just before a step: where everything stands, so the frames drawn until the next step can glide from
+        here to wherever this step leaves it."""
+        for c in self.everyone():
+            c.was = [getattr(c, f) for f in GLIDE]
+            c.trip_was = {k: c.trip[k] for k in ("car", "bird", "alpha") if k in c.trip} if c.trip else None
+        for p in self.particles:
+            p["was"] = (p["x"], p["y"])
+
+    def glide(self, k):
+        """Puts everything k of the way (0 to 1) from where the last step found it to where it left it, for
+        one drawing. Returns what settle() needs to put it all back, and whether anything is on the move."""
+        undo, moving = [], False
+        for c in self.everyone():
+            if not c.was:
+                continue
+            here = [getattr(c, f) for f in GLIDE]
+            if abs(here[0] - c.was[0]) > 6:
+                continue  # nothing walks that far in one step: it was put there, so it shouldn't smear across
+            moving = moving or any(abs(a - b) > BRISK.get(f, 1e9) for f, a, b in zip(GLIDE, c.was, here))
+            for f, a, b in zip(GLIDE, c.was, here):
+                setattr(c, f, a + (b - a) * k)
+            trip = None
+            if c.trip and c.trip_was:  # what a trip brings along glides too: the car, the bird, the door's fade
+                trip = {}
+                for key, a in c.trip_was.items():
+                    b = c.trip.get(key)
+                    if isinstance(a, tuple) and isinstance(b, tuple) and len(a) == len(b):
+                        trip[key], c.trip[key] = b, tuple(u + (v - u) * k for u, v in zip(a, b))
+                    elif isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                        trip[key], c.trip[key] = b, a + (b - a) * k
+                moving = moving or any(trip[key] != c.trip_was[key] for key in trip)
+            undo.append((c, here, trip))
+        for p in self.particles:
+            if "was" in p:
+                p["at"] = (p["x"], p["y"])
+                p["x"], p["y"] = p["was"][0] + (p["x"] - p["was"][0]) * k, p["was"][1] + (p["y"] - p["was"][1]) * k
+        return undo, moving
+
+    def settle(self, undo):
+        """After a drawing: everything back where the last step left it."""
+        for c, here, trip in undo:
+            for f, v in zip(GLIDE, here):
+                setattr(c, f, v)
+            if trip and c.trip:
+                c.trip.update(trip)
+        for p in self.particles:
+            if "at" in p:
+                p["x"], p["y"] = p.pop("at")
 
     def weight(self, c, now):
         """What makes a Clawd feel heavy: the gaze leading a lean, the crouch before a jump, the arc, the
@@ -1439,7 +1664,8 @@ class World:
         if a == "thinking":
             c.mood = "up"
             c.arm = [0, 1 if int(t * 1.5) % 4 else 2]
-            c.x += math.sin(t * 1.3 + hash(c.name) % 7) * 0.04
+            # (the sway's phase comes from roll(), not hash(): Python hashes a name differently in every window)
+            c.x += math.sin(t * 1.3 + int(roll(c.name, "sway") * 7)) * 0.04
             return self.worry_extra(c)
         if a == "typing" and c.dramatic:
             # the hacker: pink shades, a toy laptop, smug as anything, the Matrix raining down behind
@@ -1681,10 +1907,11 @@ class World:
             c.say(random.choice(["LET'S GOOOOO!!!", "A PROMPT?! FOR ME?!", "IT'S HAPPENING!!!"]), 2.2)
 
     def gym(self, c, now):
-        """A long stretch of work: Clawd racks up a few curls, holding at the top of each one."""
-        c.mood = "focus"
+        """A long stretch of work: Clawd puts on a sweatband and racks up a few curls, holding at the top of each."""
+        c.mood, c.sit = "focus", 0
         c.gym = GYM_SEQ.frame(now - c.since - GYM_AFTER)
-        c.arm = [min(3, int(GYM_LIFT[c.gym] / 1.5))] * 2  # both hands stay on the bar
+        tilt, al, ar = GYM_FRAMES[c.gym][1:4]
+        c.sway, c.arm = tilt, [al, ar]
         if (not c.bubble or c.bubble[1] < now) and random.random() < 0.004:
             c.say(random.choice(["one more rep", "*grunt*", "feel the burn", "leg day tomorrow",
                                  "gains, not regressions"]), 2.4)
@@ -1722,7 +1949,7 @@ class World:
             return
         if b == "vibe":
             c.mood = "idle"
-            c.bob = 0.5 if int(now * 1.4 + c.x) % 2 else 0
+            c.bob = 0.25 + 0.25 * math.sin((now * 1.4 + c.x) * math.pi)  # breathing: a slow rise and fall
         elif b == "stroll":
             c.mood = "idle"
             if c.walk_to(c.target, 0.22):
@@ -1951,44 +2178,132 @@ class World:
 # ---------------------------------------------------------------- drawing
 
 
-class Painter:
-    def __init__(self, canvas, px):
-        self.cv = canvas
-        self.px = px
+class StagePainter:
+    """What a backdrop (stages.py) draws with. Everything here is in fine cells, positions too: the stage is
+    SUB * cols fine cells wide and its line is at fine row SUB * ground."""
+
+    def __init__(self, painter):
+        self.painter = painter
 
     def cells(self, x0, y0, rows, color, alpha=1.0):
-        """rows: list of (row, col_start, col_end_inclusive) in sprite cells; alpha < 1 draws it see-through."""
+        """rows: list of (row, col_start, col_end_inclusive); alpha < 1 draws it see-through."""
+        self.painter.fine(x0 / SUB, y0 / SUB, rows, color, alpha)
+
+    def rect(self, x0, y0, w, h, color, alpha=1.0):
+        """A solid w x h block with its top-left fine cell at (x0, y0): one canvas item, however big."""
+        self.painter.block(x0 / SUB, y0 / SUB, 0, 0, w - 1, h - 1, color, alpha)
+
+
+class Painter:
+    def __init__(self, canvas, px, cols=110):
+        self.cv = canvas
+        self.px = px
+        self.cols = cols  # the stage's width, in World cells
+        self.image = None  # a tk.PhotoImage to paint into instead of the canvas (the backdrop's still layer)
+
+    # which pixels a see-through block keeps, by how see-through it is (the canvas's own stipples, near enough)
+    DITHER = {"gray75": lambda x, y: not (x % 2 and y % 2), "gray50": lambda x, y: (x + y) % 2 == 0,
+              "gray25": lambda x, y: x % 2 == 0 and y % 2 == 0, "gray12": lambda x, y: x % 4 == 0 and y % 2 == 0}
+
+    def block(self, x0, y0, c0, r0, c1, r1, color, alpha=1.0):
+        """One solid rectangle on the fine grid, from fine cell (c0, r0) to (c1, r1), both included: a single
+        canvas item. x0, y0 are still in World cells, so the motion code needn't know about the fine grid. The
+        origin snaps to a whole pixel and sizes are whole pixels, so a sprite's cells all come out the same size
+        wherever it stands."""
         if alpha <= 0.05:
             return
-        p = self.px
+        f = self.px / SUB
+        x1 = math.floor(x0 * self.px + 0.5) + math.floor(c0 * f + 0.5)
+        y1 = math.floor(y0 * self.px + 0.5) + math.floor(r0 * f + 0.5)
         stipple = "" if alpha >= 1 else "gray75" if alpha > 0.7 else "gray50" if alpha > 0.45 else "gray25" if alpha > 0.2 else "gray12"
-        for r, c0, c1 in rows:
-            self.cv.create_rectangle((x0 + c0) * p, (y0 + r) * p, (x0 + c1 + 1) * p, (y0 + r + 1) * p,
-                                     fill=color, width=0, stipple=stipple)
+        x2, y2 = x1 + math.floor((c1 + 1 - c0) * f + 0.5), y1 + math.floor((r1 + 1 - r0) * f + 0.5)
+        if self.image is not None:
+            # Painted into the still layer's one picture: a canvas item costs a little every time anything
+            # near it is redrawn, and a backdrop is hundreds of them that never change.
+            x1, y1, x2, y2 = max(0, x1), max(0, y1), min(self.image.width(), x2), min(self.image.height(), y2)
+            if x2 > x1 and y2 > y1 and not stipple:
+                self.image.put(color, to=(x1, y1, x2, y2))
+            elif x2 > x1 and y2 > y1:
+                keep = self.DITHER[stipple]
+                for y in range(y1, y2):
+                    for x in range(x1, x2):
+                        if keep(x, y):
+                            self.image.put(color, to=(x, y, x + 1, y + 1))
+            return
+        self.cv.create_rectangle(x1, y1, x2, y2, fill=color, width=0, stipple=stipple)
 
-    def leg(self, x, top, height, color):
+    def fine(self, x0, y0, rows, color, alpha=1.0):
+        """cells() on the fine grid: rows is a list of (row, col_start, col_end_inclusive) in fine cells."""
+        for r, c0, c1 in rows:
+            self.block(x0, y0, c0, r, c1, r, color, alpha)
+
+    def arm(self, x0, y0, col, top, color, tall=5):
+        """An arm, the real mascot's: a stub three fine cells wide whose left column is col and whose top row is
+        top, lit along the top and shaded underneath like the body."""
+        lit, shade = tones(color)
+        self.block(x0, y0, col, top, col + 2, top + tall - 1, color)
+        self.block(x0, y0, col, top, col + 2, top, lit)
+        self.block(x0, y0, col, top + tall - 1, col + 2, top + tall - 1, shade)
+
+    def leg(self, x, top, height, color, wide=1.5):
         """One leg, drawn to a fractional height, so stretching into a lean reads smoothly."""
         if height <= 0.02:
             return
         p = self.px
-        self.cv.create_rectangle(x * p, top * p, (x + 1) * p, (top + height) * p, fill=color, width=0)
+        x1, y1 = math.floor(x * p + 0.5), math.floor(top * p + 0.5)  # snapped like block(), so it meets the body
+        self.cv.create_rectangle(x1, y1, x1 + wide * p, y1 + height * p, fill=color, width=0)
 
     def flag(self, c, x0, y, h, w1):
-        """The pole in the raised hand, and this frame's drawing of the cloth on it. The hand pulls back as
-        the flag swings out, so the cloth keeps hanging off the wrist instead of drifting away."""
-        f = c.flag
-        hx = x0 + w1 + 2 + FLAG_HAND_X[f]
-        top = y + max(0, h // 2) - 8
-        self.cells(hx, top, [(r, 0, 0) for r in range(9)], "#8a6a4a")  # the pole
-        for row, a, b in FLAG_FRAMES[f]:  # checkered cloth, in blocks of four cells like the real one
-            self.cells(hx + 1, top + row, [(0, a, b)], INK if (row // 2 + a // 2) % 2 else "#2b2b2e")
+        """The pole in the raised hand, and this frame's drawing of the cloth on it: a checkered flag. The hand
+        pulls back as the flag swings out (clawd() draws the hand, shifted the same way), so the cloth keeps
+        hanging off the wrist instead of drifting away."""
+        pole = SUB * w1 + 3 + FLAG_HAND_X[c.flag]  # the raised hand's middle column
+        hand = SUB * (max(0, h // 2) - 3) - 2  # that hand's top row
+        top = hand - 18
+        self.block(x0, y, pole, top, pole, hand, "#8a6a4a")
+        self.block(x0, y, pole, top - 1, pole, top - 1, "#c9a36b")  # the pole's tip
+        for dx, dy, i in FLAG_FRAMES[c.flag]:
+            self.block(x0, y, pole + dx, top + dy, pole + dx + 1, top + dy + FLAG_H - 1, INK)
+            for r in range(2 * (i % 2), FLAG_H, 4):
+                self.block(x0, y, pole + dx, top + dy + r, pole + dx + 1, top + dy + r + 1, "#45454b")
 
-    def dumbbell(self, c, x0, y, h, w0, w1):
-        """The bar and its plates, held in both hands and curled overhead."""
-        bar = y + max(0, h // 2) - GYM_LIFT[c.gym]
-        self.cells(x0, bar, [(0, w0 - 1, w1 + 1)], "#7d7d78")
-        for col in (w0 - 2, w1 + 1):
-            self.cells(x0, bar - 1, [(r, col, col + 1) for r in range(3)], "#3d3d3a")
+    def dumbbell(self, c, x0, y, h, w0, w1, ground):
+        """The gym kit: a sweatband, and a dumbbell for each hand -- seen end-on while it hangs or sits on the
+        floor, side-on once it's curled up."""
+        al, ar, band, held = GYM_FRAMES[c.gym][2:]
+        if c.eased:
+            al, ar = c.arm_l, c.arm_r  # the dumbbells ride in the hands, wherever the eased arms have got to
+        L, R, arm_row = SUB * w0, SUB * w1 + 1, max(0, h // 2)
+        blue, iron, lit, bar = "#33539b", "#4a4a4d", "#77777c", "#9a9a9a"
+
+        def end_on(ox, oy, cx, top):  # a weight seen end-on: an octagon five cells across, cx its middle column
+            self.block(ox, oy, cx - 1, top, cx + 1, top + 4, iron)
+            self.block(ox, oy, cx - 2, top + 1, cx + 2, top + 3, iron)
+            self.block(ox, oy, cx - 1, top + 1, cx - 1, top + 1, lit)
+
+        for up, cx, floor in ((al, L - 2, 0), (ar, R + 2, 27)):  # each hand's middle column, and its spot on the floor
+            if not held:
+                end_on(c.x - 7, ground - 2.5, floor, 0)  # on the floor, just outside the feet
+            elif up < 1.5:
+                end_on(x0, y, cx, SUB * (arm_row - up) + 4)  # hanging from the hand
+            else:
+                grip = SUB * (arm_row - up) - 1 - max(0.0, up - 2)  # the hand's top row: the bar lies across it
+                self.block(x0, y, cx - 2, grip, cx + 2, grip, bar)
+                for wx in (cx - 4, cx + 3):
+                    self.block(x0, y, wx, grip - 2, wx + 1, grip + 2, iron)
+                    self.block(x0, y, wx, grip - 2, wx + 1, grip - 2, lit)
+        if band == 3:  # on: a thin band across the brow
+            self.block(x0, y, L, 1, R, 1, blue)
+        elif band == 2:  # stretched between both hands, going over the head
+            self.block(x0, y, L - 2, -4, R + 2, -4, blue)
+            self.block(x0, y, L - 2, -3, L - 2, -3, blue)
+            self.block(x0, y, R + 2, -3, R + 2, -3, blue)
+        elif band == 1:  # a loop, dangling from the left hand
+            top = SUB * (arm_row - al) + 4
+            self.block(x0, y, L - 5, top, L - 2, top, blue)
+            self.block(x0, y, L - 5, top + 3, L - 2, top + 3, blue)
+            self.block(x0, y, L - 5, top + 1, L - 5, top + 2, blue)
+            self.block(x0, y, L - 2, top + 1, L - 2, top + 2, blue)
 
     def trip_props(self, c, ground, now, before):
         """What a trip brings along: drawn behind the Clawd (before=True) or in front of it."""
@@ -1999,63 +2314,82 @@ class Painter:
         if before and k == "door" and "door" in e:
             self.door(e["door"], ground, e.get("alpha", 1), e.get("open", False))
         if before and k == "superman" and e.get("cape") and not c.hidden:
+            # the cape: red, a brighter collar, two folds, and a hem that flaps
             flap = int(now * 10) % 2
-            y = ground - c.jump - 9
-            self.cells(c.x - 4 - e["d"], y, [(r, 0, 7 + (flap if r > 4 else 0)) for r in range(9 + flap)], "#c0392b")
+            x, y = c.x - 4 - e["d"], ground - c.jump - 10
+            self.block(x, y, 0, 0, 15, 9, "#c0392b")
+            self.block(x, y, 0, 10, 15 + 2 * flap, 17 + 2 * flap, "#c0392b")
+            self.block(x, y, 0, 0, 15, 1, "#d9534a")
+            for col in (4, 10):
+                self.block(x, y, col + flap, 3, col + flap, 16 + 2 * flap, "#a02f23")
+            self.block(x, y, 0, 18 + 2 * flap, 15 + 2 * flap, 18 + 2 * flap, "#a02f23")
         if not before and k == "car" and "car" in e:
             self.car(e["car"], ground, e["d"], e.get("passenger", False), now)
         if not before and k == "teleport":
             if e.get("remote") and not c.hidden:
-                hx = c.x + (6 if e["d"] > 0 else -8)
-                self.cells(hx, ground - 8, [(0, 0, 1), (1, 0, 1), (2, 0, 1)], "#5e5d59")
-                self.cells(hx, ground - 8, [(0, 0, 0)], "#e74c3c" if int(now * 6) % 2 else "#ff8a80")
+                # the remote, held up in the raised hand: an aerial, and a red button that blinks
+                x, y, right = c.x - 7, ground - 10 - c.jump, e["d"] > 0
+                col = 25 if right else -2
+                self.block(x, y, col, -3, col + 3, 2, "#5e5d59")
+                self.block(x, y, col, -3, col + 3, -3, "#7a7975")
+                self.block(x, y, col + (3 if right else 0), -6, col + (3 if right else 0), -4, "#8a8a86")
+                self.block(x, y, col + 1, -2, col + 2, -1, "#e74c3c" if int(now * 6) % 2 else "#ff8a80")
             if e.get("glitch") and not c.hidden:  # torn scanlines in cyan and magenta
-                for _ in range(4):
-                    row = ground - random.uniform(2, 12)
-                    off = random.uniform(-3, 3)
-                    self.cells(c.x - 7 + off, row, [(0, 0, random.randint(6, 15))],
-                               random.choice(("#00e5ff", "#ff2bd6", "#f0eee6")))
+                for _ in range(6):
+                    self.block(c.x - 7 + random.uniform(-3, 3), ground - random.uniform(2, 12), 0, 0,
+                               random.randint(12, 31), 0, random.choice(("#00e5ff", "#ff2bd6", "#f0eee6")))
         if not before and k == "bird" and "bird" in e:
             bx, height = e["bird"]
             self.bird(bx, ground - height, e["d"], now)
 
     def car(self, x, ground, d, passenger, now):
-        x0 = x - 9
-        self.cells(x0, ground - 7, [(0, 5, 13), (1, 4, 14), (2, 4, 14)], "#c0392b")  # cabin
-        self.cells(x0, ground - 6, [(0, 5, 8), (0, 10, 13), (1, 5, 8), (1, 10, 13)], "#88b0d8")  # windows
+        """A little red car: it faces the way it's going, its wheels turn, and there may be a Clawd at the wheel."""
+        x0, y0, flip = x - 9.5, ground - 7, d < 0
+        self.sprite(x0, y0, CAR, flip=flip)
         if passenger:
-            self.cells(x0, ground - 6, [(0, 6, 8), (1, 6, 8)], ORANGE)
-            self.cells(x0, ground - 6, [(0, 6, 6), (0, 8, 8)], EYE)
-        self.cells(x0, ground - 4, [(r, 0, 18) for r in range(3)], "#c0392b")  # body
-        self.cells(x0, ground - 3, [(0, 18 if d > 0 else 0, 18 if d > 0 else 0)], "#E3B23C")  # headlight
-        spin = int(now * 12) % 2
-        for wx in (3, 14):
-            self.cells(x0, ground - 1, [(0, wx, wx + 1)], "#141413")
-            self.cells(x0, ground - 1, [(0, wx + spin, wx + spin)], "#5e5d59")
+            a = 11 if flip else 20  # the front window
+            self.block(x0, y0, a, 3, a + 6, 5, ORANGE)
+            self.block(x0, y0, a, 3, a + 6, 3, tones(ORANGE)[0])
+            for col in (a + 1, a + 5):
+                self.block(x0, y0, col, 4, col, 5, EYE)
+        for col in (5, 27):
+            self.sprite(x0, y0, WHEELS[int(now * 12) % 2], dx=col, dy=8)
 
     def door(self, x, ground, alpha, opened):
-        x0 = x - 5
-        self.cells(x0, ground - 15, [(r, 0, 10) for r in range(15)], "#5b4636", alpha)  # frame
+        """A door standing on its own: panelled and shut, or open on the dark beyond."""
+        x0, y0 = x - 5, ground - 15
+        self.block(x0, y0, 0, 0, 21, 29, "#5b4636", alpha)  # frame
+        self.block(x0, y0, 0, 0, 21, 0, "#75604c", alpha)
         if opened:
-            self.cells(x0, ground - 14, [(r, 1, 9) for r in range(14)], "#141413", alpha)  # the dark beyond
-            self.cells(x0, ground - 14, [(r, 1, 2) for r in range(14)], "#a3825f", alpha)  # door swung open
+            self.block(x0, y0, 2, 2, 19, 29, "#141413", alpha)  # the dark beyond
+            self.block(x0, y0, 2, 2, 5, 29, "#a3825f", alpha)  # the door, swung open
+            self.block(x0, y0, 5, 2, 5, 29, "#8a6a4a", alpha)
         else:
-            self.cells(x0, ground - 14, [(r, 1, 9) for r in range(14)], "#8a6a4a", alpha)
-            self.cells(x0, ground - 14, [(2, 3, 7), (7, 3, 7)], "#6b4f35", alpha)  # panels
-            self.cells(x0, ground - 7, [(0, 8, 8)], "#E3B23C", alpha)  # knob
+            self.block(x0, y0, 2, 2, 19, 29, "#8a6a4a", alpha)
+            for top in (5, 17):  # two sunk panels
+                self.block(x0, y0, 5, top, 16, top + 8, "#775a3d", alpha)
+                self.block(x0, y0, 5, top, 16, top, "#6b4f35", alpha)
+            self.block(x0, y0, 17, 15, 18, 16, "#E3B23C", alpha)  # knob
 
     def bird(self, x, y, d, now):
         """A big friendly seagull, wings flapping."""
-        x0 = x - 5
-        up = int(now * 8) % 2
-        self.cells(x0, y, [(0, 2, 8), (1, 3, 7)], "#f0eee6")  # body
-        hx = 8 if d < 0 else 0
-        self.cells(x0, y - 1, [(0, hx, hx + 2), (1, hx, hx + 2)], "#f0eee6")  # head
-        self.cells(x0, y - 1, [(0, hx + (2 if d < 0 else 0), hx + (2 if d < 0 else 0))], EYE)
-        self.cells(x0, y, [(0, hx + 3 if d < 0 else hx - 1, hx + 3 if d < 0 else hx - 1)], ORANGE)  # beak
-        wing = [(-1, 3, 4), (-2, 2, 3), (-3, 1, 2)] if up else [(1, 2, 3), (2, 1, 2)]
-        wing2 = [(-1, 6, 7), (-2, 7, 8), (-3, 8, 9)] if up else [(1, 7, 8), (2, 8, 9)]
-        self.cells(x0, y, wing + wing2, "#d6d3c9")
+        self.sprite(x - 5.5, y - 2.5, BIRD_UP if int(now * 8) % 2 else BIRD_DOWN, flip=d >= 0)
+
+    def sprite(self, x0, y0, spr, dx=0, dy=0, flip=False, alpha=1.0):
+        """A sprite worked out by sprite(), its top-left fine cell dx, dy from (x0, y0); flip mirrors it."""
+        w, parts = spr
+        for color, a, r0, b, r1 in parts:
+            if flip:
+                a, b = w - 1 - b, w - 1 - a
+            self.block(x0, y0, dx + a, dy + r0, dx + b, dy + r1, color, alpha)
+
+    def flower(self, x0, ground, col, color):
+        """A flower standing on the floor: its stem in fine column col from x0."""
+        self.block(x0, ground, col, -3, col, -1, "#788C5D")
+        self.block(x0, ground, col + 1, -2, col + 1, -2, "#788C5D")
+        self.block(x0, ground, col - 1, -5, col + 1, -5, color)
+        self.block(x0, ground, col, -6, col, -4, color)
+        self.block(x0, ground, col, -5, col, -5, "#E3B23C")
 
     def clawd(self, c, ground, now):
         if c.hidden:
@@ -2063,38 +2397,81 @@ class Painter:
         if c.mini:
             return self.mini(c, ground)
         color = ORANGE if c.online or c.trip else GREY
+        lit, shade = tones(color)
         rim = c.sit == 3  # sitting on the stage's edge, legs dangling over it
         typing = c.activity == "typing" and c.online
-        sq = 1 if c.squash else (-1 if c.vy > 0.5 else 0)
+        # Squash and stretch come in half cells: a landing settles in two steps, a jump stretches as it gathers speed.
+        # (A Clawd the World is stepping has all of this eased, see World.ease(); one drawn on its own doesn't.)
+        if c.eased:
+            sq = round(c.sq_at * 2) / 2
+        else:
+            sq = (1 if c.squash >= 2 else 0.5) if c.squash else (-1 if c.vy > 0.5 else -0.5 if c.vy > 0.2 else 0)
         h = 7 - sq - (0 if rim else c.sit)  # body height in cells: the mascot is wider than it is tall
-        w0, w1 = (2 - (1 if sq > 0 else 0), 11 + (1 if sq > 0 else 0))
-        tilt = c.lean + c.sway  # the upper body leans and sways; the feet stay planted
-        dip = c.crouch * 1.2 + (STOMP_FRAMES[c.stomp][3] if c.stomp is not None else 0)
+        w0, w1 = 2 - max(0, sq), 11 + max(0, sq)
+        # the upper body leans and sways, and leans into a walk; the feet stay planted
+        tilt = c.lean + c.sway + (c.drive if c.eased else 0)
+        if c.eased:
+            dip = c.crouch * 1.2 + c.dip_at
+        else:
+            dip = (c.crouch * 1.2 + (STOMP_FRAMES[c.stomp][3] if c.stomp is not None else 0)
+                   + (GYM_FRAMES[c.gym][0] if c.gym is not None else 0))  # the gym's squat, down to the dumbbells
+        # A walk: where in the stride it is (0 to 2: one pair of legs steps through the first half, the other
+        # through the second), and the body riding lowest as the feet change over.
+        # (It's read off where the Clawd is, not how far it has walked, so the legs match in every window.)
+        gait = (c.x / 1.6) % 2 if c.striding and not rim and not c.sit else None
+        if gait is not None:
+            dip += 0.3 * (1 - abs(math.sin(gait * math.pi)))
         lift = c.jump + c.bob - dip - abs(tilt) * 0.8  # a lean settles the body down onto its legs
         x0 = c.x - 7 + tilt
-        legs_h = 0 if rim or c.sit >= 2 else (1 if c.sit == 1 else 2)
+        legs_h = 0 if rim or c.sit >= 2 else (1 if c.sit == 1 else STAND)
+        if c.eased:  # the eased bob, and the way down to (or up from) a seat; never through the floor
+            lift = max(lift - c.bob + c.bob_at + c.ease_y, min(lift, -legs_h))
         y_body = ground - legs_h - h - lift + (1 if rim else 0)
-        self.cells(x0, y_body, [(r, w0, w1) for r in range(h)], color)
+        # On the fine grid: the body is one block, lit along its top edge and in shade underneath.
+        L, R, B = SUB * w0, SUB * w1 + 1, SUB * h - 1  # its left and right columns and its bottom row, in fine cells
+        if not rim and c.jump < 14:
+            # its shadow on the stage, which draws in as the Clawd leaves the floor (and never pokes out past
+            # the stage's rounded corners)
+            half = (R - L + 1) / 2 - 1 - min(6.0, max(0.0, c.jump) * 0.6)
+            a, b = max(c.x * SUB - half, 3), min(c.x * SUB + half, SUB * self.cols - 3)
+            if b > a:
+                self.block(0, ground + 0.4, a, 0, b - 1, 0, SHADOW)
+        self.block(x0, y_body, L, 0, R, B, color)
+        self.block(x0, y_body, L + 1, 0, R - 1, 0, lit)
+        self.block(x0, y_body, L, B, R, B, shade)
         # legs: dangling and kicking on the rim, or stepping in alternating pairs
         if rim:
-            kick = int(now * 2.4 + c.x) % 2
-            for i, col in enumerate((4, 9)):
-                self.cells(x0, y_body, [(h + r, col, col) for r in range(1 if i == kick else 2)], color)
-        elif legs_h:
+            # two legs dangling over the edge and swinging in turn: the one swung towards you looks shorter
+            for i, col in enumerate((L + 2, R - 4)):
+                foot = B + 3.5 + 1.5 * math.sin((now * 2.4 + c.x + i) * math.pi)
+                self.block(x0, y_body, col, B + 1, col + 2, foot, color)
+                self.block(x0, y_body, col, foot, col + 2, foot, shade)
+        elif legs_h or (c.eased and c.ease_y > 0.05):
+            # (on the way down to a seat the legs are still under it, folding)
+            fold = c.ease_y if c.eased and c.ease_y > 0.05 else 0
             # into a lean the legs tilt and stretch, the ones nearer the lean most of all, so they look like
             # they're carrying the body. The floor cuts them off: they never push through it.
             room = ground - (y_body + h)
             stretch = (1.35, 1.3, 1.2, 1.15) if tilt < 0 else (1.15, 1.2, 1.3, 1.35)
-            for i, col in enumerate((3, 5, 8, 10)):
-                lifted = legs_h == 2 and c.legs == 1 + (i in (1, 3))  # (3, 8) step together, then (5, 10)
-                tall = 1.0 if lifted else legs_h * (1 + (stretch[i] - 1) * min(1.0, abs(tilt)))
+            # Four legs a cell and a half wide, the real mascot's: the outer pair flush with the body's sides, the
+            # inner pair (the far legs) in shade, so the four read as front and back.
+            for i, col in enumerate((2, 4.5, 8, 10.5)):
+                lifted = legs_h == STAND and c.legs == 1 + (i in (1, 3))  # the first and third step together, then the others
+                tall = legs_h - 1 if lifted else legs_h * (1 + (stretch[i] - 1) * min(1.0, abs(tilt)))
+                if gait is not None:  # walking: each pair lifts and sets down smoothly, in its half of the stride
+                    mine = gait - (1 if i in (1, 3) else 0)
+                    tall = legs_h - (1.1 * math.sin(mine * math.pi) if 0 < mine < 1 else 0)
+                if c.stomp is not None and abs(tilt) >= 0.3 and (i >= 2) == (tilt < 0):
+                    tall = legs_h - 1.5  # the stomp: the legs on the high side are off the floor, about to come down
+                tall += fold
                 # the feet stay where they were planted; only the top of the leg goes with the body
-                self.leg(x0 - tilt * 0.7 + col, y_body + h, min(tall, room), color)
-        self.face(c, x0, y_body, now)
+                if i in (1, 2):
+                    self.leg(x0 - tilt * 0.7 + col, y_body + h, min(tall, room), shade)
+                else:  # a near leg starts a fine cell higher, in front of the body's shaded underside
+                    self.leg(x0 - tilt * 0.7 + col, y_body + h - 1 / SUB, min(tall, room) + 1 / SUB, color)
+        self.face(c, x0, y_body, now, h)
         if c.flag is not None:
             self.flag(c, x0, y_body, h, w1)
-        if c.gym is not None:
-            self.dumbbell(c, x0, y_body, h, w0, w1)
         if typing:
             self.lap_laptop(c, x0, y_body, h, w0, w1, now, color)
         elif c.mood in ("thonk", "smug"):
@@ -2104,9 +2481,12 @@ class Painter:
         elif c.mood == "drafting":
             self.drafting(c, x0, y_body, h, w0, w1, ground, now, color)
         elif c.mood == "annoyed":
-            arm_row = max(0, h // 2)  # hands on hips: elbows out, fists at the waist
-            self.cells(x0, y_body, [(arm_row - 1, w0 - 1, w0 - 1), (arm_row, w0 - 2, w0 - 2), (arm_row + 1, w0 - 1, w0 - 1),
-                                    (arm_row - 1, w1 + 1, w1 + 1), (arm_row, w1 + 2, w1 + 2), (arm_row + 1, w1 + 1, w1 + 1)], color)
+            # hands on hips: each arm a chevron, the elbow out and the fist back in at the waist
+            top = SUB * max(0, h // 2) - 2
+            for side, edge in ((-1, L), (1, R)):
+                for r, out in enumerate((1, 2, 3, 3, 2, 1)):  # how far from the body each row of the arm starts
+                    col = edge + out if side > 0 else edge - out - 1
+                    self.block(x0, y_body, col, top + r, col + 1, top + r, lit if r == 0 else shade if r == 5 else color)
         else:
             # arms ride at the body's middle, raised by c.arm. On a landing the hands carry on down past
             # where they belong and settle back up -- without that the landing looks stiff.
@@ -2114,220 +2494,260 @@ class Painter:
             if c.land_at and now - c.land_at < LAND_SETTLE:
                 over += 1.6 * (1 - back_out((now - c.land_at) / LAND_SETTLE))
             arm_row = max(0, h // 2) + over
-            al, ar = c.arm
-            self.cells(x0, y_body, [(arm_row - al, w0 - 2, w0 - 1), (arm_row - al + 1, w0 - 2, w0 - 1)] if al < 3 else
-                       [(arm_row - 3, w0 - 1, w0 - 1), (arm_row - 2, w0 - 2, w0 - 1)], color)
-            self.cells(x0, y_body, [(arm_row - ar, w1 + 1, w1 + 2), (arm_row - ar + 1, w1 + 1, w1 + 2)] if ar < 3 else
-                       [(arm_row - 3, w1 + 1, w1 + 1), (arm_row - 2, w1 + 1, w1 + 2)], color)
+            # the arms ease between heights (but the hand that holds the flag's pole stays put under it)
+            al, ar = (c.arm_l, c.arm_r) if c.eased and c.flag is None else c.arm
+            # Raised all the way, the hand pokes up past the top of the head, like the real one's flag hand.
+            for up, col in ((al, L - 3), (ar, R + 1)):
+                if col > L and c.flag is not None:
+                    col += FLAG_HAND_X[c.flag]  # the flag hand pulls back as the cloth swings out
+                self.arm(x0, y_body, col, SUB * (arm_row - up) - 1 - max(0.0, up - 2), color)
+            if c.gym is not None:
+                self.dumbbell(c, x0, y_body, h, w0, w1, ground)
         if c.mood in ("moon", "moontip", "moonbrim"):
             # turned three-quarters, like the original Clawd's side view: the far side of the body in shade
-            back = w1 if c.facing < 0 else w0
-            self.cells(x0, y_body, [(r, back, back) for r in range(h)], ORANGE_DARK)
+            back = R - 1 if c.facing < 0 else L
+            self.block(x0, y_body, back, 0, back + 1, B, ORANGE_DARK)
             self.fedora(c, x0, y_body, c.mood == "moontip", c.mood == "moonbrim")
         # status props
         if c.activity == "thinking" and c.online:
             self.thought(c, x0, y_body, now)
         if c.worried and c.activity != "out":
-            self.cells(x0, y_body, [(0, w0 - 1, w0 - 1), (1, w0 - 1, w0 - 1)], "#6A9BCC")  # sweat drop
+            self.block(x0, y_body, L - 2, 0, L - 2, 0, "#6A9BCC")  # a sweat drop by the brow: a point, a round bottom
+            self.block(x0, y_body, L - 3, 1, L - 2, 2, "#6A9BCC")
+            self.block(x0, y_body, L - 3, 1, L - 3, 1, "#b5d0ea")  # and the light on it
         if c.leader:
             star_y = y_body - (7.5 if c.mood in ("moon", "moontip", "moonbrim") else 2.2)  # above the fedora, if there is one
             self.cv.create_text((c.x) * self.px, star_y * self.px, text="★", fill="#E3B23C",
                                 font=("Segoe UI Symbol", max(7, int(self.px * 1.8))))
 
-    def face(self, c, x0, y, now):
-        """The real mascot's face: two big square eyes set high and wide on the body, and not much else."""
+    def face(self, c, x0, y, now, h=7):
+        """The real mascot's face: two small upright eyes set high and wide on the body, and not much else. All on
+        the fine grid: an eye at rest is two cells wide and four tall, three cells in from the body's side."""
         mood = c.mood
-        blinking = now > c.blink_at - 0.15 and mood not in ("asleep",)
         # the eyes lead a look-around, so this is the eased gaze, not the direction it has settled on
         look = c.gaze or (c.facing if mood in ("talk", "focus", "worried") else 0)
-        ey = 2 - (1 if mood == "up" else 0)
-        # One cell wide: on the real mascot an eye is about a tenth of the body's width. A shut lid is drawn
-        # wider than it is tall, the way a closed eye actually looks.
-        lx, rx = 3 + look, 9 + look
-        mouth = 6 + look
+        el, er = 7 + SUB * look, 19 + SUB * look  # each eye's left column
+        et = 1 if mood == "up" else 2  # the eyes' top row
+        mx, my = 14 + SUB * look, min(9, SUB * h - 4)  # the mouth: its middle (between two columns) and its row
 
-        def both(rows):  # the same cells in each eye
-            return [(r, a + lx, b + lx) for r, a, b in rows] + [(r, a + rx, b + rx) for r, a, b in rows]
+        def eyes(blocks, color=EYE, mirror=False, only=None):
+            """The same blocks in each eye (or only one), as (col, row, col, row) from the eye's top-left cell.
+            mirror flips them left to right in the right eye: for brows, which have an inner and an outer end."""
+            for i, e in enumerate((el, er)):
+                if only is None or only == i:
+                    for a, r0, b, r1 in blocks:
+                        if mirror and i:
+                            a, b = 1 - b, 1 - a
+                        self.block(x0, y, e + a, et + r0, e + b, et + r1, color)
 
-        if mood == "asleep" or blinking:
-            for ex in (lx, rx):
-                self.cv.create_rectangle((x0 + ex - 0.5) * self.px, (y + ey + 0.4) * self.px,
-                                         (x0 + ex + 1.5) * self.px, (y + ey + 0.9) * self.px, fill=EYE, width=0)
-            return
-        if mood == "happy":
-            self.cells(x0, y, both([(ey, -1, -1), (ey - 1, 0, 0), (ey, 1, 1)]), EYE)  # two happy arches
-            return
-        if mood == "worried":
-            self.cells(x0, y, both([(ey - 1, 0, 0), (ey, 0, 0)]), EYE)
-            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 2, rx + 1, rx + 1)], EYE)  # outer brows up
-            return
-        if mood == "frantic":
+        def mouth(blocks, color=EYE):
+            """Blocks as (col, row, col, row) from the mouth's middle: columns -2 to 1 are a four-cell mouth."""
+            for a, r0, b, r1 in blocks:
+                self.block(x0, y, mx + a, my + r0, mx + b, my + r1, color)
+
+        def resting(top=0):
+            """Plain open eyes, or their lids on the way through a blink (0.15 s: half shut, shut, half shut)."""
+            left = c.blink_at - now
+            if left > 0.15:
+                eyes([(0, top, 1, 3)])
+            elif left > 0.11 or left < 0.03:
+                eyes([(0, 2, 1, 3)])
+            else:  # shut: wider than it is tall, the way a closed eye looks
+                eyes([(-1, 3, 2, 3)])
+            return left > 0.15
+
+        if mood == "asleep":
+            eyes([(-1, 2, -1, 2), (0, 3, 1, 3), (2, 2, 2, 2)])  # lids shut and curving down: fast asleep
+        elif mood == "happy":
+            eyes([(0, 1, 1, 1), (-1, 2, 2, 2), (-1, 3, -1, 3), (2, 3, 2, 3)])  # two happy arches
+        elif mood in ("worried", "teary"):
+            eyes([(0, -1, 1, -1), (-1, 0, -1, 0)], mirror=True)  # brows tilted up in the middle
+            if resting(1) and mood == "teary":
+                eyes([(0, 1, 0, 1)], INK, mirror=True)  # welling up: a glint in each eye
+            if mood == "teary":
+                eyes([(0, 4, 0, 6), (0, 7, 1, 8)], "#6A9BCC", mirror=True)  # and a tear down each cheek
+        elif mood == "frantic":
             # the eyes go huge and the pupils rattle around inside them -- bug-eyed is the whole point here
-            j = int(now * 12) % 2
-            self.cells(x0, y, both([(ey - 2, -1, 1), (ey - 1, -1, 1), (ey, -1, 1)]), INK)
-            self.cells(x0, y, both([(ey - 1 + j, j - 1 + j, j - 1 + j)]), EYE)
-            return
-        if mood == "drafting":
+            eyes([(-1, -1, 2, -1), (-2, 0, 3, 3), (-1, 4, 2, 4)], INK)
+            a, r = ((-1, 0), (1, 2), (1, 0), (-1, 2))[int(now * 12) % 4]
+            eyes([(a, r, a + 1, r + 1)])
+        elif mood == "drafting":
             # the pixel "deal with it" shades (Umbyz's pick): one black bar right across, a lens either side of the
-            # bridge's notch, each stepping in at its outer bottom corner, and a white glint running down each lens
-            self.cells(x0, y, [(ey - 1, lx - 1, rx + 2)], EYE)  # the top bar
-            self.cells(x0, y, [(ey, lx - 1, lx + 2), (ey, rx - 1, rx + 2)], EYE)  # the lenses
-            self.cells(x0, y, [(ey + 1, lx, lx + 2), (ey + 1, rx - 1, rx + 1)], EYE)  # their stepped bottoms
-            self.cells(x0, y, [(ey, lx, lx), (ey + 1, lx + 1, lx + 1), (ey, rx, rx), (ey + 1, rx + 1, rx + 1)], INK)  # glints
-            return
-        if mood == "annoyed":
-            # brows down at you, a flat unimpressed mouth
-            self.cells(x0, y, both([(ey, 0, 0)]), EYE)
-            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 1, lx, lx),
-                               (ey - 2, rx + 1, rx + 1), (ey - 1, rx, rx), (ey + 2, mouth, mouth + 1)], EYE)
-            return
-        if mood == "sigh":
-            # eyes shut, a little 'o' letting the breath out
-            self.cells(x0, y, both([(ey, -1, 1)]), EYE)
-            self.cells(x0, y, [(ey + 2, mouth, mouth)], EYE)
-            return
-        if mood == "smith":
-            # squinting with focus under the hard hat, brows down, tongue out the side
-            self.cells(x0, y, both([(ey, 0, 0)]), EYE)
-            self.cells(x0, y, [(ey - 1, lx - 1, lx + 1), (ey - 1, rx - 1, rx + 1)], EYE)
-            self.cells(x0, y, [(ey + 2, mouth + 1, mouth + 1)], "#e06c75")
-            return
-        if mood == "hacker":
+            # bridge's notch, each stepping in at its outer bottom corner, and white glints running down each lens
+            s = SUB * look
+            self.block(x0, y, 4, 2, 23, 2, EYE)
+            for a, rows in ((5 + s, ((1, 7), (2, 7))), (15 + s, ((0, 6), (0, 5)))):
+                self.block(x0, y, a, 3, a + 7, 4, EYE)
+                for r, (c0, c1) in enumerate(rows):
+                    self.block(x0, y, a + c0, 5 + r, a + c1, 5 + r, EYE)
+                for i in range(3):
+                    self.block(x0, y, a + 2 + i, 3 + i, a + 2 + i, 3 + i, INK)
+                for i in range(2):
+                    self.block(x0, y, a + 5 + i, 3 + i, a + 5 + i, 3 + i, INK)
+        elif mood == "annoyed":
+            eyes([(-2, 0, -1, 0), (0, 1, 2, 1)], mirror=True)  # brows down at you
+            eyes([(0, 2, 1, 3)])
+            mouth([(-2, 0, 1, 0)])  # a flat, unimpressed mouth
+        elif mood == "sigh":
+            eyes([(-1, 3, 2, 3)])  # eyes shut, and a little 'o' letting the breath out
+            mouth([(-1, -1, 0, -1), (-2, 0, -2, 0), (1, 0, 1, 0), (-1, 1, 0, 1)])
+        elif mood == "smith":
+            eyes([(-1, 1, 2, 1), (0, 2, 1, 3)])  # squinting with focus under flat brows
+            mouth([(-2, 0, -1, 0)])
+            mouth([(0, 0, 1, 1)], "#e06c75")  # tongue out the side
+        elif mood == "hacker":
             # pink sunglasses and a smug little smirk (the shades stay chunky -- they're shades)
-            self.cells(x0, y, both([(ey - 2, -1, 1), (ey - 1, -1, 1), (ey, -1, 1)]), "#E88BB7")
-            self.cells(x0, y, both([(ey - 1, 0, 0), (ey, 0, 0)]), "#2b1d2b")
-            self.cells(x0, y, [(ey - 1, lx + 2, rx - 2)], "#E88BB7")  # the bridge
-            self.cells(x0, y, [(ey + 3, mouth, mouth + 1), (ey + 2, mouth + 2, mouth + 2)], EYE)
-            return
-        if mood == "thonk":
-            # one eyebrow way up, the other flat and low, a slanted mouth
-            self.cells(x0, y, both([(ey, 0, 0)]), EYE)
-            self.cells(x0, y, [(ey - 3, lx - 1, lx), (ey - 2, lx + 1, lx + 1)], EYE)  # the raised brow
-            self.cells(x0, y, [(ey - 1, rx - 1, rx + 1)], EYE)  # the flat brow
-            self.cells(x0, y, [(ey + 2, mouth - 1, mouth), (ey + 3, mouth + 1, mouth + 2)], EYE)
-            return
-        if mood == "smug":
-            # half-lidded, glancing sideways, lips pursed for a sip
-            self.cells(x0, y, both([(ey - 1, -1, 1)]), EYE)  # heavy lids
-            self.cells(x0, y, both([(ey, 0, 0)]), EYE)  # pupils looking at the tea
-            self.cells(x0, y, [(ey + 3, mouth, mouth)], EYE)
-            return
-        if mood == "xx":
-            self.cells(x0, y, both([(ey - 2, -1, -1), (ey - 2, 1, 1), (ey - 1, 0, 0),
-                                    (ey, -1, -1), (ey, 1, 1)]), EYE)
-            return
-        if mood == "teary":
-            self.cells(x0, y, both([(ey - 1, 0, 0), (ey, 0, 0)]), EYE)
-            self.cells(x0, y, [(ey - 2, lx - 1, lx - 1), (ey - 2, rx + 1, rx + 1)], EYE)
-            self.cells(x0, y, both([(ey + 1, 0, 0), (ey + 2, 0, 0)]), "#6A9BCC")
-            return
-        self.cells(x0, y, both([(ey - 1, 0, 0), (ey, 0, 0)]), EYE)
-        if mood == "talk" and int(now * 6) % 2:
-            self.cells(x0, y, [(ey + 2, mouth, mouth + 1)], EYE)
+            eyes([(-2, -1, 3, 3)], "#E88BB7")
+            eyes([(-1, 0, 2, 2)], "#2b1d2b")
+            eyes([(-1, 0, -1, 0), (0, 1, 0, 1)], "#f3bcd6")  # the light on each lens
+            self.block(x0, y, el + 4, et, er - 3, et, "#E88BB7")  # the bridge
+            mouth([(-2, 1, 0, 1), (1, 0, 2, 0)])
+        elif mood == "thonk":
+            eyes([(-1, -2, 1, -2), (2, -1, 2, -1), (0, 0, 1, 3)], only=0)  # one eyebrow way up
+            eyes([(-1, 1, 2, 1), (0, 2, 1, 3)], only=1)  # the other eye narrowed under a flat, low brow
+            mouth([(-3, 0, -1, 0), (0, 1, 2, 1)])  # a slanted mouth
+        elif mood == "smug":
+            eyes([(-1, 1, 2, 1), (1, 2, 2, 3)])  # half-lidded, glancing sideways at the tea
+            mouth([(-1, 0, 0, 1)])  # lips pursed for a sip
+        elif mood == "xx":
+            eyes([(-1, 0, -1, 0), (2, 0, 2, 0), (0, 1, 1, 2), (-1, 3, -1, 3), (2, 3, 2, 3)])
+        else:
+            resting()
+            if mood == "talk":
+                mouth([(-1, 0, 0, 1)] if int(now * 6) % 2 else [(-1, 1, 0, 1)])
 
     def chin_pose(self, c, x0, y, h, w0, w1, color):
         """Hand on the chin, finger out (the 🤔 pose); the tea version holds a steaming cup in the other hand."""
-        arm_row = max(0, h // 2)
-        self.cells(x0, y, [(arm_row, w0 - 2, w0 - 1), (arm_row + 1, w0 - 2, w0 - 1)], color)  # the left arm, relaxed
-        hand = ORANGE_DARK
-        # the fist sits on the body's bottom row, under the mouth, with one finger up the side of the chin
-        low = max(4, h - 1)
-        self.cells(x0, y, [(low, 4, 7), (low - 1, 4, 4)], hand)
+        L, R, top = SUB * w0, SUB * w1 + 1, SUB * max(0, h // 2) - 1
+        self.arm(x0, y, L - 3, top, color)  # the left arm, relaxed
+        # the fist sits on the body's bottom rows, under the mouth, with one finger up the side of the chin
+        low = SUB * max(4, h - 1)
+        self.block(x0, y, 9, low, 16, low, ORANGE_DARK)
+        self.block(x0, y, 9, low + 1, 16, low + 1, tones(ORANGE_DARK)[1])
+        self.block(x0, y, 9, low - 3, 10, low - 1, ORANGE_DARK)
         if c.mood == "smug":
-            self.cells(x0, y, [(arm_row - 1, w1 + 1, w1 + 2), (arm_row, w1 + 1, w1 + 2)], color)  # arm raised
-            self.cells(x0, y, [(arm_row - 3, w1 + 1, w1 + 3), (arm_row - 2, w1 + 1, w1 + 3)], "#f0eee6")  # teacup
-            self.cells(x0, y, [(arm_row - 3, w1 + 4, w1 + 4)], "#f0eee6")  # its handle
+            self.arm(x0, y, R + 1, top - 2, color)  # the other arm raised, a teacup on the hand
+            cup = top - 6
+            self.block(x0, y, R + 1, cup, R + 5, cup + 2, "#f0eee6")
+            self.block(x0, y, R + 2, cup + 3, R + 4, cup + 3, "#d6d3c9")  # its foot
+            self.block(x0, y, R + 2, cup, R + 4, cup, "#9a6b4b")  # the tea
+            self.block(x0, y, R + 6, cup + 1, R + 7, cup + 1, "#f0eee6")  # the handle
+            self.block(x0, y, R + 7, cup + 2, R + 7, cup + 2, "#f0eee6")
         else:
-            self.cells(x0, y, [(arm_row, w1 + 1, w1 + 2), (arm_row + 1, w1 + 1, w1 + 2)], color)
+            self.arm(x0, y, R + 1, top, color)
 
     def fedora(self, c, x0, y, tipped, brim_down=False):
-        """Black felt, a white band, a wide brim. Tipped: lifted and tilted in the raised hand. Brim down: pulled low
-        over the eyes, the cool one."""
-        lift, shift = (3, -2) if tipped else (-2, 0) if brim_down else (0, 0)
-        top = y - 3 - lift
+        """Black felt, a white band, a wide brim curling up at its ends. Tipped: lifted and tilted in the raised
+        hand. Brim down: pulled low over the eyes, the cool one."""
+        dx, bt = (-4, -4) if tipped else (0, 2) if brim_down else (0, -2)  # its shift, and the brim's top row
         # charcoal, not pure black, with a lighter top edge, so it reads on a dark desktop too
-        self.cells(x0 + shift, top - 1, [(0, 5, 8)], "#6b6b72")  # the crown's top edge, catching the light
-        self.cells(x0 + shift, top, [(0, 4, 9)], "#3b3b40")  # the crown
-        self.cells(x0 + shift, top + 1, [(0, 4, 9)], "#f0eee6")  # the band
-        self.cells(x0 + shift, top + 2, [(0, 1, 11), (-1, 12, 12)] if tipped else [(0, 1, 12)], "#3b3b40")  # the brim
+        felt, lit = "#3b3b40", "#6b6b72"
+        for c0, r0, c1, r1, color in ((10, -7, 17, -7, lit), (8, -6, 19, -3, felt), (13, -7, 14, -6, felt),
+                                      (8, -2, 19, -1, "#f0eee6"), (2, 0, 25, 1, felt), (4, 0, 23, 0, "#55555c"),
+                                      (1, -1, 2, 0, felt), (25, -1, 26, 0, felt)):
+            if tipped and c1 >= 14:  # tilted in the hand: the far half rides a cell higher
+                if c0 < 14:
+                    self.block(x0, y, c0 + dx, bt + r0, 13 + dx, bt + r1, color)
+                self.block(x0, y, max(c0, 14) + dx, bt + r0 - 1, c1 + dx, bt + r1 - 1, color)
+            else:
+                self.block(x0, y, c0 + dx, bt + r0, c1 + dx, bt + r1, color)
+
     def drafting(self, c, x0, y, h, w0, w1, ground, now, color):
         """A sheet of paper on the floor in front, filling up with scribbles, and a pencil in hand."""
         f = c.facing or 1
+        L, R, G = SUB * w0, SUB * w1 + 1, SUB * (ground - y)  # G: the floor's row, counted from the body's top
+        lit, shade = tones(color)
 
-        def dots(ax, ay, pts, col):  # single cells at (row, col) offsets, mirrored to face the paper
-            for r, dx in pts:
-                self.cells(ax + f * dx, ay + r, [(0, 0, 0)], col)
+        def blk(ox, oy, c0, r0, c1, r1, col):  # a block, mirrored to face the paper
+            if f < 0:
+                c0, c1 = 27 - c1, 27 - c0
+            self.block(ox, oy, c0, r0, c1, r1, col)
 
-        px = c.x + f * 6
-        dots(px, ground - 2, [(r, i) for r in range(2) for i in range(7)], "#f0eee6")  # the sheet
-        n = int(now * 1.5) % 12  # scribbles grow line by line, then a fresh sheet
-        dots(px, ground - 2, [(0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (0, 4), (0, 5), (1, 3), (1, 4), (1, 5), (0, 6)][:n], "#6b6862")
-        arm_row = max(0, h // 2)
-        back = w0 - 2 if f > 0 else w1 + 1
-        self.cells(x0, y, [(arm_row, back, back + 1), (arm_row + 1, back, back + 1)], color)  # the other arm, resting
-        hx, wig = c.x + f * 4, int(now * 6) % 2
-        dots(hx, y, [(arm_row, 0), (arm_row, 1), (arm_row + 1, 2)], color)  # the drawing arm, reaching down
-        dots(hx, y, [(arm_row + 1, 3 + wig), (arm_row + 2, 3 + wig)], "#E3B23C")  # the pencil
-        dots(hx, y, [(arm_row + 3, 3 + wig)], "#3d3d3a")  # its tip, on the paper
+        fx = c.x - 7  # the paper lies on the floor, so it doesn't sway with the body
+        blk(fx, ground, R + 4, -4, R + 17, -2, "#f0eee6")
+        blk(fx, ground, R + 4, -1, R + 17, -1, "#cfcdc4")
+        n = int(now * 1.5) % 12  # the scribbles grow stroke by stroke, then a fresh sheet
+        for r, a, b in ((0, 1, 3), (0, 5, 6), (0, 8, 11), (1, 1, 2), (1, 4, 8), (1, 10, 12), (2, 1, 4), (2, 6, 7), (2, 9, 11))[:n]:
+            blk(fx, ground, R + 4 + a, r - 4, R + 4 + b, r - 4, "#6b6862")
+        self.arm(x0, y, L - 3 if f > 0 else R + 1, SUB * max(0, h // 2) - 1, color)  # the other arm, resting
+        blk(x0, y, R + 1, G - 9, R + 5, G - 7, color)  # the drawing arm, reaching out over the paper
+        blk(x0, y, R + 1, G - 9, R + 5, G - 9, lit)
+        blk(x0, y, R + 1, G - 7, R + 5, G - 7, shade)
+        px = R + 6 + int(now * 6) % 2  # the pencil, scratching back and forth
+        blk(x0, y, px, G - 10, px, G - 10, "#e06c75")
+        blk(x0, y, px, G - 9, px, G - 6, "#E3B23C")
+        blk(x0, y, px, G - 5, px, G - 5, "#3d3d3a")  # its tip, on the paper
 
     def smith(self, c, x0, y, h, w0, w1, ground, color):
         """Hard hat, hammer, and a little bronze gear on the ground in front, taking a beating."""
         f = c.facing or 1
+        L, R, G = SUB * w0, SUB * w1 + 1, SUB * (ground - y)  # G: the floor's row, counted from the body's top
 
-        def dots(ax, ay, pts, col):  # single cells at (row, col) offsets, mirrored to face the gear
-            for r, dx in pts:
-                self.cells(ax + f * dx, ay + r, [(0, 0, 0)], col)
+        def blk(ox, oy, c0, r0, c1, r1, col):  # a block, mirrored to face the gear
+            if f < 0:
+                c0, c1 = 27 - c1, 27 - c0
+            self.block(ox, oy, c0, r0, c1, r1, col)
 
-        # the hard hat: a yellow dome with a brim, and a stripe down the middle
-        self.cells(x0, y, [(-2, 4, 9), (-1, 1, 12)], "#E3B23C")
-        self.cells(x0, y, [(-2, 6, 7)], "#c79a2a")
-        # the other arm, relaxed at the side
-        arm_row = max(0, h // 2)
-        back = w0 - 2 if f > 0 else w1 + 1
-        self.cells(x0, y, [(arm_row, back, back + 1), (arm_row + 1, back, back + 1)], color)
+        # the hard hat: a yellow dome with a ridge down the middle, and a brim
+        for c0, r0, c1, r1, col in ((10, -7, 17, -7, "#f0cf6a"), (8, -6, 19, -3, "#E3B23C"), (13, -7, 14, -3, "#c79a2a"),
+                                    (2, -2, 25, -2, "#E3B23C"), (2, -1, 25, -1, "#c79a2a")):
+            self.block(x0, y, c0, r0, c1, r1, col)
+        self.arm(x0, y, L - 3 if f > 0 else R + 1, SUB * max(0, h // 2) - 1, color)  # the other arm, relaxed
+        fx = c.x - 7  # things on the floor keep still when the body moves
         if not c.bonking:
-            # the mini gear: bronze, toothy, with a dark hole in the middle
-            gx, gy = c.x + f * 12 - 3, ground - 7
-            self.cells(gx, gy, [(0, 2, 2), (0, 4, 4), (1, 1, 5), (2, 0, 6), (3, 1, 5), (4, 0, 6), (5, 1, 5), (6, 2, 2), (6, 4, 4)],
-                       "#c98a4b")
-            self.cells(gx, gy, [(1, 2, 3), (2, 1, 1)], "#e8b37a")  # a glint
-            self.cells(gx, gy, [(3, 3, 3)], "#4a2e17")  # the axle hole
-        hx = c.x + f * 5  # the hammer hand's column
-        handle, head = "#a0703a", "#7d7d78"
+            # the mini gear: bronze, four teeth, lit from the top left, with a dark hole in the middle
+            bronze = "#c98a4b"
+            for c0, r0, c1, r1, col in ((2, 1, 9, 10, bronze), (1, 2, 10, 9, bronze), (5, 0, 6, 11, bronze),
+                                        (0, 5, 11, 6, bronze), (3, 2, 5, 2, "#e8b37a"), (2, 3, 2, 5, "#e8b37a"),
+                                        (6, 10, 8, 10, "#a06a35"), (10, 7, 10, 8, "#a06a35"), (4, 4, 7, 7, "#4a2e17")):
+                blk(fx, ground, 32 + c0, r0 - 12, 32 + c1, r1 - 12, col)
+        hand = R + 1 if f > 0 else L - 3  # the hammer hand's left column
+        handle, head, face, lit = "#a0703a", "#7d7d78", "#5e5d59", "#a5a5a0"
         if c.swing == "up":
-            # wound up: arm high, hammer held over the shoulder
-            dots(hx, y, [(arm_row - 1, 0), (arm_row - 2, 1), (arm_row - 3, 1)], color)
-            dots(hx, y, [(arm_row - 4, 1), (arm_row - 5, 1), (arm_row - 6, 1)], handle)
-            dots(hx, y, [(arm_row - 7, 0), (arm_row - 7, 1), (arm_row - 7, 2), (arm_row - 8, 0), (arm_row - 8, 1), (arm_row - 8, 2)], head)
+            # wound up: arm high, the hammer standing over the shoulder
+            self.arm(x0, y, hand, -2, color)
+            blk(x0, y, R + 2, -10, R + 3, -3, handle)
+            blk(x0, y, R - 1, -16, R + 6, -11, head)
+            blk(x0, y, R - 1, -16, R + 6, -16, lit)
+            blk(x0, y, R + 6, -15, R + 6, -11, face)
         elif c.bonking:
             # the bonk: arm out, the handle reaching up and over, the head coming down on theirs
-            dots(hx, y, [(arm_row, 0), (arm_row, 1)], color)
-            dots(hx, ground, [(-8, 2), (-9, 3), (-10, 4), (-10, 5), (-11, 6)], handle)
-            dots(hx, ground, [(r, d) for r in (-12, -11, -10) for d in (7, 8, 9, 10)], head)
+            self.arm(x0, y, hand, G - 21, color)
+            for i in range(3):
+                blk(fx, ground, R + 4 + 4 * i, -20 - 2 * i, R + 7 + 4 * i, -19 - 2 * i, handle)
+            blk(fx, ground, R + 15, -26, R + 22, -21, head)
+            blk(fx, ground, R + 15, -26, R + 22, -26, lit)
+            blk(fx, ground, R + 15, -21, R + 22, -21, face)
         else:
             # the blow: arm out, handle level, the head down on the gear
-            dots(hx, y, [(arm_row, 0), (arm_row, 1)], color)
-            dots(hx, ground - 9, [(0, 2), (0, 3), (0, 4), (0, 5)], handle)
-            dots(hx, ground - 10, [(0, 6), (0, 7), (1, 6), (1, 7), (2, 6), (2, 7)], head)
+            self.arm(x0, y, hand, G - 18, color)
+            blk(fx, ground, R + 4, -16, R + 11, -15, handle)
+            blk(fx, ground, R + 12, -18, R + 17, -13, head)
+            blk(fx, ground, R + 12, -18, R + 17, -18, lit)
+            blk(fx, ground, R + 12, -13, R + 17, -13, face)
 
     def lap_laptop(self, c, x0, y, h, w0, w1, now, color):
         """The Claude Code pose: laptop on the lap, lid toward us, both hands tapping the keys."""
-        top = h - 4
+        L, R, B = SUB * w0, SUB * w1 + 1, SUB * h - 1
+        top = B - 7  # the lid's top row: just under the eyes
         if c.dramatic:  # the hacker's toy laptop: blue lid, a bold logo, a red base with candy-coloured keys
-            self.cells(x0, y, [(r, w0 - 1, w1 + 1) for r in range(top, h)], "#3b6fd4")
-            self.cells(x0, y, [(top + 1, 5, 8)], "#f0eee6")
-            self.cells(x0, y, [(top + 2, 6, 7)], "#E3B23C")
-            self.cells(x0, y, [(h - 1, w0 - 2, w1 + 2)], "#d9562b")
-            for i, col in enumerate(range(w0 - 1, w1 + 2, 2)):
-                self.cells(x0, y, [(h - 1, col, col)], ("#E3B23C", "#3ad15a", "#6A9BCC")[i % 3])
+            lid, edge, logo, base = "#3b6fd4", "#6f97e6", "#E3B23C", "#d9562b"
         else:
-            self.cells(x0, y, [(r, w0 - 1, w1 + 1) for r in range(top, h)], "#5e5d59")  # the lid's back
-            self.cells(x0, y, [(top + 1, 6, 7)], "#a3a29b")  # a little logo
-            self.cells(x0, y, [(h - 1, w0 - 2, w1 + 2)], "#3d3d3a")  # keyboard edge
+            lid, edge, logo, base = "#5e5d59", "#7a7975", "#c9c7be", "#3d3d3a"
+        self.block(x0, y, L - 1, top + 1, R + 1, B - 2, lid)  # the lid's back
+        self.block(x0, y, L, top, R, top, edge)  # its top edge, the corners rounded off
+        self.block(x0, y, 13, top + 2, 14, top + 5, logo)  # a little spark for a logo
+        self.block(x0, y, 12, top + 3, 15, top + 4, logo)
+        self.block(x0, y, L - 3, B - 1, R + 3, B, base)  # the keyboard's edge
+        if c.dramatic:
+            for i, col in enumerate(range(int(L) - 2, int(R) + 2, 3)):
+                self.block(x0, y, col, B - 1, col + 1, B - 1, ("#E3B23C", "#3ad15a", "#6A9BCC")[i % 3])
+        else:
+            self.block(x0, y, L - 3, B - 1, R + 3, B - 1, "#55554f")
         tap = int(now * (24 if c.dramatic else 9)) % 2
         # arms come in from the sides and their hands land on the keyboard, one after the other
-        self.cells(x0, y, [(top - 1 + tap, w0 - 2, w0 - 1), (top + tap, w0 - 1, w0)], color)
-        self.cells(x0, y, [(top - tap, w1 + 1, w1 + 2), (top + 1 - tap, w1, w1 + 1)], color)
+        self.arm(x0, y, L - 4, B - 7 + tap, color)
+        self.arm(x0, y, R + 2, B - 6 - tap, color)
 
     def thought(self, c, x0, y, now):
         p = self.px
@@ -2356,12 +2776,16 @@ class Painter:
         p = self.px
         t = now - m["start"]
         bx = m["board"]
-        top, bottom = ground - 21, ground - 8
-        self.cells(bx - 9, top, [(r, 0, 18) for r in range(bottom - top)], "#a3a29b")  # frame
-        self.cells(bx - 8, top + 1, [(r, 0, 16) for r in range(bottom - top - 2)], "#f6f5f0")  # board
-        self.cells(bx - 7, bottom, [(r, 0, 0) for r in range(8)], "#5e5d59")  # easel legs
-        self.cells(bx + 7, bottom, [(r, 0, 0) for r in range(8)], "#5e5d59")
-        self.cells(bx - 2, bottom, [(0, 0, 4)], "#3d3d3a")  # marker tray
+        top = ground - 21
+        ox = bx - 9.5
+        self.block(ox, top, 0, 0, 37, 25, "#a3a29b")  # frame
+        self.block(ox, top, 0, 0, 37, 0, "#c4c3bc")
+        self.block(ox, top, 2, 2, 35, 23, "#f6f5f0")  # board
+        for col in (5, 31):  # easel legs
+            self.block(ox, top, col, 26, col + 1, 41, "#5e5d59")
+        self.block(ox, top, 12, 26, 25, 27, "#3d3d3a")  # the tray, and two markers lying in it
+        self.block(ox, top, 14, 25, 17, 25, "#c0392b")
+        self.block(ox, top, 20, 25, 23, 25, "#2aa3a3")
         cv, teal, red = self.cv, "#2aa3a3", "#c0392b"
         f = ("Segoe UI", max(5, int(p * 1.05)), "bold")
         steps = [
@@ -2379,72 +2803,95 @@ class Painter:
 
     def chair(self, x, ground):
         """A little black office chair, facing the whiteboard (seat on the left, backrest on the right)."""
-        self.cells(x - 5, ground - 2, [(0, 0, 10)], "#2b2b2e")  # seat
-        self.cells(x + 4, ground - 10, [(r, 0, 1) for r in range(8)], "#2b2b2e")  # backrest
-        self.cells(x, ground - 1, [(0, -3, 3)], "#4a4a50")  # base
+        ox, oy = x - 5, ground - 10
+        dark, lit, metal = "#2b2b2e", "#3d3d42", "#4a4a50"
+        self.block(ox, oy, 18, 1, 21, 15, dark)  # backrest, its top rounded
+        self.block(ox, oy, 19, 0, 20, 0, dark)
+        self.block(ox, oy, 18, 1, 18, 15, lit)
+        self.block(ox, oy, 0, 16, 21, 17, dark)  # seat
+        self.block(ox, oy, 1, 16, 20, 16, lit)
+        self.block(ox, oy, 9, 18, 12, 18, metal)  # post and feet
+        self.block(ox, oy, 3, 19, 18, 19, metal)
 
     def mini_desk(self, desk, ground, now):
         """The subagents' little table, a tiny laptop at each seat and a tiny pair of hands tapping away."""
         a = desk["x"] - desk["width"] / 2 - 1
         b = desk["x"] + desk["width"] / 2 + 1
-        self.cells(a, ground - 3, [(0, 0, b - a)], "#8a6a4a")  # table top
-        self.cells(a, ground - 2, [(0, 0, 0), (1, 0, 0)], "#6b4f35")  # legs
-        self.cells(b, ground - 2, [(0, 0, 0), (1, 0, 0)], "#6b4f35")
+        w = SUB * (b - a + 1) - 1  # its last fine column
+        self.block(a, ground - 3, 0, 0, w, 0, "#a3825f")  # table top, lit along the front edge
+        self.block(a, ground - 3, 0, 1, w, 1, "#8a6a4a")
+        for col in (0, w - 1):  # legs
+            self.block(a, ground - 3, col, 2, col + 1, 5, "#6b4f35")
         for i, seat in enumerate(desk["seats"]):
             if seat not in desk.get("by", {}).values():
                 continue  # an empty seat has no laptop
-            self.cells(seat - 1.5, ground - 4, [(0, 0, 2)], "#5e5d59")  # the laptop's lid, from behind
-            self.cells(seat - 0.5, ground - 4, [(0, 0, 0)], "#a3a29b")  # tiny logo
+            self.block(seat - 1.5, ground - 4, 0, 0, 5, 1, "#5e5d59")  # the laptop's lid, from behind
+            self.block(seat - 1.5, ground - 4, 0, 0, 5, 0, "#7a7975")
+            self.block(seat - 1.5, ground - 4, 2, 1, 3, 1, "#c9c7be")  # tiny logo
             if seat in desk.get("seated", ()):  # hands only once someone's actually sitting there
                 tap = (int(now * 10) + i) % 2
-                self.cells(seat - 2.5 if tap else seat + 1.5, ground - 4, [(0, 0, 0)], ORANGE)  # tap tap
+                self.block(seat - 1.5, ground - 4, -2 if tap else 6, 0, -1 if tap else 7, 1, ORANGE)  # tap tap
 
     def table(self, seats, ground):
         """A long table in front of the seats, with a coffee mug."""
         xs = sorted(seats.values())
         a, b = xs[0] - 9, xs[-1] + 4
-        self.cells(a, ground - 5, [(0, 0, b - a), (1, 0, b - a)], "#8a6a4a")
-        self.cells(a + 1, ground - 3, [(r, 0, 0) for r in range(3)], "#6b4f35")
-        self.cells(b - 1, ground - 3, [(r, 0, 0) for r in range(3)], "#6b4f35")
-        self.cells(a + 4, ground - 7, [(0, 0, 1), (1, 0, 1)], "#f0eee6")  # mug
-        self.cells(a + 6, ground - 7, [(0, 0, 0)], "#f0eee6")
+        w, oy = SUB * (b - a + 1) - 1, ground - 5
+        self.block(a, oy, 0, 0, w, 0, "#a3825f")  # the top: lit along its edge, in shade underneath
+        self.block(a, oy, 0, 1, w, 2, "#8a6a4a")
+        self.block(a, oy, 0, 3, w, 3, "#6b4f35")
+        for col in (2, w - 3):
+            self.block(a, oy, col, 4, col + 1, 9, "#6b4f35")
+        self.block(a, oy, 8, -4, 11, -1, "#f0eee6")  # mug
+        self.block(a, oy, 12, -3, 12, -2, "#f0eee6")
+        self.block(a, oy, 8, -4, 11, -4, "#cfcdc4")
 
     def storm(self, cols, now):
-        """A storm cloud and a moon over the funeral."""
-        p = self.px
-        self.cv.create_text((cols - 9) * p, 4 * p, text="☾", fill="#e8e6dc", font=("Segoe UI Symbol", max(10, int(p * 4))))
+        """Storm clouds and a crescent moon over the funeral."""
+        mx = cols - 9
+        for r in range(11):  # the moon: a disc with a bite out of its right side
+            dy = r - 5
+            half = math.sqrt(max(0.0, 30.25 - dy * dy))
+            b = min(half, 3 - math.sqrt(max(0.0, 25 - dy * dy)))
+            if b > -half:
+                self.block(mx, 1.25, int(round(-half)), r, int(round(b)) - 1, r, "#e8e6dc")
         for i, (cx, r) in enumerate(((14, 5), (24, 6.5), (36, 5.5), (50, 7), (64, 5.5), (78, 6.5), (90, 5))):
             drift = math.sin(now * 0.5 + i) * 1.2
-            self.cv.create_oval((cx + drift - r * 1.6) * p, (2.5 - r * 0.55) * p, (cx + drift + r * 1.6) * p,
-                                (2.5 + r * 0.55) * p, fill="#3d3d4a", width=0)
+            wide, tall = r * 1.6 * SUB, max(2, int(r * 0.55 * SUB))  # half its width and height, in fine cells
+            for row in range(-tall, tall, 2):  # a cloud, in bands two cells deep, darker underneath
+                half = int(round(wide * math.sqrt(max(0.0, 1 - ((row + 1.0) / tall) ** 2))))
+                self.block(cx + drift, 2.5, -half, row, half - 1, row + 1, "#3d3d4a" if row < tall - 3 else "#33333e")
 
     def grave(self, c, ground, now, funeral):
         """The tombstone (with flowers and a candle) and the little ghost floating above it."""
         since = funeral["start"]
         x0 = c.x - 7
-        stone, shade = "#8A8580", "#6b6862"
+        stone, shade, lit = "#8A8580", "#6b6862", "#a39e98"
         rise = min(1.0, (now - since - 2.5) / 1.2)  # the stone rises out of the ground
         top = ground - 10 * rise
-        rows = [(0, 4, 9), (1, 3, 10)] + [(r, 2, 11) for r in range(2, 10)]
-        self.cells(x0, top, [(r, a, b) for r, a, b in rows if top + r < ground], stone)
-        self.cells(x0, top, [(r, 11, 11) for r in range(2, 10) if top + r < ground], shade)
+        last = int((ground - top) * SUB + 0.5) - 1  # the lowest row of it that's above the ground
+        for a, r0, b, r1, color in ((10, 0, 17, 0, lit), (8, 1, 19, 1, stone), (6, 2, 21, 2, stone), (5, 3, 22, 3, stone),
+                                    (4, 4, 23, 19, stone), (22, 4, 23, 19, shade), (4, 4, 4, 19, lit)):
+            if r0 <= last:
+                self.block(x0, top, a, r0, b, min(r1, last), color)
         if rise >= 1:
             p = self.px
             self.cv.create_text(c.x * p, (top + 3.6) * p, text="RIP", fill="#3d3d3a",
                                 font=("Segoe UI", max(6, int(p * 1.5)), "bold"))
             self.cv.create_text(c.x * p, (top + 6.6) * p, text=c.name.strip()[:7] or "pookie", fill="#3d3d3a",
                                 font=("Segoe UI", max(5, int(p * 1.05))))
-            self.cells(x0, ground - 1, [(0, -1, 14)], "#5b4636")  # fresh dirt
-            for col in (0, 13):  # flowers
-                self.cells(x0, ground - 3, [(0, col, col)], "#C46686")
-                self.cells(x0, ground - 2, [(0, col, col)], "#788C5D")
+            self.block(x0, ground, -2, -1, 29, -1, "#5b4636")  # fresh dirt, heaped
+            self.block(x0, ground, 0, -2, 27, -2, "#5b4636")
+            self.block(x0, ground, 6, -2, 9, -2, "#75604c")
+            self.block(x0, ground, 17, -1, 21, -1, "#75604c")
+            for col in (0, 27):  # flowers
+                self.flower(x0, ground, col, "#C46686")
             for dx, color in funeral["flowers"]:  # the ones the crew laid down
-                fx = c.x + dx
-                self.cells(fx, ground - 2, [(0, 0, 0)], "#788C5D")
-                self.cells(fx, ground - 3, [(0, -1, 1)], color)
-                self.cells(fx, ground - 4, [(0, 0, 0)], color)
-            self.cells(x0, ground - 3, [(0, 15, 15), (1, 15, 15)], "#f0eee6")  # candle
-            self.cells(x0, ground - 4, [(0, 15, 15)], "#E3B23C" if int(now * 7) % 2 else ORANGE)
+                self.flower(c.x + dx, ground, 0, color)
+            self.block(x0, ground, 30, -5, 31, -1, "#f0eee6")  # candle
+            flick = int(now * 7) % 2
+            self.block(x0, ground, 30, -7, 31, -6, "#E3B23C" if flick else ORANGE)
+            self.block(x0, ground, 30 + flick, -8, 30 + flick, -8, "#E3B23C")
             self.ghost(c, x0, ground, now, since)
 
     def ghost(self, c, x0, ground, now, since):
@@ -2452,30 +2899,45 @@ class Painter:
         if up <= 0:
             return
         y = ground - 11 - up + math.sin(now * 2.2) * 0.8
-        g = "#e8e6dc"
-        self.cells(x0, y, [(r, 3, 10) for r in range(6)] + [(2, 1, 2), (2, 11, 12), (3, 1, 1), (3, 12, 12)], g)
-        wave = int(now * 4) % 2
-        self.cells(x0, y, [(6, col, col) for col in ((3, 5, 7, 9) if wave else (4, 6, 8, 10))], g)
-        self.cells(x0, y, [(2, 5, 5), (2, 8, 8)], "#5e5d59")
-        p = self.px
-        self.cv.create_oval((x0 + 4) * p, (y - 2) * p, (x0 + 10) * p, (y - 0.8) * p, outline="#E3B23C",
-                            width=max(1, p // 2))
+        g, shade, eye = "#e8e6dc", "#cfcdc4", "#5e5d59"
+        for a, r0, b, r1, color in ((9, 0, 18, 0, g), (7, 1, 20, 1, g), (6, 2, 21, 11, g), (20, 3, 21, 11, shade),
+                                    (2, 4, 5, 6, g), (22, 4, 25, 6, g), (2, 7, 3, 7, g), (24, 7, 25, 7, g),
+                                    (10, 4, 11, 6, eye), (16, 4, 17, 6, eye), (13, 8, 14, 8, eye)):
+            self.block(x0, y, a, r0, b, r1, color)
+        for col in range(6 + 2 * (int(now * 4) % 2), 21, 4):  # the hem, rippling
+            self.block(x0, y, col, 12, col + 1, 13, g)
+        for a, r0, b, r1 in ((9, -4, 18, -4), (7, -3, 8, -3), (19, -3, 20, -3), (9, -2, 18, -2)):  # the halo
+            self.block(x0, y, a, r0, b, r1, "#E3B23C")
 
     def mini(self, c, ground):
-        # a half-size Clawd: 5-wide body, two eyes, stubby arms, two legs, with squash and stretch
+        """A half-size Clawd, with squash and stretch. On the fine grid it's built like the big ones: a lit top, a
+        shaded underside, four legs with the inner pair in shade, and eyes a single cell wide."""
         sq = 1 if c.squash else (-1 if c.vy > 0.6 else 0)
         h = 4 - sq  # squashed: shorter and wider; stretched: taller and thinner
         a, b = 1 - max(sq, 0) + max(-sq, 0), 5 + max(sq, 0) - max(-sq, 0)
         x0 = c.x - 3.5 + c.wobble
         y = ground - 2 - h - c.jump
-        self.cells(x0, y, [(r, a, b) for r in range(h)], ORANGE)
-        self.cells(x0, y, [(h // 2, a - 1, a - 1), (h // 2, b + 1, b + 1)] if c.vy <= 0.6 else
-                   [(0, a - 1, a - 1), (0, b + 1, b + 1)], ORANGE)  # arms fly up mid-leap
-        legs = [(h, 2, 2), (h, 4, 4), (h + 1, 2, 2), (h + 1, 4, 4)]
-        if c.legs or sq > 0:
-            legs = [(h, 2, 2), (h, 4, 4), (h + 1, 1, 1), (h + 1, 5, 5)]
-        self.cells(x0, y, legs, ORANGE)
-        self.cells(x0, y, [(1, 2, 2), (1, 4, 4)], EYE)
+        lit, shade = tones(ORANGE)
+        L, R, B = SUB * a, SUB * b + 1, SUB * h - 1
+        self.block(x0, y, L, 0, R, B, ORANGE)
+        self.block(x0, y, L + 1, 0, R - 1, 0, lit)
+        self.block(x0, y, L, B, R, B, shade)
+        top = -1 if c.vy > 0.6 else SUB * (h // 2) - 1  # the arms fly up mid-leap
+        for col in (L - 2, R + 1):
+            self.block(x0, y, col, top, col + 1, top + 2, ORANGE)
+            self.block(x0, y, col, top + 2, col + 1, top + 2, shade)
+        # the legs splay on a landing, and step in pairs on a walk
+        for i, col in enumerate((2, 4, 9, 11) if sq >= 0 else (L, L + 2, R - 2, R)):
+            tone = shade if i in (1, 2) else ORANGE
+            if sq > 0:
+                out = -1 if i < 2 else 1
+                self.block(x0, y, col, B + 1, col, B + 2, tone)
+                self.block(x0, y, col + out, B + 3, col + out, B + 4, tone)
+            else:
+                self.block(x0, y, col, B + 1, col, B + (2 if c.legs == 1 + i % 2 else 4), tone)
+        off = 2 if R - L >= 9 else 1
+        for col in (L + off, R - off):
+            self.block(x0, y, col, 2, col, 3, EYE)
 
     def bubble(self, c, ground, now, placed):
         """Draws c's speech bubble, lifted above any bubble already drawn this frame that it would overlap."""
@@ -2513,20 +2975,31 @@ class Painter:
         p = self.px
         x, y = pt["x"] * p, pt["y"] * p
         k = pt["kind"]
+        px, py = pt["x"], pt["y"]
         if k == "confetti":
-            self.cv.create_rectangle(x, y, x + p * 0.9, y + p * 0.6, fill=pt["color"], width=0)
+            self.block(px, py, 0, 0, 1, 0, pt["color"])
         elif k in ("sweat", "tear"):
-            self.cv.create_oval(x, y, x + p * 0.8, y + p * 1.1, fill="#6A9BCC", width=0)
+            self.block(px, py, 0, 0, 0, 1, "#6A9BCC")  # a drop: narrow at the top, round at the bottom
+            self.block(px, py, 0, 1, 1, 2, "#6A9BCC")
+        elif k == "heart":
+            for a, r0, b, r1 in ((-1, -2, -1, 0), (1, -2, 1, 0), (-2, -1, 2, -1), (0, -1, 0, 1)):
+                self.block(px, py, a, r0, b, r1, "#C46686")
+        elif k == "spark":  # a four-pointed sparkle, bright in the middle
+            # gold, unless whoever threw it picked a colour (a burst hands every particle a confetti colour)
+            color = pt["color"] if pt.get("char") == "✦" and pt.get("color") not in (None, DIM) else "#E3B23C"
+            self.block(px, py, 0, -2, 0, 2, color)
+            self.block(px, py, -2, 0, 2, 0, color)
+            self.block(px, py, 0, 0, 0, 0, "#fff3b0")
         elif k == "matrix":
             self.cv.create_text(x, y, text=pt["char"], fill="#3ad15a" if pt["life"] > 0.5 else "#1f7a33",
                                 font=("Consolas", max(6, int(p * 1.5)), "bold"))
         elif k == "rain":
             self.cv.create_line(x, y, x - p * 0.3, y + p * 1.4, fill="#6A9BCC", width=max(1, p // 4))
         elif k == "dirt":
-            self.cv.create_rectangle(x, y, x + p * 0.8, y + p * 0.8, fill="#5b4636", width=0)
+            self.block(px, py, 0, 0, 1, 1, "#5b4636")
         else:
-            char = {"heart": "♥", "spark": "✦", "z": pt.get("char", "z"), "note": pt.get("char", "♪")}.get(k, pt["char"])
-            color = {"heart": "#C46686", "spark": "#E3B23C", "code": "#88b0d8"}.get(k, pt["color"])
+            char = {"z": pt.get("char", "z"), "note": pt.get("char", "♪")}.get(k, pt["char"])
+            color = {"code": "#88b0d8"}.get(k, pt["color"])
             size = max(6, int(p * (1.5 if k == "code" else 1.9)))
             self.cv.create_text(x, y, text=char, fill=color, font=("Consolas" if k == "code" else "Segoe UI Symbol", size))
 
@@ -2549,6 +3022,8 @@ class App:
         given = args.relay or args.key or args.name or args.demo  # set on the command line: stick to it
         self.feed = Feed(self.relay, key, self.me, args.demo or not (self.relay and key), None if given else reread)
         self.demo = args.demo or not (self.relay and key)
+        self.force_stage = getattr(args, "stage", None)  # --stage: try a backdrop without the relay picking it
+        self.bad_stages = set()  # backdrops that failed to draw: not tried again
 
         self.root = tk.Tk()
         self.root.title("Clawds")
@@ -2567,6 +3042,9 @@ class App:
         for s in SIZES:
             sizes.add_command(label=s.capitalize(), command=lambda s=s: self.resize(s))
         self.menu.add_cascade(label="Size", menu=sizes)
+        # Smooth motion draws in-between frames while the Clawds move; off, the window draws once a step
+        self.smooth_var = tk.BooleanVar(value=self.prefs.get("smooth", True))
+        self.menu.add_checkbutton(label="Smooth motion", variable=self.smooth_var, command=self.save)
         self.menu.add_command(label="Party!", command=self.party)
         self.menu.add_command(label="Crew log (every message, live)", command=self.open_log)
         # Closes itself a minute after your Claude leaves the crew, unless you tick this
@@ -2581,17 +3059,23 @@ class App:
         self.canvas.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
         self.layout()
         self.toggle_pin(save=False)
-        self.last = time.time()
-        self.tick()
+        self.shown, self.quiet = (None, None), False  # what the last step saw, for frame() to draw
+        self.owed, self.frame_at = 1.0 / FPS, time.time()  # a first step is owed straight away
+        self.frame()
 
     def layout(self):
-        self.px = SIZES.get(self.size, 5)
+        self.px = SIZES.get(self.size, 6)
         self.cols, self.rows = 110, 47
         self.ground = self.rows - 14
         w, h = self.cols * self.px, self.rows * self.px
         if not hasattr(self, "world"):
             self.world = World(self.cols, self.ground)
-        self.painter = Painter(self.canvas, self.px)
+        self.painter = Painter(self.canvas, self.px, self.cols)
+        self.stage_painter = StagePainter(self.painter)
+        self.still = None  # which (size, backdrop) the still layer on the canvas was drawn for
+        # the labels' fonts, kept so their words can be measured (and nudged apart when they'd overlap)
+        self.name_font = tkfont.Font(family="Segoe UI", size=max(7, int(self.px * 1.6)), weight="bold")
+        self.word_font = tkfont.Font(family="Segoe UI", size=max(6, int(self.px * 1.35)))
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         x = self.prefs.get("x", sw - w - 24)
         y = self.prefs.get("y", sh - h - 64)
@@ -2602,7 +3086,8 @@ class App:
         self.canvas.config(width=w, height=h)
 
     def save(self):
-        self.prefs.update(size=self.size, pinned=self.pinned, x=self.root.winfo_x(), y=self.root.winfo_y())
+        self.prefs.update(size=self.size, pinned=self.pinned, smooth=self.smooth_var.get(),
+                          x=self.root.winfo_x(), y=self.root.winfo_y())
         try:
             os.makedirs(os.path.dirname(PREFS), exist_ok=True)
             with open(PREFS, "w", encoding="utf-8") as f:
@@ -2691,10 +3176,9 @@ class App:
             word = STATUS_WORDS.get(hit.activity, "") or "just vibing"
             hit.say(f"{hit.name.strip() or 'Clawd'}: {word}", 2.5)
 
-    def tick(self):
+    def tick(self, dt):
+        """One step of the World: hear from the relay, let everyone act. False if that was the last one."""
         now = time.time()
-        dt = now - self.last
-        self.last = now
         snap, err = self.feed.read()
         self.relay, self.me, self.demo = self.feed.relay, self.feed.name, self.feed.demo  # settings can change
         if err and not self.demo:
@@ -2704,14 +3188,45 @@ class App:
                 snap = dict(snap, peers=[dict(p, online=False) for p in snap.get("peers", [])])
         else:
             self.err_since = None
+        self.world.remember()
         self.world.sync(snap, self.me)
         self.world.step(dt)
         if self.closing_in(snap, err, now) == 0:
-            return self.quit()
-        self.draw(snap, err, clock())
-        # Full speed while anything moves; a few frames a second when the stage is empty or the relay is down.
-        quiet = (err and not self.demo) or not any(not c.gone for c in self.world.clawds.values())
-        self.root.after(int(1000 / (4 if quiet else FPS)), self.tick)
+            self.quit()
+            return False
+        self.shown = (snap, err)
+        # Full speed while anything's on stage; a few steps a second when it's empty or the relay is down.
+        self.quiet = (err and not self.demo) or not any(not c.gone for c in self.world.clawds.values())
+        return True
+
+    def frame(self):
+        """The window's one loop. The World takes its steps at a fixed rate, FPS a second, whatever the PC's
+        timers do: time that has passed is owed to it, and it steps whenever a whole step is owed. (Every speed
+        and hop is counted in steps, so this is what makes a walk the same speed on every PC.)
+
+        The drawing sits between steps. While anything is on the move the stage is drawn more often than the
+        World steps, each time exactly as far from the last step towards the next as the clock is, so motion
+        comes out smooth and evenly paced. When everyone's standing still it's drawn once a step, and with
+        "Smooth motion" switched off it always is."""
+        now = time.time()
+        step = 1.0 / (4 if self.quiet else FPS)
+        self.owed = min(self.owed + now - self.frame_at, 3 * step)  # after a stall it doesn't race to catch up
+        self.frame_at = now
+        stepped = False
+        while self.owed >= step:
+            self.owed -= step
+            if not self.tick(step):
+                return
+            stepped, step = True, 1.0 / (4 if self.quiet else FPS)
+        smooth = self.smooth_var.get() and not self.quiet
+        undo, moving = self.world.glide(min(1.0, self.owed / step) if smooth else 1.0)
+        try:
+            if stepped or (smooth and moving):
+                self.draw(self.shown[0], self.shown[1], clock())
+        finally:  # whatever a drawing trips over, the World goes back as it was and the next frame still comes
+            self.world.settle(undo)
+            wait = 1.0 / DRAW_FPS if smooth and moving else step - self.owed  # next: a drawing, or the next step
+            self.root.after(max(1, int(wait * 1000)), self.frame)
 
     def closing_in(self, snap, err, now):
         """Once your own Claude has left the crew (or the relay is gone) for a while, the show's over: the
@@ -2731,15 +3246,43 @@ class App:
 
     def draw(self, snap, err, now):
         cv, p = self.canvas, self.px
-        cv.delete("all")
         w = self.cols * p
         g = self.ground
         funeral = self.world.funeral
+        # the backdrop of the crew's project: on the stage, behind the Clawds. "plain" is the bare stage.
+        theme = self.force_stage or (snap or {}).get("stage") or "plain"
+        if not stages or theme in self.bad_stages:
+            theme = "plain"
+        split = theme != "plain" and hasattr(stages, "still") and hasattr(stages, "live")
+
+        def backdrop(draw, *when):  # a broken backdrop mustn't stop the show: say so once, then go plain
+            try:
+                draw(self.stage_painter, theme, self.cols * SUB, g * SUB, *when)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                self.bad_stages.add(theme)
+
+        # What never moves is drawn once and stays on the canvas: the little stage the Clawds stand on, and the
+        # still part of the backdrop. Every drawing after that only clears and redraws what's on top of it.
+        if self.still != (p, theme):
+            cv.delete("all")
+            self.painter.round_rect(0, (g + 0.2) * p, w, self.rows * p - 1, p * 1.5, PANEL)
+            cv.create_line(p * 2, (g + 0.2) * p, w - p * 2, (g + 0.2) * p, fill=PANEL_EDGE, width=max(1, p // 3))
+            if split:  # the backdrop's still part goes into one picture, laid over the stage
+                self.still_image = self.painter.image = tk.PhotoImage(width=w, height=self.rows * p)
+                try:
+                    backdrop(stages.still)
+                finally:
+                    self.painter.image = None
+                cv.create_image(0, 0, image=self.still_image, anchor="nw")
+            cv.addtag_all("still")
+            self.still = (p, theme)
+        else:
+            cv.delete("!still")
         if funeral:
             self.painter.storm(self.cols, now)
-        # the little stage the Clawds stand on, with the crew's info
-        self.painter.round_rect(0, (g + 0.2) * p, w, self.rows * p - 1, p * 1.5, PANEL)
-        cv.create_line(p * 2, (g + 0.2) * p, w - p * 2, (g + 0.2) * p, fill=PANEL_EDGE, width=max(1, p // 3))
+        if theme != "plain":  # the backdrop's moving parts (all of it, for a stages.py that doesn't split them off)
+            backdrop(stages.live if split else stages.draw, now)
         clawds = sorted(self.world.clawds.values(), key=lambda c: c.x)
         meeting = self.world.meeting
         if meeting:
@@ -2749,6 +3292,9 @@ class App:
         for pt in self.world.particles:  # the Matrix rains *behind* the hacker
             if pt["kind"] == "matrix":
                 self.painter.particle(pt)
+        # Each Clawd's name and what it's doing, under it. When two stand close (a hug, a carry, a dogpile) their
+        # labels are nudged apart, so they sit side by side instead of printing over each other.
+        labels = []  # [x, half its width, name, status word, online]
         for c in clawds:
             label = c.name.strip()
             if label and self.me and c.name == self.me:
@@ -2757,11 +3303,20 @@ class App:
                 word = STATUS_WORDS.get(c.activity, "")
                 if funeral and funeral["name"] == c.name:
                     word = "R.I.P. (until the reset)"
-                cv.create_text(c.x * p, (g + 4.6) * p, text=label, fill=INK if c.online else DIM,
-                               font=("Segoe UI", max(7, int(p * 1.6)), "bold"))
-                if word or not c.online:
-                    cv.create_text(c.x * p, (g + 6.8) * p, text=word if c.online else "offline", fill=DIM,
-                                   font=("Segoe UI", max(6, int(p * 1.35))))
+                word = (word if c.online else "offline") if word or not c.online else ""
+                half = max(self.name_font.measure(label), self.word_font.measure(word)) / 2 + p
+                labels.append([c.x * p, half, label, word, c.online])
+        for _ in range(4):
+            for a, b in zip(labels, labels[1:]):  # they're in order from left to right
+                short = a[1] + b[1] - (b[0] - a[0])
+                if short > 0:
+                    a[0], b[0] = a[0] - short / 2, b[0] + short / 2
+            for lab in labels:  # and none of them off the stage
+                lab[0] = max(lab[1], min(w - lab[1], lab[0]))
+        for x, _, label, word, online in labels:
+            cv.create_text(x, (g + 4.6) * p, text=label, fill=INK if online else DIM, font=self.name_font)
+            if word:
+                cv.create_text(x, (g + 6.8) * p, text=word, fill=DIM, font=self.word_font)
         host = self.relay.replace("http://", "").replace("https://", "") or "no relay"
         leader = (snap or {}).get("leader") or "none"
         online = sum(1 for x in (snap or {}).get("peers", []) if x.get("online"))
@@ -2816,6 +3371,7 @@ def main():
     ap.add_argument("--leave-at", type=float, default=44, help="demo: when nova disconnects, in seconds (0-50)")
     ap.add_argument("--multi", action="store_true", help="testing: allow a second window (to compare sync)")
     ap.add_argument("--at", help="testing: put the window at X,Y on screen")
+    ap.add_argument("--stage", help="testing: show this backdrop (a theme from stages.py)")
     args = ap.parse_args()
     global FORCE_TRIP, DEMO_LEAVE
     FORCE_TRIP, DEMO_LEAVE = args.trip, args.leave_at

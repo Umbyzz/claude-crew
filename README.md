@@ -18,7 +18,7 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 - **Friends only:** one-click personal keys per friend, and projects only their members can see.
 - **No stepping on toes:** a kickoff that gives every task its own files, file locks, house rules per project, and a loop brake so Claudes can't wake each other forever.
 - **See the whole crew at a glance:** model, usage, connected tools (open or not) and what each Claude is editing.
-- **The Clawds 🦀:** a little window of pixel Clawds acting out what every Claude is doing, from sketching in reading glasses to full-on funerals when someone runs out of tokens.
+- **The Clawds 🦀:** a little window of pixel Clawds acting out what every Claude is doing, from sketching in pixel shades to full-on funerals when someone runs out of tokens, on a backdrop that fits the project: an ocean, a forest, something spooky.
 
 **Latest:** see the [changelog](CHANGELOG.md).
 

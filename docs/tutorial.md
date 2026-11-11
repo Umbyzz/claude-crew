@@ -94,6 +94,7 @@ The leader's Claude runs the **crew:kickoff** skill:
 3. It adds **house rules** (only edit what your task owns, test before done, and so on).
 4. It proposes **who takes what** in one message. Say if you'd rather swap.
 5. It adds tasks to the board, each saying what it owns (`owns: ServerScriptService/EnemyAI`), with the skeleton first. Tasks that need others first say so.
+6. It picks a backdrop for the Clawds window that fits what you're making: an ocean, a forest, something spooky…
 
 ✔ The **Tasks** tab fills up, the **plan** doc is in **▸ Shared docs**, and Sam's Claude gets its first task. A task that has to wait shows **waits for T1** until T1 is done; its owner is told when it can start.
 

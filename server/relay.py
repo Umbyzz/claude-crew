@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.21.0"
+VERSION = "1.22.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -386,6 +386,19 @@ MOMENT_SECONDS = 30  # how long a moment stays on offer to the windows
 MOMENT_GAP = 2  # seconds between one person's moments
 uwu = {}  # project -> {"id", "at"} (memory only: not a message, so in no chat, log or saved state)
 UWU_SECONDS = 300  # how long it's on offer to the project's chats, and how long before it can be used again
+STAGES = ("plain", "baseplate", "ocean", "forest", "city", "spooky", "space", "workshop")  # window/stages.py draws them
+
+
+def stage_of(project):
+    """The backdrop the project's leader picked for the Clawds window ("plain": today's stage)."""
+    return state.setdefault("stages", {}).get(project, "plain")
+
+
+def stage_for(viewer, now):
+    """What a person's Clawds window shows: the backdrop of their current project (their most recent open chat)."""
+    p = peers.get(viewer) or {}
+    chats = {k: c for k, c in p.get("chats", {}).items() if now - c["seen"] < CHAT_FRESH}
+    return stage_of(max(chats.items(), key=lambda kv: kv[1]["seen"])[0] if chats else p.get("project", MAIN))
 EDIT_SECONDS = 600
 
 
@@ -465,14 +478,15 @@ def sweep():
             announce_leave(name, "lost connection (their Claude was closed or went offline)")
             save()
     update_acting(now)
-    # A claim nobody is working on any more goes back on the board.
+    # A claim nobody is working on any more goes back on the board. Unlike the board's other lines, the project's
+    # Claudes are told (notice), so the leader can re-plan it.
     for t in state["tasks"]:
         if t["status"] == "claimed" and t.get("owner") and away_for(t["owner"], now) >= RELEASE_MINUTES * 60:
             owner = t["owner"]
             t.update(status="open", owner=None)
             post_message(owner, "all", f"released task T{t['id']}: {owner} has been offline for "
                                        f"{RELEASE_MINUTES}+ minutes, so it's open again: {t['title']}", "update",
-                         t.get("project", MAIN))
+                         t.get("project", MAIN), notice=True)
             save()
 
 
@@ -766,6 +780,7 @@ class Handler(BaseHTTPRequestHandler):
                           if m["kind"] in ("chat", "request", "out", "back", "join", "leave", "image")]
                 self.reply(200, {"peers": peer_list(MAIN, viewer), "leader": state["leader"], "acting": acting.get(MAIN), "recent": recent,
                                  "moments": [m for m in moments if time.time() - m["at"] < MOMENT_SECONDS],
+                                 "stage": stage_for(viewer, time.time()),
                                  "now": time.time(), "version": VERSION})
             elif url.path == "/poll":
                 since = int(q.get("since", ["0"])[0])
@@ -793,7 +808,7 @@ class Handler(BaseHTTPRequestHandler):
                                     if self.via_shared and state.get("friends", {}).get(self.name, {}).get("pending") else {}),
                                  "keepAwake": bool(state.get("keepAwake", True)), "awake": awake["held"],
                                  "tasks": [task_view(t, now) for t in state["tasks"] if task_in(t, pr)],
-                                 "leader": leader_of(pr), "acting": acting.get(pr),
+                                 "leader": leader_of(pr), "acting": acting.get(pr), "stage": stage_of(pr),
                                  "shared": sorted(docs_of(pr).keys()), "projects": projects_list(now, self.name),
                                  "cursor": state["next_id"] - 1, "chatEpoch": epoch_of(pr),
                                  "editing": editing_in(pr, self.name, now),
@@ -876,6 +891,7 @@ class Handler(BaseHTTPRequestHandler):
                 state.setdefault("leaders", {}).pop(pr, None)
                 state.setdefault("epochs", {}).pop(pr, None)
                 state.setdefault("taskCounts", {}).pop(pr, None)
+                state.setdefault("stages", {}).pop(pr, None)
                 acting.pop(pr, None)
                 state.setdefault("deleted", {})[pr] = {"by": self.name, "at": time.time()}
                 post_message(self.name, "all", f'deleted the project "{pr}"', "deleted", deleted=pr)
@@ -905,7 +921,7 @@ class Handler(BaseHTTPRequestHandler):
                             del state[bag][k]
                             v["project"] = new
                             state[bag][doc_key(new, v["name"])] = v
-                for bag in ("leaders", "epochs", "projectMembers", "projectInvites", "taskCounts"):
+                for bag in ("leaders", "epochs", "projectMembers", "projectInvites", "taskCounts", "stages"):
                     d = state.setdefault(bag, {})
                     if old in d:
                         d[new] = d.pop(old)
@@ -1091,6 +1107,19 @@ class Handler(BaseHTTPRequestHandler):
                 moments[:] = [m for m in moments if now - m["at"] < MOMENT_SECONDS][-19:]
                 moments.append({"id": secrets.token_hex(4), "kind": kind, "from": self.name, "to": to, "at": now})
                 return self.reply(200, {"to": to})
+            if path == "/stage":  # the leader picks the project's backdrop in everyone's Clawds window
+                theme = str(b.get("theme") or "").strip().lower()
+                pr = self.project
+                lead = leader_of(pr)
+                if theme not in STAGES:
+                    return self.reply(400, {"error": f"pick one of: {', '.join(STAGES)}"})
+                if lead and self.name not in (lead, acting.get(pr)) and not self.host_pc():
+                    return self.reply(403, {"error": "only the project's leader (or acting leader) picks its stage"})
+                if stage_of(pr) != theme:
+                    state.setdefault("stages", {})[pr] = theme
+                    post_message(self.name, "all", f"set the stage to {theme}", "update", pr)
+                    save()
+                return self.reply(200, {"stage": theme})
             if path == "/uwu":
                 now = time.time()
                 mark = uwu.get(self.project)

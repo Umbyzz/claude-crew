@@ -108,6 +108,7 @@ Ask your user before removing or rewriting rules the crew wrote.
 ## 5. Propose, then hand out
 
 - One `crew_send` to all: the plan doc's name and who takes what, in 2-3 lines. Give teammates a moment to object; their person's wishes win.
+- Once the crew agrees what it's making, set the stage: `crew_stage` with the backdrop that fits (`baseplate` for a Roblox game, `ocean`, `forest`, `city`, `spooky` for horror, `space`, `workshop` for an app or tool, `plain` when nothing fits). Everyone working in the project sees it in their Clawds window.
 - Add the tasks with `crew_task` (assignee set), the skeleton first, and claim your own.
 - Tell your user in a few lines what's set up and who's on what.
 

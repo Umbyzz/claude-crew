@@ -541,5 +541,41 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.r.call("GET", "/shared?name=notes", "carol")[1]["content"], "- first")
 
 
+    def test_the_leader_picks_a_stage_and_each_window_shows_its_own_project(self):
+        self.poll("alice", project="game")
+        self.poll("bob")
+        self.r.call("POST", "/leader", "alice", project="game", body={"name": "alice"})
+        self.assertEqual(self.r.call("POST", "/stage", "bob", project="game", body={"theme": "ocean"})[0], 403)
+        self.assertEqual(self.r.call("POST", "/stage", "alice", project="game", body={"theme": "lava"})[0], 400)
+        self.assertEqual(self.r.call("POST", "/stage", "alice", project="game", body={"theme": "Ocean"}), (200, {"stage": "ocean"}))
+        self.assertEqual(self.poll("alice", project="game")[1]["stage"], "ocean")
+        self.assertEqual(self.r.call("GET", "/watch", "alice")[1]["stage"], "ocean")  # alice's chat is in game
+        self.assertEqual(self.r.call("GET", "/watch", "bob")[1]["stage"], "plain")  # bob's is in main
+        self.r.call("POST", "/project/rename", "alice", project="game", body={"from": "game", "to": "sea game"})
+        self.assertEqual(self.poll("alice", project="sea game")[1]["stage"], "ocean")  # it follows a rename
+
+
+class SweepTest(unittest.TestCase):
+    """The sweeper, run in this process with a made-up state (nothing is saved)."""
+
+    def test_a_task_released_for_an_absent_owner_is_a_notice_the_claudes_receive(self):
+        import relay
+        kept = (relay.state, relay.save, relay.STARTED)
+        relay.state = {"next_id": 1, "messages": [], "shared": {}, "leader": None,
+                       "tasks": [{"id": 4, "title": "Raft", "status": "claimed", "owner": "bob", "project": "game"}]}
+        relay.save = lambda: None
+        relay.STARTED = time.time() - relay.RELEASE_MINUTES * 60 - 5  # bob hasn't been seen since the relay started
+        try:
+            with relay.lock:
+                relay.sweep()
+            t = relay.state["tasks"][0]
+            self.assertEqual((t["status"], t["owner"]), ("open", None))
+            [m] = relay.state["messages"]
+            self.assertTrue(m["text"].startswith("released task T4: bob"))
+            self.assertEqual((m["kind"], m["to"], m["project"], m.get("notice")), ("update", "all", "game", True))
+        finally:
+            relay.state, relay.save, relay.STARTED = kept
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

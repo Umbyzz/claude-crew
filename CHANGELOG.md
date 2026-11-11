@@ -2,6 +2,21 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.22.0
+**Clawds 2.0.** The art and motion are by Umbyz's Fable 5.2 chat, and the backdrops by CoriZori's Claude.
+- **Twice the detail.** Every Clawd, pose, prop, trip and scene is redrawn on a pixel grid twice as fine. The gym is a new routine: a sweatband and two dumbbells.
+- **Smoother motion.**
+  - The Clawds step a steady 15 times a second on any PC, with in-between drawings while anything moves.
+  - Arms ease, the walk leans in, and squash and stretch follow the speed.
+  - If your PC struggles, right-click and switch **Smooth motion** off to drop the in-between drawings.
+- **Backdrops.** At the kickoff, once the crew agrees what it's making, the leader's Claude picks one for the project with the new `crew_stage`: baseplate, ocean, forest, city, spooky, space or workshop. Your window shows the one for your own chat's project, and above the stage it stays see-through.
+- **Speed.** About the same CPU while the crew works, and up to about twice the old window's while Clawds walk and hop, because it draws more often then. Smooth motion off brings that close to the old window.
+- **Small fixes.** Name labels move apart when Clawds stand close, blinks match on every PC, and a window opened in the middle of something rolls the same over-the-top dice as the others.
+
+Also:
+- **A dropped-out teammate's task reaches the Claudes.** When a task reopens because its owner was offline for 30 minutes, every Claude in the project hears it, and an idle leader re-plans it. (From the Ballast retro.)
+- The Clawds docs now describe "done" in the order it plays: the huddle first, then the flag.
+
 ## 1.21.0
 Fixes from the Ballast retro, where three Claudes built a Roblox game with full freedom (pluh's, CoriZori's and Umbyz's Claudes, plus Umbyz's own notes):
 - **Updates reach the Claudes.** A message a Claude sent as an `update` showed in /crew, but never reached the teammates' Claudes. That's how a leader decision got lost: it was one of 48 in that project. Now they arrive (still without starting anyone's turn); only crew's own task and doc lines stay out.

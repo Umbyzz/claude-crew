@@ -5,7 +5,7 @@ import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.21.0'
+const VERSION = '1.22.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1598,7 +1598,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
       }
       continue
     }
-    if ((m.kind === 'update' && !m.said) || m.kind === 'join') continue // the relay's own lines: the board has them
+    if ((m.kind === 'update' && !m.said && !m.notice) || m.kind === 'join') continue // the relay's own lines: the board has them
     lastTalk = Date.now()
     // People chatting in /crew is for the people: their Claudes don't read it, which keeps it out of every
     // Claude's context (and token bill). "Ask a Claude" sends a request instead, which does reach them.
@@ -1659,6 +1659,13 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
       queuedRequests.set(m.id, m.from)
       void autoSubmit($, {
           text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : m.from === actingLeader ? ` (acting leader while ${leader} is away)` : ''}${m.human ? ', typed by them in /crew' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
+        })
+        .catch(() => {})
+    }
+    // A teammate dropped out and their task went back on the board: the leader re-plans it, even from idle.
+    if (m.notice && leading && cfg.autoRun !== 'off' && !working) {
+      void autoSubmit($, {
+          text: `From the crew board: ${line(m)}\n\nRe-plan it: take it yourself or assign it to someone who's online, and tell the crew with crew_send.`,
         })
         .catch(() => {})
     }
@@ -1990,7 +1997,10 @@ const SYSTEM_KINDS = new Set<CrewMessage['kind']>(['join', 'leave', 'update', 'o
 // The relay's own lines: tasks, docs, folders, members and who leads. Messages from before 1.21 don't say whether
 // someone wrote an update, so these are known by their wording too.
 const RELAY_LINE =
-  /^(?:(?:added|claim|done|release|assign|edit|remove|block|unblock|check) task [T#]\d+|released task [T#]\d+|T\d+ can start:|shared doc '|deleted the doc '|(?:shared|stopped sharing) the folder '|renamed the project |removed \S+ from the project|made the project members-only|opened the project to the whole crew|\S+ cleared the crew chat)/
+  /^(?:(?:added|claim|done|release|assign|edit|remove|block|unblock|check) task [T#]\d+|released task [T#]\d+|T\d+ can start:|set the stage to |shared doc '|deleted the doc '|(?:shared|stopped sharing) the folder '|renamed the project |removed \S+ from the project|made the project members-only|opened the project to the whole crew|\S+ cleared the crew chat)/
+// The Clawds window's backdrops (window/stages.py draws them); the relay keeps the same list.
+const STAGES = ['plain', 'baseplate', 'ocean', 'forest', 'city', 'spooky', 'space', 'workshop'] as const
+
 function relayLine(m: CrewMessage) {
   return m.kind === 'update' && !m.said && (!!m.leaderChange || RELAY_LINE.test(m.text))
 }
@@ -3144,6 +3154,13 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
   },
   {
+    name: 'crew_stage',
+    description:
+      "Pick this project's backdrop in everyone's Clawds window, once the crew agrees what it's making (the leader does, at the kickoff): " +
+      'baseplate for a Roblox game, ocean, forest, city, spooky, space, workshop for an app or tool, or plain.',
+    inputSchema: { type: 'object', properties: { theme: { type: 'string', enum: [...STAGES] } }, required: ['theme'] },
+  },
+  {
     name: 'crew_share',
     description:
       'Publish a named text document to the crew (plans, specs, code, diffs, findings). Same name overwrites, unless append is true. Max 200k chars.',
@@ -3649,6 +3666,11 @@ export const register: Register = (on, options) => {
     const r = await relay($, 'POST', '/leader', { name: e.name ?? '' })
     await poll($)
     return ok(r.leader ? `${r.leader} is now the crew leader.` : 'The crew has no leader now.')
+  }).catch(failed)
+
+  on('tool.call', { tool: 'mcp__crew__crew_stage' }, async ($, e: any) => {
+    const r = await relay($, 'POST', '/stage', { theme: String(e.theme ?? '') })
+    return ok(`The stage is "${r.stage}" now: everyone working in this project sees it in their Clawds window.`)
   }).catch(failed)
 
   on('tool.call', { tool: 'mcp__crew__crew_share_folder' }, async ($, e: any) => {

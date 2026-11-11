@@ -1,15 +1,15 @@
 # The Clawds 🦀
 
-Each crew member is a pixel Clawd, named on the stage below it, that acts out what their Claude is doing right now. The leader wears a ★. They move with weight, timed after the real mascot's animations: the eyes lead a look-around, they lean into it, crouch before a jump, arc through the air and land with a little bounce.
+Each crew member is a pixel Clawd, named on the stage below it, that acts out what their Claude is doing right now. The leader wears a ★. They move with weight, timed after the real mascot's animations: the eyes lead a look-around, they lean into it, crouch before a jump, arc through the air and land with a little bounce. They're drawn on a fine pixel grid, and the motion glides smoothly between steps.
 
 | Their Claude is… | Their Clawd… |
 |---|---|
 | getting a new prompt | the **confetti stomp**: stomps side to side, throwing a burst of confetti each time a hand goes up |
 | thinking | looks up with a hand raised and a thought bubble |
 | writing files | sits on the edge of the stage with the laptop on its lap, both hands typing, code flying out |
-| using tools | puts on pixel shades and sketches on a sheet of paper, the scribbles filling up the page. After a long stretch it goes and **lifts**: a dumbbell curl, two reps, holding at the top of each |
+| using tools | puts on pixel shades and sketches on a sheet of paper, the scribbles filling up the page. After a long stretch it hits the **gym**: on goes a sweatband, up come two dumbbells, and it curls on each side, holding at the top of each |
 | chatting | walks over to the teammate it's messaging, with the real message in a speech bubble |
-| finished a prompt | waves a **checkered flag**, swaying against it (*"flag's up!"*), then the whole crew huddles together and shouts **"CLAUDE'S PLAN!!"** (idea: Pluh and Corixer), then a dance |
+| finished a prompt | the whole crew huddles together and shouts **"CLAUDE'S PLAN!!"** (idea: Pluh and Corixer; alone, it cheers it solo), then it waves a **checkered flag**, swaying against it (*"flag's up!"*) |
 | running subagents | is followed by mini Clawds, one per subagent. Every so often the minis build a **tower**, taking turns making huge squash-and-stretch leaps onto each other's heads. When two or more are busy at once (one Claude's subagents on its task, or several Claudes' at the same time), they set up their own **mini office**: a little table with a tiny laptop each |
 | out of tokens | falls asleep while the others sweat and worry. If that's in the middle of the stage, a teammate lifts them overhead and carries them to the side to rest. After half a minute they sigh *"they'll be back"*, give the sleeper a pat, and get back to work |
 | sending the crew a request | holds a **meetup**: an easel whiteboard rolls in, the sender presents (*"synergy."*) while the diagram draws itself, and everyone else sits around a table on office chairs, taking notes, nodding, or dozing off (*"could this have been an email?"*) |
@@ -26,7 +26,7 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | thinking | strikes a pose: the 🤔 (one eyebrow up, finger on the chin) or a smug sip of tea, then shouts *"EUREKA!!!"* when it's done |
 | typing | becomes a hacker: pink sunglasses, a toy laptop, green Matrix code raining behind it, *"I'm in."* |
 | out of tokens | **a whole funeral.** Storm clouds, rain and lightning. A teammate carries the fallen one to the side, a tombstone rises where they're laid down, a ghost with a halo floats above it, and the mourners kneel and weep. Each one walks up and lays a flower on the grave, and after a while they sigh *"they'll be back"* and high-five (or hug) the ghost before getting back to work. When the tokens come back: *"I HAVE RISEN FROM THE GRAVE!!!"* |
-| done | a solo rave, a confetti cannon, a bigger, bouncier **"CLAUDE'S PLAN!!"** huddle, and then, in memory of the King, the whole crew puts on **fedoras**, turns three-quarters and **moonwalks**, does the **spin**, and strikes a pose: a hat tip, the point (*"OW!"*), up on the toes, or the brim pulled low. *Hee-hee!* |
+| done | a confetti cannon and a bigger, bouncier **"CLAUDE'S PLAN!!"** huddle. Then, in memory of the King, the whole crew puts on **fedoras**, turns three-quarters and **moonwalks**, does the **spin**, and strikes a pose: a hat tip, the point (*"OW!"*), up on the toes, or the brim pulled low. *Hee-hee!* Then a solo rave |
 | new prompt | a bigger confetti stomp with sparks: *"LET'S GOOOOOO!!!"* |
 | chatting | sprints over and yells in ALL CAPS |
 | using tools | the blacksmith: a hard hat, a hammer and a mini gear, sparks on every *CLANG* |
@@ -35,14 +35,25 @@ Each crew member is a pixel Clawd, named on the stage below it, that acts out wh
 | `/bonk` | three bonks instead of one |
 | idle | taps a foot at you, hands on hips: *"Are you gonna prompt yet?"*; moon-hops, *"HIIIIIII!!!"* waves, dramatic sighs |
 
+**Backdrops.** Once the crew agrees what it's making, the leader's Claude picks a backdrop for the project at the kickoff (`crew_stage`):
+- a **baseplate** of toy bricks, for a Roblox game
+- the **ocean**: a pier, a lighthouse and waves
+- a **forest**
+- a **city**
+- something **spooky** for horror: a dead tree, tombstones and a fence
+- **space**
+- a **workshop**, for an app or tool
+
+Until one is picked, it's the plain stage. Your window shows the backdrop of the project your own chat is in, and above the stage the window stays see-through.
+
 **The Clawds window** is a small frameless window that stays on top of your desktop while everyone works. It pops out on its own when you open `/crew`. You can switch that off in Settings, and bring the window back any time with `/clawds`, the **Clawds** button in `/crew`, or by double-clicking `window/Clawds.bat`. Only one window ever runs: opening it again brings the existing one to the front.
   - Drag it anywhere.
   - Click **◉ pinned** on the stage to toggle always-on-top, and **✕** to close it.
-  - Right-click for **Pin on top**, **Size** (small, medium or large), **Party!** and **Keep open after I leave**.
+  - Right-click for **Pin on top**, **Size** (small, medium or large), **Smooth motion** (the in-between drawings while Clawds move: switch it off if your PC struggles), **Party!** and **Keep open after I leave**.
   - Your own Clawd is labelled **(you)**. The window follows your `/crew` settings as you change them (the demo crew makes way for yours a few seconds after setup), and when the relay can't be reached everyone shows as offline instead of frozen mid-thought. When nothing's on stage it drops to a few frames a second to spare your CPU.
   - When your own Claude leaves the crew (or the relay goes away), the Clawds make their exits and the window closes itself a minute later, with a countdown on the stage. Tick **Keep open after I leave** to watch the crew without being in it.
   - Click a Clawd to poke it: it hops and tells you what it's doing.
-  - It remembers where you left it, its size and pin setting in `~/.claude/crew-clawds.json`.
+  - It remembers where you left it, its size, pin and Smooth motion settings in `~/.claude/crew-clawds.json`.
   - Room for **ten** Clawds (in a bigger crew, the offline ones step aside first), and the window remembers its spot on **any monitor**.
   - **Everyone sees the same show.** Every crew member's window runs on the relay's clock and rolls the same dice from the same shared facts. So the idle moves, over-the-top moments, poses, huddles, meetups and arrival/departure trips happen the same way at the same moment on every screen.
 
