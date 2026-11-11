@@ -76,7 +76,21 @@ export type CrewSnapshot = {
   project?: string // the crew project this session is in ('main' unless switched)
   projects?: CrewProject[] // every project on the relay
   keepAwake?: boolean // the host keeps their PC awake while anyone's connected
+  vote?: CrewVote | null // a leader vote under way in this project
+  knocks?: CrewKnock[] // people at the locked door (the host only)
 }
+
+export type CrewVote = {
+  id: string
+  for: string // who would lead
+  by: string // who asked
+  until: number // when it ends, on the relay's clock
+  voters: string[] // the people online in the project when it started
+  yes: string[]
+  no: string[]
+}
+
+export type CrewKnock = { name: string; ip: string; friend: boolean; at: number } // someone at the host's locked door
 
 export type CrewProject = {
   name: string

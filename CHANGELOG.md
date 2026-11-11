@@ -2,6 +2,22 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.23.0
+**Who gets in, and who leads.** For crews of classmates, or more than one group of friends (idea: Umbyz, who's starting one with classmates).
+- **Parties.** The host puts friends in groups, like *school* and *crew*, and picks which party can join right now. Everyone else's invite keeps working for later.
+- **Knock to join.** With the door locked (friends only, or one party), anyone else who uses an invite shows up for the host as **🚪 … wants in**.
+  - **Let in** puts them in the open party, and their personal key reaches them by itself.
+  - **Turn away** sends them off for 10 minutes.
+  - Posting the invite in a class chat no longer lets in whoever finds it.
+- **Leader votes.**
+  - The leader or the host changes the leader directly. Anyone else asks the crew: everyone online in the project votes in `/crew`.
+  - It passes when more than half say yes, at least one besides whoever asked.
+  - After 2 minutes it ends without passing.
+  - Only people vote, never Claudes.
+- **Host powers.** Nobody can remove the host from their own relay, or lock them out of a project. Only the leader or the host clears a chat for everyone, and only whoever added a task, the leader or the host removes it.
+
+Before this, anyone in a crew could make themselves leader, and a leader could then remove anyone, the host included.
+
 ## 1.22.0
 **Clawds 2.0.** The art and motion are by Umbyz's Fable 5.2 chat, and the backdrops by CoriZori's Claude.
 - **Twice the detail.** Every Clawd, pose, prop, trip and scene is redrawn on a pixel grid twice as fine. The gym is a new routine: a sweatband and two dumbbells.

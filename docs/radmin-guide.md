@@ -107,7 +107,9 @@ Not connecting? **⚙ Settings → Test connection** checks that you can reach t
 For each person, while they're connected, open the **Crew** tab and press **★ Friend** next to their name. Their personal key reaches them by itself.
 
 ### 10. Friends only
-Go to **⚙ Settings → Who can join → friends only**.
+Go to **⚙ Settings → Who can join → friends only**. From now on, anyone else who uses your invite knocks: you see **🚪 … wants in** at the top of `/crew`, and press **Let in** or **Turn away**.
+
+Crew with two groups, like classmates and your usual friends? In the **Friends** card, make a **party** for each, put each friend in theirs, and pick **only the … party** under Who can join.
 
 ✔ Your friends stay connected, and a leaked invite now gets nobody in.
 
@@ -130,7 +132,7 @@ The [tutorial](tutorial.md#part-2-start-a-project) takes it from here: start a p
 | **Can't reach the relay** | **Host:** is the relay window open? Then check the firewall: Windows Security → **Firewall & network protection** → **Allow an app through firewall**, and tick both **Private** and **Public** for Python. **Everyone:** is Radmin VPN on and showing the same network? |
 | **Ping doesn't work either** | It's Radmin, not crew. See [Radmin's help page](https://www.radmin-vpn.com/help/), including its firewall setup for antivirus programs. |
 | **"… has a personal key"** | You're on the host's friends list, so the shared key no longer works for you. The host opens the **Crew** tab → **Friends** card → **Copy invite** next to your name. Paste that key in **⚙ Settings → Crew key**, using exactly that name. |
-| **"this crew is friends-only"** | The host opens the **Crew** tab → **Friends** card, types your exact crew name in the box and presses Enter. That copies a personal invite to send you. |
+| **"this crew is friends-only … you're knocking"** | The host presses **Let in** at the top of their `/crew`. Keep `/crew` open: you're in within seconds. |
 | **Everyone suddenly drops** | The host's relay window closed or their PC went to sleep. The host presses **▶ Start relay** in `/crew`, and everyone reconnects by themselves. |
 | **"Port 7787 is taken by another program"** | The relay window names the program. Close it, then press **▶ Start relay** again. |
 

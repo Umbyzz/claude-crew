@@ -1,6 +1,6 @@
 # Using crew
 
-1. Pick a **leader** in the **Crew** tab. One person sets it, and everyone sees the change.
+1. Pick a **leader** in the **Crew** tab. Everyone sees the change. Once there's a leader, only the leader or the host changes it directly; anyone else asks the crew, and it's a vote.
 2. Give the leader's Claude a goal, for example: *"We're building X. Plan it and split it across the crew."* Raw material for it goes in your **Crewleader** folder first.
 3. The leader proposes who takes what, adds tasks to the board and assigns them. Everyone else's Claude picks up its assignments, works on them and reports back.
 
@@ -10,10 +10,10 @@
 Reads like a messenger: your messages on the right, everyone else's on the left, back-to-back messages grouped into one bubble, crew events as dim centred lines that fold up when there are many, and "✓ read by …" under your newest message.
 - **People / Everything:** *People* shows only what humans typed; *Everything* also shows the Claudes' requests, updates and replies to each other, including what two teammates' Claudes say to each other in this project. Only the Claude it's addressed to gets those, so watching costs no tokens.
 - **To:** picks who you're talking to. *The people* is a plain chat: everyone sees it, no Claude reads it, so it costs no tokens (type `@name message` to DM someone). Pick a **teammate's Claude** instead and your message reaches that Claude as a request, so it starts on it right away when its Auto-run allows.
-- **Save** writes the chat and task board to `~/.claude/crew-chats` as Markdown. **Reset** clears the chat for everyone, after a confirm (a copy is saved first; tasks and docs stay).
+- **Save** writes the chat and task board to `~/.claude/crew-chats` as Markdown. **Reset** (the leader or the host) clears the chat for everyone, after a confirm (a copy is saved first; tasks and docs stay).
 
 ## Tasks
-A small task manager: **✓ done** and **✕** on each task, an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
+A small task manager: **✓ done** on each task and **✕** on the ones you may remove (yours, or any of them for the leader and the host), an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
 - A task that waits for others shows **waits for T3** under it (dim until they're done), and a stuck one shows **🚧 blocked:** with the reason.
 - Under **Done**: finished tasks still waiting for the leader's check (the leader gets a **Check** button on each), then the last few **✓ checked by** the leader.
 
@@ -33,10 +33,15 @@ The project belongs to the Claude Code chat: switch in one chat and the others s
 
 ## Crew
 - **Everyone, one line each:** online or not, leader (★) and acting leader (☆), what their Claude is doing, model, usage (*S* session, *W* week), connected tools (🔌 *on/off*), the file they're editing (✎), friend, and version (**✓** same as yours, **⬆ update** behind, with **Nudge**). The host also sees where each person connects from.
-- **Leader** picker, and **Remove** (leader or host).
+- **Leader** picker, and **Remove** (leader or host; nobody can remove the host from their own relay).
+  - The leader or the host picks a new leader straight away. For anyone else the picker says **Ask the crew**: everyone online in the project gets **🗳 … asks: make … the crew leader? Yes / No** at the top of `/crew`.
+  - The vote passes when more than half of them say yes, at least one of them besides whoever asked. After 2 minutes it ends without passing, and nobody can vote themselves in alone.
+  - Only people vote: a Claude can ask for a vote when its person wants it, but can't vote.
 - **For the host:**
   - **★ Friend** next to each connected person.
   - The **Friends** card: who's a friend, when and from where they last connected, **Copy invite**, **Remove**, and a box to invite someone who isn't connected yet.
+  - **Parties** put friends in groups, like *school* and *crew*: make one in the Friends card, then press a party's name next to a friend to put them in it. **⚙ Settings → Who can join → only the school party** lets just that party in. Everyone else's invite keeps working for later.
+  - **Knocking:** with the door locked (friends only, or one party), anyone else who uses an invite shows up at the top of `/crew` as **🚪 … wants in**, with **Let in** (they join the open party, and their personal key reaches them by itself) or **Turn away**.
   - The **Invite friends** card: **Copy invite**, **Stop hosting…** (it asks first), **🔑 New crew key…** and **Keep this PC awake while anyone's connected**.
 - **For everyone else:** a short Friends note (are you on the host's friends list?).
 - **Quack?** at the very bottom: three buff ducks, in three windows. Close them one at a time, or leave them there. It's your screen.

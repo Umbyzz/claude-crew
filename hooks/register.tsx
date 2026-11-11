@@ -1,11 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { CrewMessage, CrewSnapshot, CrewTask } from '../types'
+import type { CrewKnock, CrewMessage, CrewSnapshot, CrewTask, CrewVote } from '../types'
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.22.0'
+const VERSION = '1.23.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1748,7 +1748,10 @@ async function pollOnce($: EngineInterface) {
       shared: data.shared ?? [],
       reads: data.reads && typeof data.reads === 'object' ? data.reads : undefined, // absent from an older relay
       keepAwake: data.keepAwake !== false,
+      vote: data.vote ?? null, // absent: no vote under way here (or an older relay)
+      knocks: Array.isArray(data.knocks) ? data.knocks : [], // only the host gets these
     }))
+    noteDoor($, data)
     lastGoodAt = Date.now()
     if (lastGoodAt - cacheSavedAt > 60000) {
       // in the background: a check-in never waits on it
@@ -1805,6 +1808,7 @@ async function pollOnce($: EngineInterface) {
     void probeNewPort($).catch(() => {}) // moved to the new port?
     // Back off while the relay is unreachable: skip 1, 2, 4 ... up to 10 ticks between tries.
     skip = Math.min(10, 2 ** Math.min(failures - 1, 4))
+    if (/you're knocking/.test(raw)) skip = Math.min(skip, 2) // at the door: keep trying, so the host's "Let in" lands in seconds
     await update($, snapshot, s => ({ ...s, connected: false, error: msg }))
     $.ui.status(`crew: offline (${msg.slice(0, 60)})`)
   }
@@ -1997,7 +2001,7 @@ const SYSTEM_KINDS = new Set<CrewMessage['kind']>(['join', 'leave', 'update', 'o
 // The relay's own lines: tasks, docs, folders, members and who leads. Messages from before 1.21 don't say whether
 // someone wrote an update, so these are known by their wording too.
 const RELAY_LINE =
-  /^(?:(?:added|claim|done|release|assign|edit|remove|block|unblock|check) task [T#]\d+|released task [T#]\d+|T\d+ can start:|set the stage to |shared doc '|deleted the doc '|(?:shared|stopped sharing) the folder '|renamed the project |removed \S+ from the project|made the project members-only|opened the project to the whole crew|\S+ cleared the crew chat)/
+  /^(?:(?:added|claim|done|release|assign|edit|remove|block|unblock|check) task [T#]\d+|released task [T#]\d+|T\d+ can start:|set the stage to |asks the crew to make |asked to make |shared doc '|deleted the doc '|(?:shared|stopped sharing) the folder '|renamed the project |removed \S+ from the project|made the project members-only|opened the project to the whole crew|\S+ cleared the crew chat)/
 // The Clawds window's backdrops (window/stages.py draws them); the relay keeps the same list.
 const STAGES = ['plain', 'baseplate', 'ocean', 'forest', 'city', 'spooky', 'space', 'workshop'] as const
 
@@ -2690,7 +2694,7 @@ function proposeLeader($: EngineInterface, name: string) {
 
 function confirmLeader($: EngineInterface, name: string) {
   void update($, pendingLeader, () => '')
-  setLeader($, name === '__none' ? '' : name)
+  void read($, snapshot).then(s => (name !== '__none' && !canLead(s) ? startVote($, name) : setLeader($, name === '__none' ? '' : name)))
 }
 
 // Hosting already (say after a restart): find the address to put in the invite.
@@ -2790,13 +2794,115 @@ async function newCrewKey($: EngineInterface, surface: any) {
 
 // Friends (the host only): each gets a personal key tied to their name, so nobody can pose as them, and removing
 // one stops only their key. "Friends only" then turns the shared crew key off.
-type Friend = { name: string; key: string; seen: number; ip: string; online: boolean }
-const friendsAtom = atom({ plugin: 'crew', key: 'friends' } as const, { list: [] as Friend[], friendsOnly: false })
+type Friend = { name: string; key: string; seen: number; ip: string; online: boolean; pending?: boolean; parties?: string[] }
+const friendsAtom = atom({ plugin: 'crew', key: 'friends' } as const, {
+  list: [] as Friend[],
+  friendsOnly: false,
+  parties: [] as string[], // friends in groups ("school", "crew")
+  party: null as string | null, // the one party that can join right now
+})
 
 async function friendCall($: EngineInterface, path: string, body: unknown) {
   const r = await relay($, 'POST', path, body)
-  await update($, friendsAtom, () => ({ list: r.friends ?? [], friendsOnly: Boolean(r.friendsOnly) }))
+  await update($, friendsAtom, () => ({
+    list: r.friends ?? [],
+    friendsOnly: Boolean(r.friendsOnly),
+    parties: Array.isArray(r.parties) ? r.parties : [], // absent from an older relay
+    party: r.party ?? null,
+  }))
   return r
+}
+
+// What the relay said, without the "relay 409:" in front.
+function relayWords(err: unknown) {
+  return explain(err instanceof Error ? err.message : String(err)).replace(/^relay \d+: /, '')
+}
+
+// The door: anyone with the crew key, friends only, or one party. With it locked, anyone else knocks.
+async function setDoor($: EngineInterface, value: string) {
+  const party = value.startsWith('party:') ? value.slice(6) : ''
+  try {
+    // friendsOnly too: a relay from before parties reads only that, and must never take "friends only" for "open"
+    await friendCall(
+      $,
+      '/friends/mode',
+      party ? { door: 'party', party, friendsOnly: true } : { door: value === 'friends' ? 'friends' : 'open', friendsOnly: value === 'friends' },
+    )
+    $.ui.toast(
+      party
+        ? `crew: only the ${party} party gets in now. Anyone else knocks, and you let them in or turn them away.`
+        : value === 'friends'
+          ? 'crew: friends only. Anyone else knocks, and you let them in or turn them away.'
+          : 'crew: anyone with the crew key can join again',
+      { timeoutMs: 8000 },
+    )
+  } catch (err) {
+    $.ui.toast(`crew: ${relayWords(err)}`, { timeoutMs: 8000 })
+  }
+}
+
+async function partyCall($: EngineInterface, path: string, body: unknown, done = '') {
+  try {
+    await friendCall($, path, body)
+    if (done) $.ui.toast(`crew: ${done}`, { timeoutMs: 7000 })
+  } catch (err) {
+    $.ui.toast(`crew: ${relayWords(err)}`, { timeoutMs: 8000 })
+  }
+}
+
+// Someone at the locked door: in they come (into the party that's open), and their personal key reaches them.
+async function letIn($: EngineInterface, name: string) {
+  await partyCall($, '/friends/letin', { name }, `let ${name} in. Their personal key reaches them on their next check-in.`)
+  await poll($)
+}
+
+async function turnAway($: EngineInterface, name: string) {
+  await partyCall($, '/friends/turnaway', { name }, `turned ${name} away. If they try again, they show up in 10 minutes.`)
+  await poll($)
+}
+
+// New knocks at the host's door, and a new leader vote: a toast each, once.
+const seenKnocks = new Set<string>()
+let seenVote = ''
+function noteDoor($: EngineInterface, data: any) {
+  const names: string[] = (Array.isArray(data.knocks) ? data.knocks : []).map((k: CrewKnock) => k.name)
+  for (const n of names.filter(n => !seenKnocks.has(n)))
+    $.ui.toast(`crew: 🚪 ${n} wants in: Let in or Turn away, at the top of /crew`, { timeoutMs: 15000 })
+  seenKnocks.clear()
+  names.forEach(n => seenKnocks.add(n))
+  const v: CrewVote | undefined = data.vote
+  if (v && v.id !== seenVote) {
+    seenVote = v.id
+    if (v.voters.includes(cfg.me) && !v.yes.includes(cfg.me) && !v.no.includes(cfg.me))
+      $.ui.toast(`crew: 🗳 ${v.by} asks the crew to make ${v.for} the leader. Vote at the top of /crew.`, { timeoutMs: 15000 })
+  }
+}
+
+// Who changes the leader directly: the leader and the host (and anyone while there's no leader, or on an older relay
+// that doesn't do votes). Everyone else asks the crew.
+function canLead(s: CrewSnapshot) {
+  return !s.leader || s.leader === cfg.me || isHosting() || !newer(s.relayVersion, '1.22.99')
+}
+
+// And who clears a chat or removes someone else's task: the same, plus the acting leader.
+function canModerate(s: CrewSnapshot) {
+  return canLead(s) || s.acting === cfg.me
+}
+
+function startVote($: EngineInterface, name: string) {
+  void relay($, 'POST', '/vote', { for: name })
+    .then(() => poll($))
+    .then(() => $.ui.toast(`crew: asked the crew to make ${name} the leader. It passes when more than half of the people here say yes.`, { timeoutMs: 8000 }))
+    .catch(err => $.ui.toast(`crew: ${relayWords(err)}`, { timeoutMs: 8000 }))
+}
+
+function castVote($: EngineInterface, id: string, yes: boolean) {
+  void relay($, 'POST', '/vote/cast', { id, yes })
+    .then((r: any) => {
+      void poll($)
+      if (r.ended) $.ui.toast(`crew: the vote is over: ${r.leader ? `${r.leader} leads` : 'there is no leader'}.`, { timeoutMs: 7000 })
+    })
+    .catch(err => $.ui.toast(`crew: ${relayWords(err)}`, { timeoutMs: 8000 }))
 }
 
 async function loadFriends($: EngineInterface) {
@@ -3150,7 +3256,9 @@ const TOOLS = [
   },
   {
     name: 'crew_lead',
-    description: "Make a teammate (or yourself) the crew leader, or pass an empty name to clear it. Only when the user asks.",
+    description:
+      "Make a teammate (or yourself) the crew leader, or pass an empty name to clear it. Only when the user asks. " +
+      "Only the leader or the host changes it directly; for anyone else this asks the crew, and the people online vote.",
     inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
   },
   {
@@ -3663,7 +3771,19 @@ export const register: Register = (on, options) => {
   }).catch(failed)
 
   on('tool.call', { tool: 'mcp__crew__crew_lead' }, async ($, e: any) => {
-    const r = await relay($, 'POST', '/leader', { name: e.name ?? '' })
+    let r: any
+    try {
+      r = await relay($, 'POST', '/leader', { name: e.name ?? '' })
+    } catch (err) {
+      // not this Claude's person's to change: the crew votes on it instead
+      if (!e.name || !/only the leader .+ or the host changes the leader/.test(err instanceof Error ? err.message : String(err))) throw err
+      await relay($, 'POST', '/vote', { for: e.name })
+      await poll($)
+      return ok(
+        `Only the leader or the host changes the leader directly, so this asked the crew: the people online in this project ` +
+          `vote in /crew, and ${e.name} leads if more than half say yes (2 minutes).`,
+      )
+    }
     await poll($)
     return ok(r.leader ? `${r.leader} is now the crew leader.` : 'The crew has no leader now.')
   }).catch(failed)
@@ -3873,11 +3993,16 @@ export const register: Register = (on, options) => {
       .sort((a, b) => b.at - a.at)
     // The notices above the tabs, and how many rows they take, so a tab's card fits in what's left.
     const leaderAsk = inSession && proposedLeader !== '' && proposedLeader !== (s.leader ?? '')
+    const askCrew = leaderAsk && proposedLeader !== '__none' && !canLead(s) // not yours to change: it's a vote
+    const vote = inSession ? (s.vote ?? null) : null
+    const canVote = !!vote && vote.voters.includes(me) && !vote.yes.includes(me) && !vote.no.includes(me)
+    const knocks = inSession && isHosting() ? (s.knocks ?? []) : []
     const relayOld = inSession && !!s.relayVersion && s.relayVersion !== VERSION
     const hostingDown = configured && isHosting() && !s.connected
     const noticeRows =
       (leaving ? 6 : 0) + (pinned.length ? pinned.length + 2 : 0) + (leaderAsk ? 5 : 0) + (inSession && s.error ? 3 : 0) +
-      (member === 'ask' ? 5 : 0) + (hasUpdate ? 5 : 0) + (relayOld ? 1 : 0) + (hostingDown ? 4 : 0)
+      (member === 'ask' ? 5 : 0) + (hasUpdate ? 5 : 0) + (relayOld ? 1 : 0) + (hostingDown ? 4 : 0) +
+      (vote ? (canVote ? 5 : 4) : 0) + (knocks.length ? knocks.length + 2 : 0)
     // left for a tab's body: the header (2), the tab row (2) and the card's frame and title (3) come off the top
     const body = Math.max(6, (e.viewport?.rows ?? 30) - 7 - noticeRows)
     // the chat also keeps rows for its To: and message fields (3) and a read receipt (1)
@@ -4043,14 +4168,53 @@ export const register: Register = (on, options) => {
             ))}
           </Callout>
         )}
+        {knocks.length > 0 && (
+          <Callout>
+            {knocks.map(k => (
+              <Box flexDirection="row" justifyContent="space-between">
+                <Text>
+                  🚪 <Text bold>{k.name}</Text> wants in
+                  <Text dimColor>
+                    {k.ip ? `  · from ${k.ip}` : ''}
+                    {k.friend ? '  · a friend from another party' : ''}
+                  </Text>
+                </Text>
+                <Box flexDirection="row">
+                  <Button key={`knock-in-${k.name}`} label="Let in" variant="primary" onPress={() => void letIn($, k.name)} />
+                  <Button key={`knock-away-${k.name}`} label="Turn away" dimColor onPress={() => void turnAway($, k.name)} />
+                </Box>
+              </Box>
+            ))}
+          </Callout>
+        )}
+        {vote && (
+          <Callout>
+            <Text bold>
+              🗳 {vote.by === me ? 'You asked' : `${vote.by} asks`}: make {vote.for === me ? 'you' : vote.for} the crew leader?
+            </Text>
+            <Text dimColor>
+              {vote.yes.length} of {vote.voters.length} said yes so far · it needs more than half · ends at {hhmm(vote.until)}
+            </Text>
+            {canVote && (
+              <Box flexDirection="row">
+                <Button key="vote-yes" label="Yes" variant="primary" onPress={() => castVote($, vote.id, true)} />
+                <Button key="vote-no" label="No" onPress={() => castVote($, vote.id, false)} />
+              </Box>
+            )}
+          </Callout>
+        )}
         {leaderAsk && (
           <Callout>
             <Text bold>
               {proposedLeader === '__none' ? 'Clear the crew leader?' : `Make ${proposedLeader === me ? 'yourself' : proposedLeader} the crew leader?`}
             </Text>
-            <Text dimColor>Everyone's Claude switches to taking requests from the new leader.</Text>
+            <Text dimColor>
+              {askCrew
+                ? `Only ${s.leader} or the host changes it directly, so this asks the crew: everyone online here votes, and it passes when more than half say yes.`
+                : "Everyone's Claude switches to taking requests from the new leader."}
+            </Text>
             <Box flexDirection="row">
-              <Button key="leader-yes" label="Yes" variant="primary" onPress={() => confirmLeader($, proposedLeader)} />
+              <Button key="leader-yes" label={askCrew ? 'Ask the crew' : 'Yes'} variant="primary" onPress={() => confirmLeader($, proposedLeader)} />
               <Button key="leader-no" label="Cancel" onPress={() => proposeLeader($, '')} />
             </Box>
           </Callout>
@@ -4166,16 +4330,13 @@ export const register: Register = (on, options) => {
                 <Select
                   key="friends-only"
                   label="Who can join "
-                  value={friendList.friendsOnly ? 'friends' : 'key'}
+                  value={friendList.party ? `party:${friendList.party}` : friendList.friendsOnly ? 'friends' : 'key'}
                   options={[
                     { value: 'key', label: 'anyone with the crew key' },
-                    { value: 'friends', label: 'friends only (personal keys)' },
+                    { value: 'friends', label: 'friends only (anyone else knocks)' },
+                    ...friendList.parties.map(p => ({ value: `party:${p}`, label: `only the ${p} party (anyone else knocks)` })),
                   ]}
-                  onSelect={(v: string) =>
-                    void friendCall($, '/friends/mode', { friendsOnly: v === 'friends' })
-                      .then(() => $.ui.toast(v === 'friends' ? 'crew: friends only: the shared crew key no longer gets anyone in' : 'crew: anyone with the crew key can join again', { timeoutMs: 6000 }))
-                      .catch(err => $.ui.toast(`crew: ${explain(err instanceof Error ? err.message : String(err))}`, { timeoutMs: 8000 }))
-                  }
+                  onSelect={(v: string) => void setDoor($, v)}
                 />
               )}
             </Card>
@@ -4288,7 +4449,7 @@ export const register: Register = (on, options) => {
                   <Button key="view-people" label="People" variant={view === 'people' ? 'primary' : undefined} dimColor={view !== 'people'} onPress={() => setChatView($, 'people')} />
                   <Button key="view-claudes" label="Claudes" variant={view === 'claudes' ? 'primary' : undefined} dimColor={view !== 'claudes'} onPress={() => setChatView($, 'claudes')} />
                   <Button key="save-chat" label="Save" dimColor onPress={() => saveChatPress($)} />
-                  <Button key="reset-chat" label="Reset" dimColor onPress={() => askReset($, true)} />
+                  {canModerate(s) && <Button key="reset-chat" label="Reset" dimColor onPress={() => askReset($, true)} />}
                 </Box>
               )
             }
@@ -4428,7 +4589,9 @@ export const register: Register = (on, options) => {
                     </Text>
                     <Box flexDirection="row">
                       <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `T${t.id} done`)} />
-                      <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />
+                      {(t.by === me || canModerate(s)) && (
+                        <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />
+                      )}
                     </Box>
                   </Box>
                   {blocked !== '' && (
@@ -4962,7 +5125,14 @@ export const register: Register = (on, options) => {
               <Card title={`Friends${friendList.list.length ? ` (${friendList.list.length})` : ''}`}>
                 <Text dimColor>
                   Press ★ Friend next to someone connected (in the list above) and their personal key reaches them by itself. It's tied
-                  to their name, so nobody can pose as them, and removing one friend doesn't touch anyone else. Who can join: ⚙ Settings.
+                  to their name, so nobody can pose as them, and removing one friend doesn't touch anyone else.
+                </Text>
+                <Text>
+                  Who can join now:{' '}
+                  <Text bold>
+                    {friendList.party ? `only the ${friendList.party} party` : friendList.friendsOnly ? 'friends only' : 'anyone with the crew key'}
+                  </Text>
+                  <Text dimColor> (⚙ Settings)</Text>
                 </Text>
                 {friendList.list.map(f => {
                   const here = s.peers.some(p => p.name === f.name && p.online)
@@ -4976,6 +5146,17 @@ export const register: Register = (on, options) => {
                           </Text>
                         </Text>
                         <Box flexDirection="row">
+                          {friendList.parties.map(p => {
+                            const inParty = (f.parties ?? []).includes(p)
+                            return (
+                              <Button
+                                key={`friend-party-${f.name}-${p}`}
+                                label={inParty ? `${p} ✓` : p}
+                                dimColor={!inParty}
+                                onPress={() => void partyCall($, '/friends/party', { name: f.name, party: p, on: !inParty })}
+                              />
+                            )
+                          })}
                           <Button key={`friend-invite-${f.name}`} label="Copy invite" dimColor onPress={() => copyInvite($, e.surface, host.ip, f.key, f.name)} />
                           {removingFriend !== f.name && <Button key={`friend-rm-${f.name}`} label="Remove" dimColor onPress={() => void update($, friendRm, () => f.name)} />}
                         </Box>
@@ -4999,6 +5180,41 @@ export const register: Register = (on, options) => {
                       value={draft['friend-add'] ?? ''}
                       onInput={(v: string) => setDraft($, 'friend-add', v)}
                       onSubmit={(v: string) => submitted($, 'friend-add', v, () => addFriend($, e.surface, v))}
+                    />
+                  </Box>
+                )}
+                <Box marginTop={1}>
+                  <Text dimColor>
+                    Parties put friends in groups (school, your usual crew…): pick one in ⚙ Settings → Who can join, and only that party gets
+                    in. Anyone else knocks, and you let them in or turn them away.
+                  </Text>
+                </Box>
+                {friendList.parties.length > 0 && (
+                  <Box flexDirection="row">
+                    <Text>Parties: </Text>
+                    {friendList.parties.map(p => (
+                      <Button
+                        key={`party-rm-${p}`}
+                        label={`✕ ${p}`}
+                        dimColor
+                        onPress={() => void partyCall($, '/friends/parties', { remove: p }, `the ${p} party is gone. Its friends are still friends.`)}
+                      />
+                    ))}
+                  </Box>
+                )}
+                {Input && (
+                  <Box width="100%">
+                    <Input
+                      key="party-add"
+                      placeholder="New party: type a name (like school), then Enter"
+                      submitLabel="add"
+                      value={draft['party-add'] ?? ''}
+                      onInput={(v: string) => setDraft($, 'party-add', v)}
+                      onSubmit={(v: string) =>
+                        submitted($, 'party-add', v, () =>
+                          partyCall($, '/friends/parties', { add: v.trim() }, `made the ${v.trim()} party. Put friends in it with the buttons next to their names.`),
+                        )
+                      }
                     />
                   </Box>
                 )}

@@ -1486,6 +1486,116 @@ test('a task released because its owner dropped out reaches the Claudes, and the
   expect(got.submitted.some(t => t.includes('Re-plan it'))).toBe(true) // alice leads
 })
 
+const V = { version: '1.23.0' } // a relay that does votes, parties and knocks
+
+test("someone who isn't the leader asks the crew to vote; the leader changes it directly", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const seen: { url: string; init: any }[] = []
+  let leader = 'bob'
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, ...V, leader }) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  await ui.select({ key: 'leader', value: 'alice' })
+  expect(await ui.find({ text: /this asks the crew/ } as any)).toBeDefined()
+  await ui.press({ key: 'leader-yes' })
+  await settle()
+  expect(JSON.parse(seen.find(s => s.url.endsWith('/vote'))?.init.body).for).toBe('alice')
+  expect(seen.some(s => s.url.endsWith('/leader'))).toBe(false)
+  leader = 'alice' // now alice leads: her pick goes straight through
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await ui.select({ key: 'leader', value: 'bob' })
+  await ui.press({ key: 'leader-yes' })
+  await settle()
+  expect(JSON.parse(seen.find(s => s.url.endsWith('/leader'))?.init.body).name).toBe('bob')
+  await ui.unmount()
+})
+
+test('a vote shows for the people here, and Yes casts it', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const seen: { url: string; init: any }[] = []
+  const vote = { id: 'v1', for: 'carol', by: 'bob', until: 1791700120, voters: ['alice', 'bob', 'carol'], yes: ['bob'], no: [] }
+  on('ui.toast', async () => ({ value: undefined }))
+  on('http.fetch', async (_$: unknown, e: any) => {
+    seen.push({ url: e.url, init: e.init })
+    const body = e.url.endsWith('/vote/cast') ? { vote, ended: false, leader: 'alice' } : { ...POLL, ...V, vote }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /bob asks: make carol the crew leader\?/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /1 of 3 said yes so far/ } as any)).toBeDefined()
+  await ui.press({ key: 'vote-yes' })
+  await settle()
+  expect(JSON.parse(seen.find(s => s.url.endsWith('/vote/cast'))?.init.body)).toEqual({ id: 'v1', yes: true })
+  await ui.unmount()
+})
+
+test("crew_lead asks the crew to vote when it isn't this Claude's person's to change", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const sent: string[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    sent.push(e.url)
+    if (e.url.endsWith('/leader'))
+      return { value: { status: 403, ok: false, headers: {}, text: '{"error":"only the leader (bob) or the host changes the leader: ask the crew to vote instead"}' } }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(e.url.endsWith('/vote') ? { id: 'v2' } : POLL) } }
+  })
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_lead', name: 'alice' } as any)
+  expect(String(r.result)).toContain('asked the crew')
+  expect(sent.some(u => u.endsWith('/vote'))).toBe(true)
+})
+
+test("only the leader or the host sees Reset and others' task ✕", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, ...V, leader: 'bob', tasks: [{ ...POLL.tasks[0], by: 'bob' }, { ...POLL.tasks[0], id: 4, by: 'alice' }] }) } }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'reset-chat' })).toBeUndefined()
+  await ui.press({ key: 'tab-tasks' })
+  expect(await ui.find({ key: 'task-rm-3' })).toBeUndefined() // bob's
+  expect(await ui.find({ key: 'task-rm-4' })).toBeDefined() // alice's own
+  await ui.unmount()
+})
+
+test('the host sees who knocks, lets them in, and picks which party can join', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7787' } }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  const posted: { url: string; body: any }[] = []
+  const friends = { friends: [{ name: 'bob', key: 'kb', seen: 1, ip: '26.1.2.3', online: true, parties: ['crew'] }], friendsOnly: true, parties: ['crew', 'school'], party: 'school', knocks: [] }
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posted.push({ url: e.url.replace('http://127.0.0.1:7787', ''), body: JSON.parse(e.init.body || '{}') })
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(friends) } }
+    }
+    const body = e.url.endsWith('/health') ? { ok: true, version: '1.23.0' } : { ...POLL, ...V, knocks: [{ name: 'sam', ip: '26.9.9.9', friend: false, at: 1 }] }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /wants in/ } as any)).toBeDefined()
+  await ui.press({ key: 'knock-in-sam' })
+  await settle()
+  expect(posted.find(p => p.url === '/friends/letin')?.body).toEqual({ name: 'sam' })
+  await ui.press({ key: 'tab-crew' })
+  await settle()
+  expect(await ui.find({ text: /only the school party/ } as any)).toBeDefined()
+  await ui.press({ key: 'friend-party-bob-school' })
+  await settle()
+  expect(posted.find(p => p.url === '/friends/party')?.body).toEqual({ name: 'bob', party: 'school', on: true })
+  await ui.unmount()
+})
+
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
   const seen: { url: string; init: any }[] = []
   mock.store(on)

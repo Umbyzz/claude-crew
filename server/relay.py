@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.22.0"
+VERSION = "1.23.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -389,6 +389,77 @@ UWU_SECONDS = 300  # how long it's on offer to the project's chats, and how long
 STAGES = ("plain", "baseplate", "ocean", "forest", "city", "spooky", "space", "workshop")  # window/stages.py draws them
 
 
+KNOCK_SECONDS = 900  # someone at the locked door waits this long for the host to answer
+TURNED_SECONDS = 600  # turned away by the host: this long before they show up as knocking again
+VOTE_SECONDS = 120  # how long a leader vote runs
+knocks = {}  # name -> {"at", "ip", "friend"}: people at the locked door, for the host to let in or turn away (memory only)
+turned = {}  # name -> until when: turned away by the host
+votes = {}  # project -> the leader vote under way there (memory only)
+
+
+def door_party():
+    """The one party that can join right now, or None (then it's friends only, or anyone with the crew key)."""
+    party = state.get("party")
+    return party if party in state.get("parties", []) else None
+
+
+def in_party(name):
+    party = door_party()
+    return party is None or party in state.get("friends", {}).get(name, {}).get("parties", [])
+
+
+def clean_party(raw):
+    return "".join(ch for ch in str(raw or "") if ch.isalnum() or ch in " -_").strip()[:24]
+
+
+def add_knock(name, ip, friend=False):
+    """Someone at the locked door: the host sees them and lets them in or turns them away (the 10 newest)."""
+    now = time.time()
+    if not name or turned.get(name, 0) > now:
+        return
+    for k in [k for k, v in knocks.items() if now - v["at"] > KNOCK_SECONDS]:
+        del knocks[k]
+    knocks[name] = {"at": now, "ip": ip, "friend": friend}
+    for k in sorted(knocks, key=lambda k: knocks[k]["at"])[:-10]:
+        del knocks[k]
+
+
+def knock_list(now):
+    return [{"name": n, "ip": k["ip"], "friend": k["friend"], "at": k["at"]}
+            for n, k in sorted(knocks.items(), key=lambda kv: kv[1]["at"]) if now - k["at"] <= KNOCK_SECONDS]
+
+
+def host_names():
+    """Who checks in from the host's own PC: nobody can remove them from their own relay."""
+    return {n for n, p in peers.items() if p.get("hostPc")}
+
+
+def vote_view(v):
+    return {k: v[k] for k in ("id", "for", "by", "until", "voters", "yes", "no")}
+
+
+def settle_vote(pr, now):
+    """Decide a leader vote once its result is certain, or when its time is up. It passes with more than half of
+    the people who were here when it started saying yes, and at least one of them besides whoever asked."""
+    v = votes.get(pr)
+    if not v:
+        return
+    n, yes, no = len(v["voters"]), len(v["yes"]), len(v["no"])
+    best = n - no  # everyone who hasn't said no could still say yes
+    if yes * 2 > n and yes >= 2:
+        votes.pop(pr)
+        set_leader(pr, v["for"])
+        acting.pop(pr, None)
+        post_message(v["for"], "all", f"was voted in as the crew leader ({yes} of {n} said yes)", "update", pr,
+                     leaderChange=True)
+        save()
+    elif best * 2 <= n or best < 2 or now > v["until"]:
+        votes.pop(pr)
+        why = "time ran out" if best * 2 > n and best >= 2 else f"{yes} of {n} said yes"
+        post_message(v["by"], "all", f"asked to make {v['for']} the leader, and the vote didn't pass ({why})", "update", pr)
+        save()
+
+
 def stage_of(project):
     """The backdrop the project's leader picked for the Clawds window ("plain": today's stage)."""
     return state.setdefault("stages", {}).get(project, "plain")
@@ -478,6 +549,8 @@ def sweep():
             announce_leave(name, "lost connection (their Claude was closed or went offline)")
             save()
     update_acting(now)
+    for pr in list(votes):
+        settle_vote(pr, now)
     # A claim nobody is working on any more goes back on the board. Unlike the board's other lines, the project's
     # Claudes are told (notice), so the leader can re-plan it.
     for t in state["tasks"]:
@@ -605,20 +678,27 @@ class Handler(BaseHTTPRequestHandler):
         name = (self.headers.get("X-Crew-Name") or "").strip()[:40]
         friends = state.setdefault("friends", {})
         owner = next((n for n, f in friends.items() if hmac.compare_digest(f["key"], key)), None)
+        host = self.host_pc()
+        locked = bool(state.get("friendsOnly") or door_party())
         if owner:  # a friend's own key: good for their name only
             if name and name != owner:
                 self.reply(401, {"error": f"that key belongs to {owner}, not {name}"})
                 return False
             name = name or owner
             friends[owner].update(seen=time.time(), ip=self.client_address[0], pending=False)
+            if not host and not in_party(owner):  # a friend from another party: they knock like anyone else
+                with lock:
+                    add_knock(owner, self.client_address[0], friend=True)
+                return self.refuse_door(owner)
         elif hmac.compare_digest(key, args.key):
             pending = name in friends and friends[name].get("pending")
-            if name in friends and not pending and not self.host_pc():
+            if name in friends and not pending and not host:
                 self.reply(401, {"error": f"{name} has a personal key: use the invite the host sent you"})
                 return False
-            if state.get("friendsOnly") and not self.host_pc() and not pending:
-                self.reply(401, {"error": "this crew is friends-only: ask the host for your personal invite"})
-                return False
+            if locked and not host and not (pending and in_party(name)):
+                with lock:
+                    add_knock(name, self.client_address[0])
+                return self.refuse_door(name)
         else:
             self.reply(401, {"error": "bad or missing crew key"})
             return False
@@ -643,19 +723,32 @@ class Handler(BaseHTTPRequestHandler):
                     pm[self.project].append(name)  # accepted an invite
                     invited.remove(name)
                     save()
-                if not can_see(self.project, name):
+                if not can_see(self.project, name) and not host:
                     self.reply(403, {"error": f"the project '{self.project}' is private: ask one of its members to add you",
                                      "private": True})
                     return False
         k = kicked.get(name)
-        if k and time.time() < k["until"]:
+        if k and time.time() < k["until"] and not host:
             # removed by the leader or host: this plugin drops out instead of quietly checking back in
             self.reply(403, {"error": f"you were removed from the crew session by {k['by']}", "kicked": True})
             return False
         if presence:
             with lock:
                 touch(name, self.headers, self.client_address[0])
+                peers[name]["hostPc"] = self.host_pc()
         return True
+
+    def refuse_door(self, name):
+        """The door is locked: say so in words an older plugin shows as they are, and put them on the knock list."""
+        who = next(iter(sorted(host_names())), "the host")
+        party = door_party()
+        locked = f"this crew is friends-only right now{f' (only the {party} party)' if party else ''}"
+        if turned.get(name, 0) > time.time():
+            self.reply(401, {"error": f"{locked}: {who} turned you away for now"})
+        else:
+            self.reply(401, {"error": f"{locked}: you're knocking, and {who} can let you in. Keep /crew open: once they "
+                                      f"do, you're in by yourself", "knocking": True})
+        return False
 
     def send_blob(self, h):
         path = blob_path(h) if is_hash(h) else ""
@@ -802,6 +895,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"messages": msgs[-200:], "team": team[-200:],
                                  "peers": peer_list(pr, self.name, self.host_pc()), "project": pr,
                                  "friendsOnly": bool(state.get("friendsOnly")),
+                                 **({"knocks": knock_list(now)} if self.host_pc() else {}),
+                                 **({"vote": vote_view(votes[pr])} if pr in votes else {}),
                                  **({"uwu": uwu[pr]["id"]} if pr in uwu and now - uwu[pr]["at"] < UWU_SECONDS else {}),
                                  **({"renamedFrom": self.asked_project} if self.asked_project != pr else {}),
                                  **({"yourKey": state["friends"][self.name]["key"]}
@@ -981,14 +1076,55 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.host_pc():
                     return self.reply(403, {"error": "only the host's own PC manages friends"})
                 friends = state.setdefault("friends", {})
+                parties = state.setdefault("parties", [])
                 who = str(b.get("name") or "").strip()[:40]
+                party = door_party()
                 if path == "/friends/add":
                     if not who:
                         return self.reply(400, {"error": "name the friend"})
                     if who in friends and not b.get("renew"):
                         return self.reply(409, {"error": f"there's already a friend called {who}: pick another name, or remove the old one first"})
                     friends[who] = {"key": secrets.token_urlsafe(18), "added": time.time(), "by": self.name, "seen": 0, "ip": "",
-                                    "pending": True}
+                                    "pending": True, "parties": [party] if party else []}
+                elif path == "/friends/letin":  # someone knocked: in they come (into the party that's open right now)
+                    if not who:
+                        return self.reply(400, {"error": "name who to let in"})
+                    f = friends.get(who)
+                    if f:  # a friend from another party: same key, one more party
+                        if party and party not in f.setdefault("parties", []):
+                            f["parties"].append(party)
+                    else:  # someone new: a personal key, handed over on their next check-in
+                        friends[who] = {"key": secrets.token_urlsafe(18), "added": time.time(), "by": self.name, "seen": 0,
+                                        "ip": knocks.get(who, {}).get("ip", ""), "pending": True,
+                                        "parties": [party] if party else []}
+                    knocks.pop(who, None)
+                    turned.pop(who, None)
+                elif path == "/friends/turnaway":
+                    knocks.pop(who, None)
+                    turned[who] = time.time() + TURNED_SECONDS
+                elif path == "/friends/party":  # put a friend in a party, or take them out
+                    name = clean_party(b.get("party"))
+                    if who not in friends or name not in parties:
+                        return self.reply(404, {"error": "no such friend or party"})
+                    ps = friends[who].setdefault("parties", [])
+                    if b.get("on") and name not in ps:
+                        ps.append(name)
+                    elif not b.get("on") and name in ps:
+                        ps.remove(name)
+                elif path == "/friends/parties":  # make a party, or drop one
+                    add, drop = clean_party(b.get("add")), clean_party(b.get("remove"))
+                    if add and add not in parties:
+                        if len(parties) >= 8:
+                            return self.reply(400, {"error": "that's 8 parties already: drop one first"})
+                        parties.append(add)
+                    if drop in parties:
+                        parties.remove(drop)
+                        for f in friends.values():
+                            if drop in f.get("parties", []):
+                                f["parties"].remove(drop)
+                        if state.get("party") == drop:  # its door closes: friends only until the host picks another
+                            state["party"] = None
+                            state["friendsOnly"] = True
                 elif path == "/friends/remove":
                     if friends.pop(who, None) is not None:
                         kicked[who] = {"by": self.name, "until": time.time() + KICK_SECONDS}
@@ -997,11 +1133,24 @@ class Handler(BaseHTTPRequestHandler):
                             p["left"] = True
                             announce_leave(who, f"is no longer on {self.name}'s friends list")
                 elif path == "/friends/mode":
-                    state["friendsOnly"] = bool(b.get("friendsOnly"))
+                    door = b.get("door")
+                    if door == "party":  # only one party: everyone else knocks
+                        name = clean_party(b.get("party"))
+                        if name not in parties:
+                            return self.reply(404, {"error": f"there's no party called {name}"})
+                        state["party"], state["friendsOnly"] = name, True
+                    elif door in ("friends", "open"):
+                        state["party"], state["friendsOnly"] = None, door == "friends"
+                    else:  # an older plugin: friends only, or not
+                        state["friendsOnly"] = bool(b.get("friendsOnly"))
+                        if not state["friendsOnly"]:
+                            state["party"] = None
                 save()
-                return self.reply(200, {"friends": [{"name": n, **f, "online": is_online(peers[n], time.time()) if n in peers else False}
+                now = time.time()
+                return self.reply(200, {"friends": [{"name": n, **f, "online": is_online(peers[n], now) if n in peers else False}
                                                     for n, f in sorted(friends.items())],
-                                        "friendsOnly": bool(state.get("friendsOnly"))})
+                                        "friendsOnly": bool(state.get("friendsOnly")), "parties": parties,
+                                        "party": door_party(), "knocks": knock_list(now)})
             if path == "/keepawake":  # the host's "keep this PC awake while anyone's connected"
                 if not self.host_pc():
                     return self.reply(403, {"error": "only the host's own PC can change that"})
@@ -1070,6 +1219,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(403, {"error": "only the leader or the host can remove someone"})
                 if not who or who == self.name:
                     return self.reply(400, {"error": "name a teammate to remove (not yourself)"})
+                if who in host_names():
+                    return self.reply(403, {"error": f"{who} hosts this relay, so nobody can remove them"})
                 kicked[who] = {"by": self.name, "until": time.time() + KICK_SECONDS}
                 p = peers.get(who)
                 if p and not p.get("left"):
@@ -1079,6 +1230,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {"ok": True})
             if path == "/reset":  # "Reset chat": wipe this project's chat for everyone (tasks and docs stay)
                 pr = self.project
+                lead = leader_of(pr)
+                if lead and self.name not in (lead, acting.get(pr)) and not self.host_pc():
+                    return self.reply(403, {"error": "only the leader or the host clears the chat"})
                 state["messages"] = [m for m in state["messages"] if not in_project(m, pr) or m["kind"] in CREW_WIDE]
                 if pr == MAIN:
                     state["chat_epoch"] = state.get("chat_epoch", 0) + 1
@@ -1107,6 +1261,39 @@ class Handler(BaseHTTPRequestHandler):
                 moments[:] = [m for m in moments if now - m["at"] < MOMENT_SECONDS][-19:]
                 moments.append({"id": secrets.token_hex(4), "kind": kind, "from": self.name, "to": to, "at": now})
                 return self.reply(200, {"to": to})
+            if path == "/vote":  # someone asks the crew to make someone the leader
+                pr = self.project
+                cand = str(b.get("for") or "").strip()[:40]
+                now = time.time()
+                settle_vote(pr, now)  # one past its time ends first
+                if not cand:
+                    return self.reply(400, {"error": "name who should lead"})
+                if cand == leader_of(pr):
+                    return self.reply(400, {"error": f"{cand} already leads"})
+                if pr in votes:
+                    return self.reply(409, {"error": f"a vote is already under way here (make {votes[pr]['for']} the "
+                                                     f"leader): answer that one first"})
+                voters = sorted({n for n, p in peers.items() if has_chat_in(p, pr, now)} | {self.name})
+                if len(voters) < 2:
+                    return self.reply(400, {"error": "nobody else in this project is online to vote: ask again when "
+                                                     "they're here"})
+                votes[pr] = {"id": secrets.token_hex(4), "for": cand, "by": self.name, "until": now + VOTE_SECONDS,
+                             "voters": voters, "yes": [self.name], "no": []}
+                post_message(self.name, "all", f"asks the crew to make {cand} the leader: vote in /crew", "update", pr)
+                save()
+                return self.reply(200, vote_view(votes[pr]))
+            if path == "/vote/cast":
+                pr = self.project
+                v = votes.get(pr)
+                if not v or v["id"] != str(b.get("id") or ""):
+                    return self.reply(404, {"error": "that vote is over"})
+                if self.name not in v["voters"]:
+                    return self.reply(403, {"error": "only the people who were here when it started vote on it"})
+                if self.name in v["yes"] or self.name in v["no"]:
+                    return self.reply(409, {"error": "you already voted"})
+                (v["yes"] if b.get("yes") else v["no"]).append(self.name)
+                settle_vote(pr, time.time())
+                return self.reply(200, {"vote": vote_view(v), "ended": pr not in votes, "leader": leader_of(pr)})
             if path == "/stage":  # the leader picks the project's backdrop in everyone's Clawds window
                 theme = str(b.get("theme") or "").strip().lower()
                 pr = self.project
@@ -1206,8 +1393,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/leader":
                 leader = str(b.get("name") or "").strip()[:40] or None
                 pr = self.project
-                if leader == leader_of(pr):
+                cur = leader_of(pr)
+                if leader == cur:
                     return self.reply(200, {"leader": leader})  # no change, no log line
+                if cur and self.name != cur and not self.host_pc():
+                    return self.reply(403, {"error": f"only the leader ({cur}) or the host changes the leader: "
+                                                     f"ask the crew to vote instead"})
+                votes.pop(pr, None)  # the leader or the host decided: any vote under way is moot
                 set_leader(pr, leader)
                 text = f"made {leader} the crew leader" if leader else "cleared the crew leader"
                 last = state["messages"][-1] if state["messages"] else None
@@ -1323,6 +1515,10 @@ class Handler(BaseHTTPRequestHandler):
                                              f"your list: {t['title']}", "chat", pr)
             self.assign(t, assignee)
         elif action == "remove":
+            lead = leader_of(pr)
+            if lead and self.name not in (t.get("by"), lead, acting.get(pr)) and not self.host_pc():
+                return self.reply(403, {"error": f"only whoever added T{t['id']} ({t.get('by')}), the leader or the "
+                                                 f"host removes it"})
             tasks.remove(t)
         elif action == "edit":  # fix a stale title or note without removing and re-adding the task
             if str(b.get("title") or "").strip():

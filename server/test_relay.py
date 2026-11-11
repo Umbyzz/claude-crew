@@ -555,6 +555,99 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.poll("alice", project="sea game")[1]["stage"], "ocean")  # it follows a rename
 
 
+    def host(self, method, path, body=None):
+        """A call from the host's own PC."""
+        return self.r.call(method, path, "umbyz", body=body, remote=False)
+
+    def knocks(self):
+        return {k["name"]: k["friend"] for k in self.host("GET", "/poll?since=0")[1]["knocks"]}
+
+    def test_parties_decide_who_gets_in_and_everyone_else_knocks(self):
+        self.host("POST", "/friends/parties", {"add": "school"})
+        self.host("POST", "/friends/parties", {"add": "crew"})
+        key = {}
+        for name, party in (("cori", "crew"), ("sam", "school")):
+            key[name] = next(f["key"] for f in self.host("POST", "/friends/add", {"name": name})[1]["friends"] if f["name"] == name)
+            self.host("POST", "/friends/party", {"name": name, "party": party, "on": True})
+        code, r = self.host("POST", "/friends/mode", {"door": "party", "party": "school"})
+        self.assertEqual((r["party"], r["friendsOnly"]), ("school", True))
+        self.assertEqual(self.poll("sam", key=key["sam"])[0], 200)  # in the open party
+        code, r = self.poll("cori", key=key["cori"])  # a friend from another party knocks
+        self.assertEqual(code, 401)
+        self.assertIn("you're knocking", r["error"])
+        self.assertTrue(r["error"].startswith("this crew is friends-only"))  # what an older plugin shows as is
+        self.assertEqual(self.poll("newkid")[0], 401)  # the shared key: knocks too
+        self.assertEqual(self.knocks(), {"cori": True, "newkid": False})
+        # let the new kid in: a personal key on their next check-in, in the school party
+        self.host("POST", "/friends/letin", {"name": "newkid"})
+        code, r = self.poll("newkid")
+        self.assertEqual(code, 200)
+        self.assertTrue(r["yourKey"])
+        # turn cori away: off the list, and told so
+        self.host("POST", "/friends/turnaway", {"name": "cori"})
+        code, r = self.poll("cori", key=key["cori"])
+        self.assertIn("turned you away", r["error"])
+        self.assertNotIn("cori", self.knocks())
+        # let in after all: now in both parties
+        self.host("POST", "/friends/letin", {"name": "cori"})
+        self.assertEqual(self.poll("cori", key=key["cori"])[0], 200)
+        # dropping the open party leaves the door at friends only
+        code, r = self.host("POST", "/friends/parties", {"remove": "school"})
+        self.assertEqual((r["party"], r["friendsOnly"], r["parties"]), (None, True, ["crew"]))
+        self.assertEqual(self.poll("stranger")[0], 401)
+        self.host("POST", "/friends/mode", {"door": "open"})
+        self.assertEqual(self.poll("stranger")[0], 200)
+
+    def test_only_the_leader_or_host_changes_the_leader_and_anyone_else_asks_for_a_vote(self):
+        for n in ("alice", "bob", "carol"):
+            self.poll(n)
+        self.assertEqual(self.r.call("POST", "/leader", "alice", body={"name": "alice"})[0], 200)  # no leader yet: anyone
+        code, r = self.r.call("POST", "/leader", "bob", body={"name": "bob"})
+        self.assertEqual(code, 403)
+        self.assertIn("ask the crew to vote", r["error"])
+        code, v = self.r.call("POST", "/vote", "bob", body={"for": "bob"})
+        self.assertEqual((code, v["yes"], v["voters"]), (200, ["bob"], ["alice", "bob", "carol"]))
+        self.assertEqual(self.r.call("POST", "/vote", "carol", body={"for": "carol"})[0], 409)  # one at a time
+        self.assertEqual(self.poll("alice")[1]["vote"]["for"], "bob")
+        self.assertEqual(self.r.call("POST", "/vote/cast", "bob", body={"id": v["id"], "yes": True})[0], 409)  # once each
+        code, r = self.r.call("POST", "/vote/cast", "carol", body={"id": v["id"], "yes": True})
+        self.assertEqual((r["ended"], r["leader"]), (True, "bob"))  # 2 of 3 said yes
+        self.assertNotIn("vote", self.poll("alice")[1])
+        self.assertTrue(any("was voted in" in m["text"] for m in self.poll("alice")[1]["messages"]))
+        # the leader hands it over directly, and the host always can
+        self.assertEqual(self.r.call("POST", "/leader", "bob", body={"name": "carol"})[0], 200)
+        self.assertEqual(self.host("POST", "/leader", {"name": "alice"})[0], 200)
+
+    def test_a_vote_fails_on_no_and_nobody_votes_themselves_in_alone(self):
+        self.poll("alice")
+        self.poll("bob")
+        self.r.call("POST", "/leader", "alice", body={"name": "alice"})
+        v = self.r.call("POST", "/vote", "bob", body={"for": "bob"})[1]
+        code, r = self.r.call("POST", "/vote/cast", "alice", body={"id": v["id"], "yes": False})
+        self.assertEqual((r["ended"], r["leader"]), (True, "alice"))
+        self.poll("dave", project="solo")  # alone in a project someone else leads
+        self.r.call("POST", "/leader", "dave", project="solo", body={"name": "erin"})
+        code, r = self.r.call("POST", "/vote", "dave", project="solo", body={"for": "dave"})
+        self.assertEqual(code, 400)
+        self.assertIn("nobody else", r["error"])
+
+    def test_the_host_cant_be_removed_and_only_the_leader_or_host_clear_a_chat_or_remove_tasks(self):
+        self.host("GET", "/poll?since=0")
+        self.poll("alice")
+        self.poll("bob")
+        self.r.call("POST", "/leader", "alice", body={"name": "alice"})
+        code, r = self.r.call("POST", "/kick", "alice", body={"name": "umbyz"})
+        self.assertEqual(code, 403)
+        self.assertIn("hosts this relay", r["error"])
+        self.assertEqual(self.r.call("POST", "/reset", "bob", body={})[0], 403)
+        self.assertEqual(self.r.call("POST", "/reset", "alice", body={})[0], 200)
+        theirs = self.r.call("POST", "/tasks", "alice", body={"action": "add", "title": "Raft"})[1]["id"]
+        self.assertEqual(self.r.call("POST", "/tasks", "bob", body={"action": "remove", "id": theirs})[0], 403)
+        mine = self.r.call("POST", "/tasks", "bob", body={"action": "add", "title": "Mine"})[1]["id"]
+        self.assertEqual(self.r.call("POST", "/tasks", "bob", body={"action": "remove", "id": mine})[0], 200)
+        self.assertEqual(self.r.call("POST", "/tasks", "alice", body={"action": "remove", "id": theirs})[0], 200)
+
+
 class SweepTest(unittest.TestCase):
     """The sweeper, run in this process with a made-up state (nothing is saved)."""
 
@@ -575,6 +668,23 @@ class SweepTest(unittest.TestCase):
             self.assertEqual((m["kind"], m["to"], m["project"], m.get("notice")), ("update", "all", "game", True))
         finally:
             relay.state, relay.save, relay.STARTED = kept
+
+    def test_a_vote_whose_time_is_up_ends_without_passing(self):
+        import relay
+        kept = (relay.state, relay.save)
+        relay.state = {"next_id": 1, "messages": [], "shared": {}, "leader": "alice", "tasks": []}
+        relay.save = lambda: None
+        relay.votes[relay.MAIN] = {"id": "v", "for": "bob", "by": "bob", "until": time.time() - 1,
+                                   "voters": ["alice", "bob", "carol"], "yes": ["bob"], "no": []}
+        try:
+            with relay.lock:
+                relay.sweep()
+            self.assertNotIn(relay.MAIN, relay.votes)
+            self.assertEqual(relay.state["leader"], "alice")
+            self.assertTrue(any("time ran out" in m["text"] for m in relay.state["messages"]))
+        finally:
+            relay.state, relay.save = kept
+            relay.votes.clear()
 
 
 if __name__ == "__main__":
