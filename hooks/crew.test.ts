@@ -2154,7 +2154,9 @@ test("Crewleader: the leader's Claude learns to sort raw material, and edits the
 })
 
 test('a personal key handed over by the host is saved and used from then on', { options: OPTIONS }, async ($, on) => {
-  mock.store(on)
+  const kept = new Map<string, unknown>()
+  on('store.get', async (_$: unknown, e: any) => ({ value: kept.get(e.key) }) as any)
+  on('store.set', async (_$: unknown, e: any) => (kept.set(e.key, e.value), { value: undefined }) as any)
   on('ui.status', async () => ({ value: undefined }))
   on('ui.toast', async () => ({ value: undefined }))
   const saved: any[] = []
@@ -2171,9 +2173,30 @@ test('a personal key handed over by the host is saved and used from then on', { 
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
   await settle()
-  expect(saved).toContainEqual({ key: 'crew.key', value: 'personal-key-123' })
   expect(keys[keys.length - 1]).toBe('personal-key-123')
-  await new Promise(r => setTimeout(r, 300)) // the settings save (and the reload it causes) finishes inside the test
+  // not written into the settings: that write reloads the plugin, and a reload right as someone was let in left them silent
+  expect(saved.some(s => s.key === 'crew.key')).toBe(false)
+  expect(kept.get('keyFor:http://relay.test:7777')).toBe('personal-key-123') // what every start uses
+})
+
+test("someone knocking sees they're waiting to be let in, not an error", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  let answer = "this crew is friends-only right now (only the school party): you're knocking, and Umbyz can let you in. Keep /crew open: once they do, you're in by yourself"
+  on('http.fetch', async () => ({ value: { status: 401, ok: false, headers: {}, text: JSON.stringify({ error: answer, knocking: true }) } }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any).catch(() => {})
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ text: /Waiting to be let in/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /only the school party gets in right now/ } as any)).toBeDefined()
+  expect(await ui.find({ key: 'knock-stop' })).toBeDefined()
+  expect(await ui.find({ key: 'host-top' })).toBeUndefined() // in someone else's crew: no Host button to press by mistake
+  answer = 'this crew is friends-only right now: Umbyz turned you away for now'
+  await ui.press({ key: 'refresh' })
+  await settle()
+  expect(await ui.find({ text: /Umbyz turned you away for now/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /Waiting to be let in/ } as any)).toBeUndefined()
+  await ui.unmount()
 })
 
 test("a connected tool says whether its app is open, from a tasklist (no tokens)", { options: OPTIONS }, async ($, on) => {

@@ -4,7 +4,7 @@
 2. Give the leader's Claude a goal, for example: *"We're building X. Plan it and split it across the crew."* Raw material for it goes in your **Crewleader** folder first.
 3. The leader proposes who takes what, adds tasks to the board and assigns them. Everyone else's Claude picks up its assignments, works on them and reports back.
 
-**The `/crew` pane.** A top bar (who you are, ↻ Refresh, Host / ▶ Start relay, Clawds, Log, Leave… / Join session), then any notices (updates, 📣 pins, invites, confirms, a relay that's down or outdated), then the tabs: **Chat** (the default), **Tasks**, **📂 Project**, **Crew** and **⚙ Settings**, one card at a time.
+**The `/crew` pane.** A top bar (who you are, ↻ Refresh, ▶ Start relay for a host whose relay is down, Clawds, Log, Leave… / Join session; in a narrow pane the buttons sit under your name), then any notices (updates, 📣 pins, invites, confirms, a relay that's down or outdated), then the tabs: **Chat** (the default), **Tasks**, **📂 Project**, **Crew** and **⚙ Settings**, one card at a time.
 
 ## Chat
 Reads like a messenger: your messages on the right, everyone else's on the left, back-to-back messages grouped into one bubble, crew events as dim centred lines that fold up when there are many, and "✓ read by …" under your newest message.
@@ -42,7 +42,7 @@ The project belongs to the Claude Code chat: switch in one chat and the others s
   - The **Friends** card: who's a friend, when and from where they last connected, **Copy invite**, **Remove**, and a box to invite someone who isn't connected yet.
   - **Parties** put friends in groups, like *school* and *crew*: make one in the Friends card, then press a party's name next to a friend to put them in it. **⚙ Settings → Who can join → only the school party** lets just that party in. Everyone else's invite keeps working for later.
   - **Knocking:** with the door locked (friends only, or one party), anyone else who uses an invite shows up at the top of `/crew` as **🚪 … wants in**, with **Let in** (they join the open party, and their personal key reaches them by itself) or **Turn away**.
-  - The **Invite friends** card: **Copy invite**, **Stop hosting…** (it asks first), **🔑 New crew key…** and **Keep this PC awake while anyone's connected**.
+  - The **Invite people** card: **Copy invite** (for anyone: with the door locked, they knock), **Stop hosting…** (it asks first), **🔑 New crew key…** and **Keep this PC awake while anyone's connected**.
 - **For everyone else:** a short Friends note (are you on the host's friends list?).
 - **Quack?** at the very bottom: three buff ducks, in three windows. Close them one at a time, or leave them there. It's your screen.
 

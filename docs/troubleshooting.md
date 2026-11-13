@@ -8,7 +8,8 @@
 | **Test connection** can't reach the relay | Is the relay window open? Is the IP right? Allow Python through Windows Firewall, on both **Private** and **Public**: Windows often treats a Radmin network as Public. |
 | *"The relay refused the crew key"* | The host may have made a new key: paste the one from their new invite in ⚙ Settings → Crew key. If **you** are the host, crew picks the right key up from `crew_key.txt` by itself. |
 | *"… has a personal key"* | You're on the host's friends list: use the key the host sent you (or that crew saved for you) with exactly that name. |
-| *"this crew is friends-only … you're knocking"* | The host sees you at the top of their `/crew` and presses **Let in**: keep `/crew` open and you're in within seconds. (Before 1.23, the host typed your exact crew name in the Friends card instead.) |
+| *"🚪 Waiting to be let in…"* (or *"this crew is friends-only … you're knocking"*) | The host sees you at the top of their `/crew` and presses **Let in**: keep `/crew` open and you're in within seconds. (Before 1.23, the host typed your exact crew name in the Friends card instead.) |
+| Let in, then back at **Join session** a moment later | Fixed in 1.23.1: install the update. Until then, press **Join session** (or **Rejoin session**): your personal key is already saved, so you're straight in. |
 | *"… only the … party"* | The host has opened the crew to one party right now. You're knocking, so they can let you in, or wait until they open the door to yours again. |
 | *"… turned you away for now"* | The host said no. If it was a mistake, ask them: you can knock again after 10 minutes. |
 | *"only the leader (…) or the host changes the leader"* | Pick the leader in the Crew tab anyway and press **Ask the crew**: it's a vote. |

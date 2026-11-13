@@ -5,7 +5,7 @@ import type { CrewKnock, CrewMessage, CrewSnapshot, CrewTask, CrewVote } from '.
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.23.0'
+const VERSION = '1.23.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -155,6 +155,15 @@ async function storedKey($: EngineInterface) {
 async function rememberKey($: EngineInterface, key: string) {
   keyLoadedFor = cfg.base
   return saveOption($, 'key', key)
+}
+
+// A personal key the host's relay hands over on a check-in: used at once and kept in crew's own store, but not written
+// into Claude Code's settings. A settings write reloads the plugin, and that reload, right as someone was let in, left
+// their crew silent: the relay never heard from them again. Every start picks this stored key up (storedKey).
+async function adoptKey($: EngineInterface, key: string) {
+  keyLoadedFor = cfg.base
+  await $.store.set(`keyFor:${cfg.base}`, key).catch(() => {})
+  cfg.key = key
 }
 
 // The settings menu's name for one of crew's fields: "crew.<field>" on most installs, but it follows how this install
@@ -1764,7 +1773,7 @@ async function pollOnce($: EngineInterface) {
     }
     // a doc shared again under the same name keeps the list the same, but who/when/size change
     if (typeof data.yourKey === 'string' && data.yourKey && data.yourKey !== cfg.key) {
-      void rememberKey($, data.yourKey)
+      await adoptKey($, data.yourKey)
       $.ui.toast("crew: you're now on the host's friends list. Your personal key is saved; nothing else to do.", { timeoutMs: 10000 })
     }
     othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
@@ -1810,7 +1819,7 @@ async function pollOnce($: EngineInterface) {
     skip = Math.min(10, 2 ** Math.min(failures - 1, 4))
     if (/you're knocking/.test(raw)) skip = Math.min(skip, 2) // at the door: keep trying, so the host's "Let in" lands in seconds
     await update($, snapshot, s => ({ ...s, connected: false, error: msg }))
-    $.ui.status(`crew: offline (${msg.slice(0, 60)})`)
+    $.ui.status(/you're knocking/.test(raw) ? 'crew: waiting to be let in (open /crew)' : `crew: offline (${msg.slice(0, 60)})`)
   }
 }
 
@@ -2764,7 +2773,9 @@ function invite(ip: string, key: string, name = '') {
     `3. In Claude: /crew > Settings, and save (press Enter in each field):\n` +
     `   Relay URL: http://${ip || '<my IP>'}:${PORT}\n` +
     `   Crew key: ${key}` +
-    (name ? `\n   Your name: ${name} (exactly this: the key only works with this name)` : '')
+    (name
+      ? `\n   Your name: ${name} (exactly this: the key only works with this name)`
+      : `\n4. If /crew says you're knocking, keep it open: I let you in from my side`)
   )
 }
 
@@ -3993,6 +4004,11 @@ export const register: Register = (on, options) => {
       .sort((a, b) => b.at - a.at)
     // The notices above the tabs, and how many rows they take, so a tab's card fits in what's left.
     const leaderAsk = inSession && proposedLeader !== '' && proposedLeader !== (s.leader ?? '')
+    // at a locked door: the relay said you're knocking (or that the host turned you away), in words like
+    // "this crew is friends-only right now (only the school party): you're knocking, and Umbyz can let you in"
+    const knock = /you're knocking, and (.+?) can let you in/.exec(s.error)
+    const knocking = !s.connected && knock ? { host: knock[1], party: /\(only the (.+?) party\)/.exec(s.error)?.[1] ?? '' } : null
+    const turnedAway = !s.connected ? (/: (.+?) turned you away for now/.exec(s.error)?.[1] ?? '') : ''
     const askCrew = leaderAsk && proposedLeader !== '__none' && !canLead(s) // not yours to change: it's a vote
     const vote = inSession ? (s.vote ?? null) : null
     const canVote = !!vote && vote.voters.includes(me) && !vote.yes.includes(me) && !vote.no.includes(me)
@@ -4002,7 +4018,7 @@ export const register: Register = (on, options) => {
     const noticeRows =
       (leaving ? 6 : 0) + (pinned.length ? pinned.length + 2 : 0) + (leaderAsk ? 5 : 0) + (inSession && s.error ? 3 : 0) +
       (member === 'ask' ? 5 : 0) + (hasUpdate ? 5 : 0) + (relayOld ? 1 : 0) + (hostingDown ? 4 : 0) +
-      (vote ? (canVote ? 5 : 4) : 0) + (knocks.length ? knocks.length + 2 : 0)
+      (vote ? (canVote ? 5 : 4) : 0) + (knocks.length ? knocks.length + 2 : 0) + (knocking ? 3 : 0)
     // left for a tab's body: the header (2), the tab row (2) and the card's frame and title (3) come off the top
     const body = Math.max(6, (e.viewport?.rows ?? 30) - 7 - noticeRows)
     // the chat also keeps rows for its To: and message fields (3) and a read receipt (1)
@@ -4047,8 +4063,8 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
-        {/* -- header: who/where on the left, the actions on the right */}
-        <Box flexDirection="row" justifyContent="space-between">
+        {/* -- header: who/where on the left, the actions on the right (under it, in a narrow pane) */}
+        <Box flexDirection={(e.viewport?.columns ?? 100) < 90 ? 'column' : 'row'} justifyContent="space-between">
           <Box flexDirection="column">
             <Text bold>
               {!configured
@@ -4069,7 +4085,6 @@ export const register: Register = (on, options) => {
             {configured && <Button key="refresh" label="↻ Refresh" onPress={() => refreshPress($)} />}
             {/* hosting, right in the top bar: start your relay when it's down, or become the host */}
             {configured && isHosting() && !s.connected && <Button key="start-relay-top" label="▶ Start relay" variant="primary" onPress={() => startRelayPress($)} />}
-            {configured && !isHosting() && <Button key="host-top" label="Host" onPress={() => hostPress($)} />}
             <Button key="clawds" label="Clawds" onPress={() => popOutPress($)} />
             {configured && <Button key="crew-log" label="Log" onPress={() => crewLogPress($)} />}
             {inSession && !leaving && <Button key="leave" label="Leave…" onPress={() => askLeave($, true)} />}
@@ -4219,7 +4234,26 @@ export const register: Register = (on, options) => {
             </Box>
           </Callout>
         )}
-        {inSession && s.error !== '' && (
+        {inSession && knocking !== null && (
+          <Callout>
+            <Text bold>🚪 Waiting to be let in…</Text>
+            <Text dimColor>
+              You knocked at {knocking.host === 'the host' ? "the host's" : `${knocking.host}'s`} crew
+              {knocking.party ? ` (only the ${knocking.party} party gets in right now)` : ''}. Keep /crew open: you're in as soon as they
+              press Let in, nothing else to do.
+            </Text>
+            <Box flexDirection="row">
+              <Button key="knock-stop" label="Stop knocking" dimColor onPress={() => leaveYesPress($)} />
+            </Box>
+          </Callout>
+        )}
+        {inSession && turnedAway !== '' && (
+          <Callout>
+            <Text bold>🚪 {turnedAway === 'the host' ? 'The host' : turnedAway} turned you away for now</Text>
+            <Text dimColor>If that was a mistake, ask them: after 10 minutes you show up as knocking again.</Text>
+          </Callout>
+        )}
+        {inSession && s.error !== '' && knocking === null && turnedAway === '' && (
           <Callout>
             <Text color="error">{s.error}</Text>
           </Callout>
@@ -4338,6 +4372,9 @@ export const register: Register = (on, options) => {
                   ]}
                   onSelect={(v: string) => void setDoor($, v)}
                 />
+              )}
+              {isHosting() && friendList.parties.length === 0 && (
+                <Text dimColor>Only one group, like your classmates? Make a party first: Crew tab → Friends card → New party.</Text>
               )}
             </Card>
 
@@ -5230,8 +5267,13 @@ export const register: Register = (on, options) => {
               </Card>
             )}
             {isHosting() && s.connected && (
-              <Card title="Invite friends">
-                <Text>You're hosting{host.ip ? ` · friends join at http://${host.ip}:${PORT}` : ''}</Text>
+              <Card title="Invite people">
+                <Text>You're hosting{host.ip ? ` · people join at http://${host.ip}:${PORT}` : ''}</Text>
+                <Text dimColor>
+                  {friendList.party || friendList.friendsOnly
+                    ? 'Copy invite works for anyone (post it in a group chat): they knock, and you let them in or turn them away.'
+                    : 'Copy invite works for anyone: whoever uses it gets in. To decide who, set ⚙ Settings → Who can join.'}
+                </Text>
                 {!host.ip && <Text dimColor>No Radmin/Tailscale address found yet: connect your VPN, then press Host a crew again.</Text>}
                 {hostMsg !== '' && <Text dimColor>{hostMsg}</Text>}
                 <Box flexDirection="row">

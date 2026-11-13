@@ -2,6 +2,15 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.23.1
+Fixes from the first classmate who joined (thanks, Umbyz, for watching it closely):
+- **Being let in sticks.** When the host pressed **Let in**, crew saved the newcomer's personal key into Claude Code's settings. That reloads the plugin, and the reload, right at that moment, left their crew silent: the relay lost them seconds after they got in, and they were back at **Join session**. The key now goes into crew's own store only, which every start reads anyway, so nothing reloads.
+- **Knocking says so.** Instead of a red error, someone at a locked door sees **🚪 Waiting to be let in…**, with which party is open and a **Stop knocking** button. Turned away, they're told that instead.
+- **No Host button in someone else's crew.** It sat in the top bar for everyone who joined a crew, where one press started a crew of their own and took them out of yours. Hosting is still in ⚙ Settings.
+- **The top bar fits a narrow pane:** its buttons move under your name instead of squeezing it.
+- **Invites read better:** the host's card is **Invite people**, and says the invite works for anyone (with the door locked, they knock). The invite itself tells newcomers what knocking means.
+- **Settings → Who can join** says how to make a party when there isn't one yet.
+
 ## 1.23.0
 **Who gets in, and who leads.** For crews of classmates, or more than one group of friends (idea: Umbyz, who's starting one with classmates).
 - **Parties.** The host puts friends in groups, like *school* and *crew*, and picks which party can join right now. Everyone else's invite keeps working for later.
