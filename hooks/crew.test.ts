@@ -1596,6 +1596,56 @@ test('the host sees who knocks, lets them in, and picks which party can join', {
   await ui.unmount()
 })
 
+test("the host's People list shows everyone, and Lock locks someone who isn't a friend", { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7787' } }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  const posted: { url: string; body: any }[] = []
+  const people = [
+    { name: 'sam', kind: 'visitor', first: 1, last: 2, ip: '26.9.9.9', online: true },
+    { name: 'jo', kind: 'member', first: 1, last: 2, ip: '26.8.8.8', online: false },
+    { name: 'cori', kind: 'friend', first: 1, last: 2, ip: '26.7.7.7', online: false },
+  ]
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST') {
+      posted.push({ url: e.url.replace('http://127.0.0.1:7787', ''), body: JSON.parse(e.init.body || '{}') })
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ friends: [], friendsOnly: true, parties: [], party: null, knocks: [], people }) } }
+    }
+    const body = e.url.endsWith('/health') ? { ok: true, version: '1.24.0' } : { ...POLL, version: '1.24.0' }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'settings' })
+  await settle()
+  expect(await ui.find({ text: /came in with the crew key/ } as any)).toBeDefined()
+  expect(await ui.find({ key: 'people-lock-cori' })).toBeUndefined() // a friend: make them a member first
+  expect(await ui.find({ key: 'people-member-cori' })).toBeDefined()
+  await ui.press({ key: 'people-lock-sam' })
+  await settle()
+  expect(posted.find(p => p.url === '/friends/lock')?.body).toEqual({ name: 'sam', on: true })
+  await ui.unmount()
+})
+
+test('locked out by the host: the plugin leaves the session and says so', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$: unknown, e: any) => {
+    toasts.push(String(e.text ?? ''))
+    return { value: undefined }
+  })
+  on('http.fetch', async () => ({ value: { status: 403, ok: false, headers: {}, text: '{"error":"the host has locked you out of this crew","locked":true}' } }))
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any).catch(() => {})
+  await settle()
+  expect(toasts.some(t => t.includes('locked you out'))).toBe(true)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'join' })).toBeDefined() // out of the session: Join session, not knocking forever
+  await ui.unmount()
+})
+
 test('crew_wait waits on the relay and returns the reply', { options: OPTIONS }, async ($, on) => {
   const seen: { url: string; init: any }[] = []
   mock.store(on)

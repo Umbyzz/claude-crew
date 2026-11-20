@@ -107,7 +107,7 @@ Not connecting? **⚙ Settings → Test connection** checks that you can reach t
 For each person, while they're connected, open the **Crew** tab and press **★ Friend** next to their name. Their personal key reaches them by itself.
 
 ### 10. Friends only
-Go to **⚙ Settings → Who can join → friends only**. From now on, anyone else who uses your invite knocks: you see **🚪 … wants in** at the top of `/crew`, and press **Let in** or **Turn away**.
+Go to **⚙ Settings → Who can join → friends and members**. From now on, anyone else who uses your invite knocks: you see **🚪 … wants in** at the top of `/crew`, and press **Let in** (they become a member) or **Turn away**. Someone you never want back? **⚙ Settings → People → 🔒 Lock**.
 
 Crew with two groups, like classmates and your usual friends? In the **Friends** card, make a **party** for each, put each friend in theirs, and pick **only the … party** under Who can join.
 

@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.23.1"
+VERSION = "1.24.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -434,6 +434,57 @@ def host_names():
     return {n for n, p in peers.items() if p.get("hostPc")}
 
 
+def friend_kind(name):
+    """'friend' (the host's ★), 'member' (let in after knocking), or None (no personal key)."""
+    f = state.get("friends", {}).get(name)
+    return f.get("kind", "friend") if f else None
+
+
+def note_person(name, ip, now):
+    """Everyone who has ever been in the crew, for the host's People list: first and last seen, and where from."""
+    pp = state.setdefault("people", {})
+    rec = pp.get(name)
+    if rec is None:
+        pp[name] = {"first": now, "last": now, "ip": ip}
+        save()  # a newcomer is saved at once; last-seen times ride along with the next save
+    else:
+        rec.update(last=now, ip=ip)
+
+
+def locked_out(name, owner, ip):
+    """Locked by the host, by name or by the address they last came from. A friend's own key always gets in."""
+    lk = state.get("locked", {})
+    if owner and friend_kind(owner) == "friend":
+        return False
+    return (name or owner) in lk or bool(ip and any(v.get("ip") == ip for v in lk.values()))
+
+
+def people_view(now):
+    friends, lk, pp = state.get("friends", {}), state.get("locked", {}), state.get("people", {})
+    hosts = host_names()
+    out = []
+    for n in set(pp) | set(friends) | set(lk):
+        f, rec = friends.get(n), pp.get(n, {})
+        kind = "host" if n in hosts else "locked" if n in lk else (f.get("kind", "friend") if f else "visitor")
+        out.append({"name": n, "kind": kind, "first": rec.get("first") or (f or {}).get("added", 0),
+                    "last": rec.get("last") or (f or {}).get("seen", 0), "ip": rec.get("ip") or (f or {}).get("ip", ""),
+                    "online": n in peers and is_online(peers[n], now), "pending": bool(f and f.get("pending"))})
+    return sorted(out, key=lambda x: -(x["last"] or 0))[:60]
+
+
+def backfill_people():
+    """Before the People list, the relay kept only joins in its message log: the people seen there start it off."""
+    if "people" in state:
+        return
+    pp = state["people"] = {}
+    for m in state["messages"]:
+        if m["kind"] == "join":
+            rec = pp.setdefault(m["from"], {"first": m["at"], "last": m["at"], "ip": ""})
+            rec["last"] = max(rec["last"], m["at"])
+    for n, f in state.get("friends", {}).items():
+        pp.setdefault(n, {"first": f.get("added", 0), "last": f.get("seen", 0), "ip": f.get("ip", "")})
+
+
 def vote_view(v):
     return {k: v[k] for k in ("id", "for", "by", "until", "voters", "yes", "no")}
 
@@ -523,7 +574,8 @@ def peer_list(project=MAIN, viewer=None, host=False):
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
          "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"), "usageDetail": p.get("usageDetail"), "mcp": p.get("mcp"),
          "project": p.get("project", MAIN) if can_see(p.get("project", MAIN), viewer) or n == viewer else "(private)",
-         "friend": n in state.get("friends", {}), **({"ip": p.get("ip", "")} if host else {})}
+         "friend": friend_kind(n) == "friend", "member": friend_kind(n) == "member",
+         **({"ip": p.get("ip", "")} if host else {})}
         for n, p in sorted(peers.items())
     ]
 
@@ -679,6 +731,9 @@ class Handler(BaseHTTPRequestHandler):
         friends = state.setdefault("friends", {})
         owner = next((n for n, f in friends.items() if hmac.compare_digest(f["key"], key)), None)
         host = self.host_pc()
+        if not host and locked_out(name, owner, self.client_address[0]):
+            self.reply(403, {"error": "the host has locked you out of this crew", "locked": True})
+            return False
         locked = bool(state.get("friendsOnly") or door_party())
         if owner:  # a friend's own key: good for their name only
             if name and name != owner:
@@ -736,6 +791,7 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 touch(name, self.headers, self.client_address[0])
                 peers[name]["hostPc"] = self.host_pc()
+                note_person(name, self.client_address[0], time.time())
         return True
 
     def refuse_door(self, name):
@@ -1082,10 +1138,14 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/friends/add":
                     if not who:
                         return self.reply(400, {"error": "name the friend"})
-                    if who in friends and not b.get("renew"):
+                    if friend_kind(who) == "member" and not b.get("renew"):
+                        friends[who]["kind"] = "friend"  # a member becomes a friend: the same key, nothing to hand over
+                    elif who in friends and not b.get("renew"):
                         return self.reply(409, {"error": f"there's already a friend called {who}: pick another name, or remove the old one first"})
-                    friends[who] = {"key": secrets.token_urlsafe(18), "added": time.time(), "by": self.name, "seen": 0, "ip": "",
-                                    "pending": True, "parties": [party] if party else []}
+                    else:
+                        friends[who] = {"key": secrets.token_urlsafe(18), "added": time.time(), "by": self.name, "seen": 0,
+                                        "ip": "", "pending": True, "parties": [party] if party else [], "kind": "friend"}
+                    state.setdefault("locked", {}).pop(who, None)
                 elif path == "/friends/letin":  # someone knocked: in they come (into the party that's open right now)
                     if not who:
                         return self.reply(400, {"error": "name who to let in"})
@@ -1093,12 +1153,36 @@ class Handler(BaseHTTPRequestHandler):
                     if f:  # a friend from another party: same key, one more party
                         if party and party not in f.setdefault("parties", []):
                             f["parties"].append(party)
-                    else:  # someone new: a personal key, handed over on their next check-in
+                    else:  # someone new: a member (not a friend), with a personal key handed over on their next check-in
                         friends[who] = {"key": secrets.token_urlsafe(18), "added": time.time(), "by": self.name, "seen": 0,
                                         "ip": knocks.get(who, {}).get("ip", ""), "pending": True,
-                                        "parties": [party] if party else []}
+                                        "parties": [party] if party else [], "kind": "member"}
                     knocks.pop(who, None)
                     turned.pop(who, None)
+                    state.setdefault("locked", {}).pop(who, None)
+                elif path == "/friends/kind":  # a friend becomes a member, or a member a friend: the same key either way
+                    kind = b.get("kind")
+                    if who not in friends or kind not in ("friend", "member"):
+                        return self.reply(404, {"error": "no such friend or member"})
+                    friends[who]["kind"] = kind
+                elif path == "/friends/lock":  # turned away whatever the door says, and they don't knock either
+                    if not who:
+                        return self.reply(400, {"error": "name who to lock out"})
+                    if b.get("on", True):
+                        if friend_kind(who) == "friend":
+                            return self.reply(400, {"error": f"{who} is a friend: make them a member first"})
+                        if who in host_names():
+                            return self.reply(400, {"error": "that's you, the host"})
+                        ip = state.get("people", {}).get(who, {}).get("ip") or friends.get(who, {}).get("ip", "")
+                        state.setdefault("locked", {})[who] = {"at": time.time(), "by": self.name,
+                                                              "ip": "" if ip in ("127.0.0.1", "::1") else ip}
+                        knocks.pop(who, None)
+                        p = peers.get(who)
+                        if p and not p.get("left"):
+                            p["left"] = True
+                            announce_leave(who, f"was locked out of the crew by {self.name}")
+                    else:
+                        state.setdefault("locked", {}).pop(who, None)
                 elif path == "/friends/turnaway":
                     knocks.pop(who, None)
                     turned[who] = time.time() + TURNED_SECONDS
@@ -1150,7 +1234,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {"friends": [{"name": n, **f, "online": is_online(peers[n], now) if n in peers else False}
                                                     for n, f in sorted(friends.items())],
                                         "friendsOnly": bool(state.get("friendsOnly")), "parties": parties,
-                                        "party": door_party(), "knocks": knock_list(now)})
+                                        "party": door_party(), "knocks": knock_list(now), "people": people_view(now)})
             if path == "/keepawake":  # the host's "keep this PC awake while anyone's connected"
                 if not self.host_pc():
                     return self.reply(403, {"error": "only the host's own PC can change that"})
@@ -1610,6 +1694,7 @@ def main():
         p.error("give --key or --key-file")
     print(f"Crew key: {args.key}")
     load()
+    backfill_people()
     mark_old_done_checked()
     threading.Thread(target=sweeper, daemon=True).start()
     srv = None

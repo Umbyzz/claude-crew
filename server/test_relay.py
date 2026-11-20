@@ -648,6 +648,46 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.r.call("POST", "/tasks", "alice", body={"action": "remove", "id": theirs})[0], 200)
 
 
+    def people(self):
+        return {p["name"]: p["kind"] for p in self.host("POST", "/friends/list", {})[1]["people"]}
+
+    def test_letting_someone_in_makes_a_member_and_a_star_makes_a_friend(self):
+        self.host("POST", "/friends/mode", {"door": "friends"})
+        self.assertEqual(self.poll("newkid")[0], 401)  # knocks
+        self.host("POST", "/friends/letin", {"name": "newkid"})
+        self.assertEqual(self.poll("newkid")[0], 200)
+        self.assertEqual(self.people()["newkid"], "member")
+        row = next(p for p in self.host("GET", "/poll?since=0")[1]["peers"] if p["name"] == "newkid")
+        self.assertEqual((row["friend"], row["member"]), (False, True))
+        self.host("POST", "/friends/add", {"name": "newkid"})  # ★ Friend: the same key, now a friend
+        self.assertEqual(self.people()["newkid"], "friend")
+        self.host("POST", "/friends/kind", {"name": "newkid", "kind": "member"})
+        self.assertEqual(self.people()["newkid"], "member")
+
+    def test_a_locked_person_is_turned_away_whatever_the_door_and_never_knocks(self):
+        self.poll("sam")  # came in with the crew key while the door was open
+        self.assertEqual(self.people()["sam"], "visitor")
+        self.host("POST", "/friends/lock", {"name": "sam", "on": True})
+        code, r = self.poll("sam")
+        self.assertEqual((code, r.get("locked")), (403, True))
+        self.assertEqual(self.people()["sam"], "locked")
+        self.host("POST", "/friends/mode", {"door": "friends"})
+        self.poll("sam")
+        self.assertNotIn("sam", self.knocks())
+        self.host("POST", "/friends/lock", {"name": "sam", "on": False})
+        self.assertEqual(self.poll("sam")[0], 401)  # unlocked: the door is locked, so now they knock
+        self.assertIn("sam", self.knocks())
+
+    def test_friends_cant_be_locked_until_they_are_members(self):
+        self.host("POST", "/friends/add", {"name": "cori"})
+        code, r = self.host("POST", "/friends/lock", {"name": "cori", "on": True})
+        self.assertEqual(code, 400)
+        self.assertIn("make them a member first", r["error"])
+        self.host("POST", "/friends/kind", {"name": "cori", "kind": "member"})
+        self.assertEqual(self.host("POST", "/friends/lock", {"name": "cori", "on": True})[0], 200)
+        self.assertEqual(self.host("POST", "/friends/lock", {"name": "umbyz", "on": True})[1].get("error"), "that's you, the host")
+
+
 class SweepTest(unittest.TestCase):
     """The sweeper, run in this process with a made-up state (nothing is saved)."""
 

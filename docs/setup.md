@@ -50,12 +50,12 @@ Type `/crew`. The first time, a short setup asks your name, then **Host a crew**
 | Check in every | how often to check the relay: 2, 3, 5 or 10 seconds | 3 |
 | Crewshared check every | how often your Crewshared drop folder is checked for changes to send (⇅ Sync now sends at once) | 2 min |
 | Clawds window with /crew | pop out the Clawds window whenever you open `/crew` | `yes` |
-| Who can join *(host only)* | `anyone with the crew key`, `friends only`, or `only the <party> party`. With the door locked, anyone else knocks, and the host lets them in or turns them away | anyone with the key |
+| Who can join *(host only)* | `anyone with the crew key`, `friends and members`, or `only the <party> party`. With the door locked, anyone else knocks, and the host lets them in or turns them away | anyone with the key |
 
 Settings are stored in `~/.claude/settings.json` under `pluginConfigs`, and the key is stored there too. The Clawds window reads them from the same place. Crew also keeps its own copy of the key that works (a new crew key, or a personal key from the host), so a settings save that doesn't stick can't lock you out.
 
 ## 5. Make your friends friends (optional, recommended)
-Once everyone's connected, the host opens the **Crew** tab and presses **★ Friend** next to each person. Their personal key reaches them by itself, tied to their name. Then **⚙ Settings → Who can join → friends only** turns the shared crew key off, so an invite that went astray can't get anyone in: whoever uses it just knocks, and the host decides.
+Once everyone's connected, the host opens the **Crew** tab and presses **★ Friend** next to each person. Their personal key reaches them by itself, tied to their name. Then **⚙ Settings → Who can join → friends and members** turns the shared crew key off, so an invite that went astray can't get anyone in: whoever uses it just knocks, and the host decides.
 
 Crew with more than one group of people, like classmates and your usual friends? Make a **party** for each in the Friends card, put each friend in theirs, and pick **only the … party** under Who can join. The other party's invites keep working for the next time you open the door to them.
 

@@ -2,6 +2,13 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.24.0
+**People, members and locks** (idea: Umbyz, after a classmate became a friend just by being let in):
+- **Letting someone in makes them a member, not a friend.** Members get back in by themselves, like friends, but being a friend is only ever your own ★. Existing friends stay friends; **Make member** turns one into a member.
+- **⚙ Settings → People** (for the host) lists everyone who's ever been in your crew: friends, members, people who came in with the crew key while the door was open, and anyone locked, with when they were last seen and where from.
+- **🔒 Lock** turns someone away whatever Who can join says, even with the crew key. They don't show up as knocking, and their crew leaves the session and tells them. **Unlock** undoes it. Friends can't be locked.
+- **Who can join → friends and members** is the new name for "friends only".
+
 ## 1.23.1
 Fixes from the first classmate who joined (thanks, Umbyz, for watching it closely):
 - **Being let in sticks.** When the host pressed **Let in**, crew saved the newcomer's personal key into Claude Code's settings. That reloads the plugin, and the reload, right at that moment, left their crew silent: the relay lost them seconds after they got in, and they were back at **Join session**. The key now goes into crew's own store only, which every start reads anyway, so nothing reloads.

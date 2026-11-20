@@ -5,7 +5,7 @@ import type { CrewKnock, CrewMessage, CrewSnapshot, CrewTask, CrewVote } from '.
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.23.1'
+const VERSION = '1.24.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1774,7 +1774,7 @@ async function pollOnce($: EngineInterface) {
     // a doc shared again under the same name keeps the list the same, but who/when/size change
     if (typeof data.yourKey === 'string' && data.yourKey && data.yourKey !== cfg.key) {
       await adoptKey($, data.yourKey)
-      $.ui.toast("crew: you're now on the host's friends list. Your personal key is saved; nothing else to do.", { timeoutMs: 10000 })
+      $.ui.toast("crew: you're in! Your personal key for this crew is saved; nothing else to do.", { timeoutMs: 10000 })
     }
     othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
     if (isHosting() && Date.now() - friendsLoadedAt > 10000) {
@@ -1802,7 +1802,7 @@ async function pollOnce($: EngineInterface) {
       void switchProject($, 'main').catch(() => {})
       return
     }
-    const removed = /relay 403: (you were removed from the crew session by .+)$/.exec(raw)
+    const removed = /relay 403: (you were removed from the crew session by .+|the host has locked you out of this crew.*)$/.exec(raw)
     if (removed) {
       joined = false
       await update($, membership, () => 'left' as Membership)
@@ -2805,12 +2805,31 @@ async function newCrewKey($: EngineInterface, surface: any) {
 
 // Friends (the host only): each gets a personal key tied to their name, so nobody can pose as them, and removing
 // one stops only their key. "Friends only" then turns the shared crew key off.
-type Friend = { name: string; key: string; seen: number; ip: string; online: boolean; pending?: boolean; parties?: string[] }
+type Friend = {
+  name: string
+  key: string
+  seen: number
+  ip: string
+  online: boolean
+  pending?: boolean
+  parties?: string[]
+  kind?: 'friend' | 'member' // a member was let in after knocking; a friend is the host's ★ (absent: a friend)
+}
+// Everyone who has ever been in the crew, for the host's People list in ⚙ Settings.
+type Person = { name: string; kind: 'host' | 'friend' | 'member' | 'visitor' | 'locked'; first: number; last: number; ip: string; online: boolean }
+const PERSON_KIND: Record<Person['kind'], string> = {
+  host: 'you (host)',
+  friend: '★ friend',
+  member: 'member',
+  visitor: 'came in with the crew key',
+  locked: '🔒 locked',
+}
 const friendsAtom = atom({ plugin: 'crew', key: 'friends' } as const, {
   list: [] as Friend[],
   friendsOnly: false,
   parties: [] as string[], // friends in groups ("school", "crew")
   party: null as string | null, // the one party that can join right now
+  people: [] as Person[],
 })
 
 async function friendCall($: EngineInterface, path: string, body: unknown) {
@@ -2820,8 +2839,28 @@ async function friendCall($: EngineInterface, path: string, body: unknown) {
     friendsOnly: Boolean(r.friendsOnly),
     parties: Array.isArray(r.parties) ? r.parties : [], // absent from an older relay
     party: r.party ?? null,
+    people: Array.isArray(r.people) ? r.people : [],
   }))
   return r
+}
+
+// 🔒 Lock: turned away whatever Who can join says, and they don't knock either. Friends can't be locked.
+async function lockPerson($: EngineInterface, name: string, on: boolean) {
+  await partyCall(
+    $,
+    '/friends/lock',
+    { name, on },
+    on
+      ? `locked ${name} out. They're turned away whatever Who can join says; Unlock in ⚙ Settings → People undoes it.`
+      : `unlocked ${name}. They can get in again (or knock, while the door is locked).`,
+  )
+  await poll($)
+}
+
+// A short "when": the time today, the date before that.
+function when(at: number) {
+  const d = new Date(at * 1000)
+  return d.toDateString() === new Date().toDateString() ? hhmm(at) : `${d.getDate()}-${d.getMonth() + 1}`
 }
 
 // What the relay said, without the "relay 409:" in front.
@@ -2863,7 +2902,7 @@ async function partyCall($: EngineInterface, path: string, body: unknown, done =
 
 // Someone at the locked door: in they come (into the party that's open), and their personal key reaches them.
 async function letIn($: EngineInterface, name: string) {
-  await partyCall($, '/friends/letin', { name }, `let ${name} in. Their personal key reaches them on their next check-in.`)
+  await partyCall($, '/friends/letin', { name }, `let ${name} in as a member. Their personal key reaches them on their next check-in; ★ Friend them any time.`)
   await poll($)
 }
 
@@ -3736,7 +3775,7 @@ export const register: Register = (on, options) => {
       (p.model ? ` · ${modelLabel(p.model)}` : '') +
       (p.usageDetail ? ` · usage ${p.usageDetail}` : p.usage != null ? ` · ${p.usage}% usage used` : '') +
       (p.mcp ? ` · connected to ${p.mcp}` : '') +
-      (p.friend ? ' · friend (personal key)' : '') +
+      (p.friend ? ' · friend (personal key)' : p.member ? ' · member (personal key)' : '') +
       (editingNow(p.name) ? ` · editing ${editingNow(p.name)?.path}` : '')
     const openTasks = s.tasks.filter(t => t.status !== 'done')
     const mine = openTasks.filter(t => t.owner === me || (!t.owner && t.assignee === me)).length
@@ -4367,7 +4406,7 @@ export const register: Register = (on, options) => {
                   value={friendList.party ? `party:${friendList.party}` : friendList.friendsOnly ? 'friends' : 'key'}
                   options={[
                     { value: 'key', label: 'anyone with the crew key' },
-                    { value: 'friends', label: 'friends only (anyone else knocks)' },
+                    { value: 'friends', label: 'friends and members (anyone else knocks)' },
                     ...friendList.parties.map(p => ({ value: `party:${p}`, label: `only the ${p} party (anyone else knocks)` })),
                   ]}
                   onSelect={(v: string) => void setDoor($, v)}
@@ -4377,6 +4416,45 @@ export const register: Register = (on, options) => {
                 <Text dimColor>Only one group, like your classmates? Make a party first: Crew tab → Friends card → New party.</Text>
               )}
             </Card>
+
+            {isHosting() && s.connected && friendList.people.length > 0 && (
+              <Card title={`People (${friendList.people.length})`}>
+                <Text dimColor>
+                  Everyone who's been in your crew. 🔒 Lock turns someone away whatever Who can join says, and they don't knock either.
+                  Friends can't be locked: make them a member first.
+                </Text>
+                {friendList.people.map(p => (
+                  <Box flexDirection="row" justifyContent="space-between">
+                    <Text>
+                      {p.online ? '●' : '○'} {p.name}
+                      <Text dimColor>
+                        {'  · '}
+                        {PERSON_KIND[p.kind] ?? p.kind}
+                        {p.last ? ` · last seen ${when(p.last)}` : ''}
+                        {p.ip ? ` from ${p.ip}` : ''}
+                      </Text>
+                    </Text>
+                    <Box flexDirection="row">
+                      {(p.kind === 'member' || p.kind === 'visitor') && (
+                        <Button key={`people-friend-${p.name}`} label="★ Friend" dimColor onPress={() => void makeFriend($, p.name, p.ip)} />
+                      )}
+                      {p.kind === 'friend' && (
+                        <Button
+                          key={`people-member-${p.name}`}
+                          label="Make member"
+                          dimColor
+                          onPress={() => void partyCall($, '/friends/kind', { name: p.name, kind: 'member' }, `${p.name} is a member now, not a friend. Their key still works.`)}
+                        />
+                      )}
+                      {(p.kind === 'member' || p.kind === 'visitor') && (
+                        <Button key={`people-lock-${p.name}`} label="🔒 Lock" dimColor onPress={() => void lockPerson($, p.name, true)} />
+                      )}
+                      {p.kind === 'locked' && <Button key={`people-unlock-${p.name}`} label="Unlock" onPress={() => void lockPerson($, p.name, false)} />}
+                    </Box>
+                  </Box>
+                ))}
+              </Card>
+            )}
 
             <Card title="Preferences">
               {Select && (
@@ -5159,7 +5237,7 @@ export const register: Register = (on, options) => {
               })()}
             </Card>
             {isHosting() && s.connected && (
-              <Card title={`Friends${friendList.list.length ? ` (${friendList.list.length})` : ''}`}>
+              <Card title={`Friends & members${friendList.list.length ? ` (${friendList.list.length})` : ''}`}>
                 <Text dimColor>
                   Press ★ Friend next to someone connected (in the list above) and their personal key reaches them by itself. It's tied
                   to their name, so nobody can pose as them, and removing one friend doesn't touch anyone else.
@@ -5167,7 +5245,7 @@ export const register: Register = (on, options) => {
                 <Text>
                   Who can join now:{' '}
                   <Text bold>
-                    {friendList.party ? `only the ${friendList.party} party` : friendList.friendsOnly ? 'friends only' : 'anyone with the crew key'}
+                    {friendList.party ? `only the ${friendList.party} party` : friendList.friendsOnly ? 'friends and members' : 'anyone with the crew key'}
                   </Text>
                   <Text dimColor> (⚙ Settings)</Text>
                 </Text>
@@ -5179,7 +5257,8 @@ export const register: Register = (on, options) => {
                         <Text>
                           {here ? '●' : '○'} {f.name}
                           <Text dimColor>
-                            {here ? `  · connected now${f.ip ? ` from ${f.ip}` : ''}` : f.seen ? `  · last seen ${hhmm(f.seen)}${f.ip ? ` from ${f.ip}` : ''}` : '  · not connected yet'}
+                            {f.kind === 'member' ? '  · member' : '  · ★ friend'}
+                            {here ? `  · connected now${f.ip ? ` from ${f.ip}` : ''}` : f.seen ? `  · last seen ${when(f.seen)}${f.ip ? ` from ${f.ip}` : ''}` : '  · not connected yet'}
                           </Text>
                         </Text>
                         <Box flexDirection="row">
@@ -5262,7 +5341,9 @@ export const register: Register = (on, options) => {
                 <Text dimColor>
                   {s.peers.find(p => p.name === me)?.friend
                     ? "You're on the host's friends list ✓ Your personal key is saved; nothing to do."
-                    : 'Friends are managed by the host: they press ★ Friend next to your name, and your personal key arrives by itself.'}
+                    : s.peers.find(p => p.name === me)?.member
+                      ? "You're a member of this crew ✓ The host let you in, and your personal key is saved; nothing to do."
+                      : 'Friends are managed by the host: they press ★ Friend next to your name, and your personal key arrives by itself.'}
                 </Text>
               </Card>
             )}

@@ -11,6 +11,7 @@
 | *"🚪 Waiting to be let in…"* (or *"this crew is friends-only … you're knocking"*) | The host sees you at the top of their `/crew` and presses **Let in**: keep `/crew` open and you're in within seconds. (Before 1.23, the host typed your exact crew name in the Friends card instead.) |
 | Let in, then back at **Join session** a moment later | Fixed in 1.23.1: install the update. Until then, press **Join session** (or **Rejoin session**): your personal key is already saved, so you're straight in. |
 | *"… only the … party"* | The host has opened the crew to one party right now. You're knocking, so they can let you in, or wait until they open the door to yours again. |
+| *"the host has locked you out of this crew"* | The host locked you in ⚙ Settings → People. Only they can unlock you: ask them if it's a mistake. |
 | *"… turned you away for now"* | The host said no. If it was a mistake, ask them: you can knock again after 10 minutes. |
 | *"only the leader (…) or the host changes the leader"* | Pick the leader in the Crew tab anyway and press **Ask the crew**: it's a vote. |
 | *"the project … is private"* | You were taken off a members-only project, or it's not yours to see. Crew puts you back in main; ask a member to add you. |
@@ -33,7 +34,7 @@
 - **The host's PC is the crew's server.** If it sleeps or the relay window closes, the crew pauses; messages and state survive. **Keep this PC awake** (Crew tab, on by default) prevents the sleep part.
 
 ## Safety and privacy
-- **Getting in takes the relay's address and a key.** The address is reachable only inside your VPN or LAN. With **friends only** (or one party) on, everyone needs their own personal key, which works only with their name, and anyone else can only knock.
+- **Getting in takes the relay's address and a key.** The address is reachable only inside your VPN or LAN. With **friends and members** (or one party) on, everyone needs their own personal key, which works only with their name, and anyone else can only knock.
 - **The host stays in charge of their relay.** Nobody can remove them from it, and only the leader or the host changes the leader without a vote.
 - **Private projects stay private** on the relay itself: non-members can't list, read or switch into them. They're also left out of their crew log, Clawds window, Crew tab ("(private)") and file locks.
 - **Crewleader never leaves your PC.** Not even its file names reach the relay.

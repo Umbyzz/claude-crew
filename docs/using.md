@@ -39,15 +39,20 @@ The project belongs to the Claude Code chat: switch in one chat and the others s
   - Only people vote: a Claude can ask for a vote when its person wants it, but can't vote.
 - **For the host:**
   - **★ Friend** next to each connected person.
-  - The **Friends** card: who's a friend, when and from where they last connected, **Copy invite**, **Remove**, and a box to invite someone who isn't connected yet.
+  - The **Friends & members** card: who has a personal key (★ friends, and members you let in), when and from where they last connected, **Copy invite**, **Remove**, and a box to invite someone who isn't connected yet.
   - **Parties** put friends in groups, like *school* and *crew*: make one in the Friends card, then press a party's name next to a friend to put them in it. **⚙ Settings → Who can join → only the school party** lets just that party in. Everyone else's invite keeps working for later.
-  - **Knocking:** with the door locked (friends only, or one party), anyone else who uses an invite shows up at the top of `/crew` as **🚪 … wants in**, with **Let in** (they join the open party, and their personal key reaches them by itself) or **Turn away**.
+  - **Knocking:** with the door locked (friends and members, or one party), anyone else who uses an invite shows up at the top of `/crew` as **🚪 … wants in**, with **Let in** or **Turn away**. Let in makes them a **member**, not a friend: they get back in by themselves next time, they join the open party, and their personal key reaches them by itself.
   - The **Invite people** card: **Copy invite** (for anyone: with the door locked, they knock), **Stop hosting…** (it asks first), **🔑 New crew key…** and **Keep this PC awake while anyone's connected**.
-- **For everyone else:** a short Friends note (are you on the host's friends list?).
+- **For everyone else:** a short note: are you a friend or a member of this crew?
 - **Quack?** at the very bottom: three buff ducks, in three windows. Close them one at a time, or leave them there. It's your screen.
 
 ## ⚙ Settings
-**Connection** (Relay URL, your name, crew key, **Test connection**; for the host, **Who can join**), **Preferences** (Auto-run, notifications, check-in interval, **Crewshared check every**, the Clawds window, where new project folders go) and **Updates**.
+**Connection** (Relay URL, your name, crew key, **Test connection**; for the host, **Who can join**), for the host **People**, **Preferences** (Auto-run, notifications, check-in interval, **Crewshared check every**, the Clawds window, where new project folders go) and **Updates**.
+
+**People** (the host only) lists everyone who's ever been in your crew: ★ friends, members, people who came in with the crew key while the door was open, and anyone locked. Each shows when they were last seen and where from.
+- **★ Friend** makes someone a friend; **Make member** turns a friend back into a member. Their key keeps working either way.
+- **🔒 Lock** turns someone away whatever Who can join says, even with the crew key, and they don't show up as knocking either. **Unlock** undoes it. Friends can't be locked: make them a member first.
+- Locking goes by their name and the network address they last came from, so changing their name alone doesn't get them back in.
 
 Done for the day? Press **Leave…**, or just close Claude. Next time you open `/crew`, choose **Rejoin session** or **Leave session**. **↻ Refresh** reconnects right away and re-checks GitHub for updates.
 

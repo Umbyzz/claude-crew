@@ -47,7 +47,7 @@ The host needs **Python 3.8+** ([python.org](https://www.python.org)).
 ✔ Sam appears in everyone's **Crew** tab with a green dot, and a Clawd for Sam walks into the Clawds window.
 
 ### 5. Make it friends-only (recommended)
-**Alex**, in the **Crew** tab: press **★ Friend** next to Sam while Sam is connected. Sam's personal key reaches Sam's plugin by itself, tied to Sam's name. Then **⚙ Settings → Who can join → friends only**. Anyone new who uses the invite after that knocks, and Alex presses **Let in** or **Turn away**.
+**Alex**, in the **Crew** tab: press **★ Friend** next to Sam while Sam is connected. Sam's personal key reaches Sam's plugin by itself, tied to Sam's name. Then **⚙ Settings → Who can join → friends and members**. Anyone new who uses the invite after that knocks, and Alex presses **Let in** (they become a member) or **Turn away**.
 
 ✔ Sam gets a note saying they're on the host's friends list, and still gets in. A leaked invite now gets nobody in.
 
