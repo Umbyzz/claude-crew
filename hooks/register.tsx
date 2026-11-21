@@ -5,7 +5,7 @@ import type { CrewKnock, CrewMessage, CrewSnapshot, CrewTask, CrewVote } from '.
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.24.0'
+const VERSION = '1.24.1'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1556,8 +1556,20 @@ async function loopBrake($: EngineInterface, m: CrewMessage) {
 
 // More new messages than this at once (back after a long time away) and they come as one catch-up instead.
 const BACKLOG = 25
-// A request older than this when it arrives (it waited out a disconnect) is shown, never run as new work.
+// A request older than this when it arrives (it waited out a disconnect, ours or the sender's) is shown, never run as new work.
 const OLD_REQUEST_SECONDS = 15 * 60
+const OUTBOX_PREFIX = /^\(written (\d\d):(\d\d):(\d\d)(?:\.\d+)? UTC, while the relay was unreachable\) /
+
+// When a message was really written. One sent late from its writer's outbox (the relay was unreachable for them) only
+// reaches the relay, and gets its "at", later: the relay keeps the real time in "written". Before 1.24.1 only the text said so.
+function writtenAt(m: CrewMessage) {
+  if (typeof m.written === 'number' && m.written > 0) return Math.min(m.written, m.at || m.written)
+  const w = m.at > 0 ? OUTBOX_PREFIX.exec(m.text) : null
+  if (!w) return m.at
+  let t = Math.floor(m.at / 86400) * 86400 + Number(w[1]) * 3600 + Number(w[2]) * 60 + Number(w[3])
+  if (t > m.at + 60) t -= 86400 // written the day before (UTC)
+  return Math.min(t, m.at)
+}
 
 async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string | null, actingLeader: string | null = null, tasks: CrewTask[] = []) {
   for (const m of msgs) {
@@ -1621,7 +1633,11 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
         : `${m.from} sent an image "${m.name}", but it couldn't be downloaded from the relay.`
     }
     deliveredIds.add(m.id)
-    const late = m.kind === 'request' && m.at > 0 && Date.now() / 1000 - m.at > OLD_REQUEST_SECONDS
+    const written = writtenAt(m)
+    const late = m.kind === 'request' && written > 0 && Date.now() / 1000 - written > OLD_REQUEST_SECONDS
+    const waitedOut = written > 0 && written < m.at - 60 // it waited in the sender's outbox
+    // From another crew project: shown here, but never started by itself, since this chat works on something else
+    const elsewhere = !!m.project && m.project !== projectName
     // "T5 can start" or "T5 is assigned to you" for a task the board already shows done: shown, never run again
     const ref = m.kind === 'request' ? /^(?:Task )?T(\d+) (?:is assigned to you|can start)/.exec(m.text) : null
     const finished = !!ref && tasks.some(t => t.id === Number(ref[1]) && t.status === 'done')
@@ -1635,15 +1651,20 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
               `<crew-message from="${m.from}"${m.from === leader ? ' role="leader"' : ''} to="${m.to}" kind="${m.kind}" id="${m.id}" ` +
               (m.project && m.project !== projectName ? `project="${m.project}" ` : '') +
               `` +
-              `sent="${stamp(m.at)}" delivered="${stamp(Date.now() / 1000)}"${m.notify ? ' for-human="yes"' : ''}${m.human ? ' human="yes"' : ''}>\n${body}\n</crew-message>` +
+              `${waitedOut ? `written="${stamp(written)}" ` : ''}sent="${stamp(m.at)}" delivered="${stamp(Date.now() / 1000)}"${m.notify ? ' for-human="yes"' : ''}${m.human ? ' human="yes"' : ''}>\n${body}\n</crew-message>` +
               (m.notify ? `\n(${m.from} flagged this for your user: make sure they see it.)` : '') +
               (crewNote(m, leader) ? `\n${crewNote(m, leader)}` : '') +
-              (m.project && m.project !== projectName && m.project !== '(private)'
-                ? `\n(Sent from the crew project "${m.project}"; this session is in "${projectName}". A crew_send reply still reaches ${m.from} wherever they are.)`
+              (elsewhere && (m.project !== '(private)' || m.kind === 'request')
+                ? `\n(Sent from ${m.project === '(private)' ? 'another crew project' : `the crew project "${m.project}"`}; this session is in "${projectName}".` +
+                  (m.kind === 'request'
+                    ? ` So it wasn't started here by itself: tell your user about it, and leave the work to a chat in that project unless they say otherwise.`
+                    : '') +
+                  ` A crew_send reply still reaches ${m.from} wherever they are.)`
                 : '') +
               (finished ? `\n(T${ref?.[1]} is already done on the board: nothing to start.)` : '') +
               (late
-                ? `\n(An old request from ${clockTime(m.at)}: it reached you only now, after a disconnect. Don't start on it as new ` +
+                ? `\n(An old request from ${clockTime(written)} UTC: it reached you only now, ` +
+                  `${waitedOut ? `because ${m.from} couldn't reach the relay when they sent it` : 'after a disconnect'}. Don't start on it as new ` +
                   `work: check the board first, it may be done already, and ask ${m.from} if it's unclear.)`
                 : ''),
           },
@@ -1664,7 +1685,7 @@ async function deliver($: EngineInterface, msgs: CrewMessage[], leader: string |
     // Only an idle Claude needs a prompt to start on it: a busy one reads the request in its current turn,
     // and a queued prompt would then run it a second time once it goes idle.
     const forMe = direct || (m.to === 'all' && m.kind === 'request' && m.human === true)
-    if (forMe && m.kind === 'request' && trusted && !late && !finished && !working && !(await loopBrake($, m))) {
+    if (forMe && m.kind === 'request' && trusted && !late && !elsewhere && !finished && !working && !(await loopBrake($, m))) {
       queuedRequests.set(m.id, m.from)
       void autoSubmit($, {
           text: `Crew request #${m.id} from ${m.from}${m.from === leader ? ' (crew leader)' : m.from === actingLeader ? ` (acting leader while ${leader} is away)` : ''}${m.human ? ', typed by them in /crew' : ''}:\n\n${m.text}\n\nWork on it if it's reasonable, then report back to ${m.from} with crew_send.`,
@@ -3219,7 +3240,8 @@ async function flushOutbox($: EngineInterface) {
   try {
     while (sent < list.length) {
       const { queuedAt, ...body } = list[sent]
-      await relay($, 'POST', '/send', { ...body, text: `(written ${stamp(Number(queuedAt) / 1000)}, while the relay was unreachable) ${body.text}` })
+      const waited = Math.max(0, Math.round((Date.now() - Number(queuedAt)) / 1000)) // on this PC's clock alone
+      await relay($, 'POST', '/send', { ...body, waited, text: `(written ${stamp(Number(queuedAt) / 1000)}, while the relay was unreachable) ${body.text}` })
       sent += 1
       await $.store.set(outboxKey(), list.slice(sent))
     }

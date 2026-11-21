@@ -2637,6 +2637,7 @@ test('crew_send while the relay is unreachable is queued, and sent by itself onc
   expect(sent).toHaveLength(1)
   expect(sent[0].text).toContain('while the relay was unreachable) T5 done')
   expect(sent[0].to).toBe('bob')
+  expect(typeof sent[0].waited).toBe('number') // so the relay knows when it was really written
 })
 
 test("an old request that arrives late (after a disconnect) is shown, but not run as new work", { options: OPTIONS }, async ($, on) => {
@@ -2661,6 +2662,73 @@ test("an old request that arrives late (after a disconnect) is shown, but not ru
   const shown = JSON.stringify(session.appended().map(r => r.message.content))
   expect(shown).toContain('Build T7 and T8')
   expect(shown).toContain('An old request')
+})
+
+// 1.24.1: a heads-up written hours earlier, sent from the writer's outbox once the relay was back, started a turn as new work
+const OUTBOX_VARIANTS: [string, (at: number) => Record<string, number>][] = [
+  ['the relay says when it was written', at => ({ written: at - 7200 })],
+  ['an older sender only says so in its text', () => ({})],
+]
+for (const [label, extra] of OUTBOX_VARIANTS) {
+  test(`a request that waited on the sender's side is shown, but not run as new work (${label})`, { options: OPTIONS }, async ($, on) => {
+    mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+    const session = mock.session(on)
+    on('ui.status', async () => ({ value: undefined }))
+    on('ui.toast', async () => ({ value: undefined }))
+    const submitted: string[] = []
+    on('prompt.submit', async (_$: unknown, e: any) => (submitted.push(e.text), e))
+    on('turn.complete', async () => ({ text: '' }) as any)
+    let polls = 0
+    const now = Date.now() / 1000
+    const when = new Date((now - 7200) * 1000).toISOString().slice(11, 23)
+    on('http.fetch', async () => {
+      polls += 1
+      const messages =
+        polls === 1
+          ? [{ id: 9211, from: 'bob', to: 'alice', kind: 'request', project: 'main', at: now, ...extra(now),
+               text: `(written ${when} UTC, while the relay was unreachable) Redo the lobby` }]
+          : []
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 9211 }) } }
+    })
+    await $.turn.complete({ reason: 'answer', text: 'done' } as any) // idle
+    await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+    await settle()
+    expect(submitted.join(' ')).not.toContain('Redo the lobby') // not run
+    const shown = JSON.stringify(session.appended().map(r => r.message.content))
+    expect(shown).toContain('Redo the lobby')
+    expect(shown).toContain("couldn't reach the relay when they sent it")
+  })
+}
+
+test('a request from another project is shown here, but never started by itself, even for the leader', { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  const session = mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const submitted: string[] = []
+  on('prompt.submit', async (_$: unknown, e: any) => (submitted.push(e.text), e))
+  on('turn.complete', async () => ({ text: '' }) as any)
+  let polls = 0
+  const now = Date.now() / 1000
+  on('http.fetch', async () => {
+    polls += 1
+    const messages =
+      polls === 1
+        ? [
+            { id: 9221, from: 'bob', to: 'alice', kind: 'request', text: 'Polish the boat panel', project: 'Tweener', at: now },
+            { id: 9222, from: 'bob', to: 'alice', kind: 'request', text: 'Review the plan', project: 'main', at: now },
+          ]
+        : []
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, messages, cursor: 9222 }) } } // alice leads main
+  })
+  await $.turn.complete({ reason: 'answer', text: 'done' } as any) // idle
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(submitted.join(' ')).not.toContain('Polish the boat panel')
+  expect(submitted.join(' ')).toContain('Review the plan') // this chat's own project still starts it
+  const shown = JSON.stringify(session.appended().map(r => r.message.content))
+  expect(shown).toContain('Polish the boat panel')
+  expect(shown).toContain("wasn't started here by itself")
 })
 
 test('crew_status is short by default: open tasks in full, done ones counted; all and id show more', { options: OPTIONS }, async ($, on) => {

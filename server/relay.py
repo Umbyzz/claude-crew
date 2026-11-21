@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.24.0"
+VERSION = "1.24.1"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -1458,6 +1458,9 @@ class Handler(BaseHTTPRequestHandler):
                 extra = {"notify": True} if b.get("notify") else {}  # "for your human": shown to them, not just their Claude
                 if b.get("human"):
                     extra["human"] = True
+                waited = b.get("waited")  # sent late from the writer's outbox: how long it waited there (their clock alone)
+                if isinstance(waited, (int, float)) and not isinstance(waited, bool) and waited >= 1:
+                    extra["written"] = round(time.time() - min(waited, 30 * 86400), 3)
                 if kind == "update":
                     extra["said"] = True  # written by someone, unlike the relay's own task, doc and leader lines
                 if kind == "invite":

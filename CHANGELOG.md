@@ -2,6 +2,11 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.24.1
+**Late requests and other projects' requests don't start work by themselves** (found when a heads-up written 8 hours earlier, in another project, started a turn in a main chat):
+- A message that waited on the sender's side while the relay was unreachable now says when it was really written. A request that's more than 15 minutes old by then shows up in your chat but isn't run as new work, the same as one that waited out your own disconnect. This also works for messages from crew 1.24.0 and older, which only said it in their text.
+- A request from another crew project shows up in your chat, labelled with its project, but never starts a turn there by itself. Your Claude tells you about it and leaves the work to a chat in that project unless you say otherwise.
+
 ## 1.24.0
 **People, members and locks** (idea: Umbyz, after a classmate became a friend just by being let in):
 - **Letting someone in makes them a member, not a friend.** Members get back in by themselves, like friends, but being a friend is only ever your own ★. Existing friends stay friends; **Make member** turns one into a member.

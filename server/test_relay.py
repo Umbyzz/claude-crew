@@ -357,6 +357,19 @@ class RelayTest(unittest.TestCase):
         self.r.call("POST", "/leave", "umbyz", body={})
         self.assertIn("build the gate", texts("RTS"))
 
+    def test_a_message_sent_late_from_an_outbox_says_when_it_was_written(self):
+        before = time.time()
+        code, r = self.r.call("POST", "/send", "pluh", body={"to": "umbyz", "kind": "request", "text": "late one", "waited": 7200})
+        self.assertEqual(code, 200)
+        self.assertAlmostEqual(r["written"], before - 7200, delta=5)
+        got = [m for m in self.poll("umbyz")[1]["messages"] if m["text"] == "late one"]
+        self.assertAlmostEqual(got[0]["written"], before - 7200, delta=5)
+        ancient = self.r.call("POST", "/send", "pluh", body={"to": "umbyz", "text": "ancient", "waited": 10 ** 12})[1]
+        self.assertGreater(ancient["written"], before - 31 * 86400)  # capped at 30 days
+        for waited in (0, 0.5, -5, "7200", True, None):  # nothing to say, or nonsense: no "written"
+            r = self.r.call("POST", "/send", "pluh", body={"to": "umbyz", "text": "fresh", "waited": waited})[1]
+            self.assertNotIn("written", r)
+
     def test_images_outlive_the_in_memory_cache(self):
         import base64
         ids = []

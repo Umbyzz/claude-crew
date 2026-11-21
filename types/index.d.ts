@@ -21,6 +21,7 @@ export type CrewMessage = {
   notice?: boolean // kind 'update': one of the relay's own lines the project's Claudes are told (a task released)
   handover?: string // an acting leader handing back: the true leader who's back
   project?: string // which crew project it belongs to (none: crew-wide, like joins and leaves)
+  written?: number // sent late from its writer's outbox: when it was really written (the relay's clock)
 }
 
 export type CrewPeer = {
