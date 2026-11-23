@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.24.1"
+VERSION = "1.24.2"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -352,6 +352,14 @@ def is_online(p, now):
     return not p.get("left") and now - p["seen"] < ONLINE_SECONDS
 
 
+def older_than(version, want):
+    """A plugin version from before `want`, a tuple like (1, 20, 0). An unknown version counts as older."""
+    try:
+        return tuple(int(x) for x in str(version).split(".")[:3]) < want
+    except ValueError:
+        return True
+
+
 def has_chat_in(p, project, now):
     """Has this person a chat open in that project right now?"""
     if not is_online(p, now):
@@ -384,8 +392,8 @@ moments = []  # the latest /pookie and /bonk, for everyone's Clawds window (memo
 moment_at = {}  # name -> when they last sent one
 MOMENT_SECONDS = 30  # how long a moment stays on offer to the windows
 MOMENT_GAP = 2  # seconds between one person's moments
-uwu = {}  # project -> {"id", "at"} (memory only: not a message, so in no chat, log or saved state)
-UWU_SECONDS = 300  # how long it's on offer to the project's chats, and how long before it can be used again
+uwu = {}  # crew's joke command, crew-wide: {"id", "at", "by", "used", "heard"} (memory only: in no chat, log or saved state)
+UWU_SECONDS = 300  # how long it's on offer to the crew's chats, and how long before it can be used again
 STAGES = ("plain", "baseplate", "ocean", "forest", "city", "spooky", "space", "workshop")  # window/stages.py draws them
 
 
@@ -948,12 +956,16 @@ class Handler(BaseHTTPRequestHandler):
                 # handed to this person's Claude (and costs it tokens); this one only ever shows in /crew
                 team = [m for m in state["messages"] if m["id"] > since and m.get("team") and m.get("project") == pr
                         and self.name not in (m["to"], m["from"])]
+                # crew's joke command: whoever sent it hears whose Claudes it reached, once each (in one of their chats)
+                uwu_news = [n for n in uwu.get("used", []) if n not in uwu["heard"]] if uwu.get("by") == self.name else []
+                uwu.get("heard", []).extend(uwu_news)
                 self.reply(200, {"messages": msgs[-200:], "team": team[-200:],
                                  "peers": peer_list(pr, self.name, self.host_pc()), "project": pr,
                                  "friendsOnly": bool(state.get("friendsOnly")),
                                  **({"knocks": knock_list(now)} if self.host_pc() else {}),
                                  **({"vote": vote_view(votes[pr])} if pr in votes else {}),
-                                 **({"uwu": uwu[pr]["id"]} if pr in uwu and now - uwu[pr]["at"] < UWU_SECONDS else {}),
+                                 **({"uwu": uwu["id"]} if uwu and now - uwu["at"] < UWU_SECONDS else {}),
+                                 **({"uwuUsed": uwu_news} if uwu_news else {}),
                                  **({"renamedFrom": self.asked_project} if self.asked_project != pr else {}),
                                  **({"yourKey": state["friends"][self.name]["key"]}
                                     if self.via_shared and state.get("friends", {}).get(self.name, {}).get("pending") else {}),
@@ -1391,13 +1403,20 @@ class Handler(BaseHTTPRequestHandler):
                     post_message(self.name, "all", f"set the stage to {theme}", "update", pr)
                     save()
                 return self.reply(200, {"stage": theme})
-            if path == "/uwu":
+            if path == "/uwu":  # crew's joke command: every Claude in the crew session, whatever project it's in
                 now = time.time()
-                mark = uwu.get(self.project)
-                if mark and now - mark["at"] < UWU_SECONDS:
-                    return self.reply(429, {"error": f"try again in {int(UWU_SECONDS - (now - mark['at'])) // 60 + 1} min"})
-                uwu[self.project] = {"id": secrets.token_hex(4), "at": now}
-                return self.reply(200, {"id": uwu[self.project]["id"]})
+                if uwu and now - uwu["at"] < UWU_SECONDS:
+                    return self.reply(429, {"error": f"try again in {int(UWU_SECONDS - (now - uwu['at'])) // 60 + 1} min"})
+                uwu.clear()
+                uwu.update({"id": secrets.token_hex(4), "at": now, "by": self.name, "used": [], "heard": []})
+                others = sorted(n for n, p in peers.items() if n != self.name and is_online(p, now))
+                old = [n for n in others if older_than(peers[n].get("version"), (1, 20, 0))]  # crews that can't get it
+                quiet = [n for n in others if n not in old and older_than(peers[n].get("version"), (1, 24, 2))]  # can't say it landed
+                return self.reply(200, {"id": uwu["id"], "to": [n for n in others if n not in old], "old": old, "quiet": quiet})
+            if path == "/uwu/used":  # it kicked in on a teammate's Claude: only whoever sent it hears so
+                if uwu and b.get("id") == uwu["id"] and self.name != uwu["by"] and self.name not in uwu["used"]:
+                    uwu["used"].append(self.name)
+                return self.reply(200, {"ok": True})
             if path == "/ping":  # crew_ping: ask a teammate's plugin to echo (it answers on its next check-in)
                 now = time.time()
                 for old in [i for i, pg in pings.items() if now - pg["at"] > PING_SECONDS]:

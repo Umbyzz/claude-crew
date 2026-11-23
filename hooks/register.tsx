@@ -5,7 +5,7 @@ import type { CrewKnock, CrewMessage, CrewSnapshot, CrewTask, CrewVote } from '.
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.24.1'
+const VERSION = '1.24.2'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -101,7 +101,7 @@ let skipDelivery = false // while (re)joining: the backlog goes into one catch-u
 const queuedRequests = new Map<number, string>() // request id -> who sent it
 const answeredRequests = new Set<number>()
 let working = false
-let uwu = { id: '', turns: 0, until: 0 } // how many of this Claude's next turns it lasts
+let uwu = { id: '', turns: 0, until: 0, told: false } // how many of this Claude's next turns it lasts; told: we said it landed
 let failures = 0
 let skip = 0
 // When the relay last answered, and a saved copy of what it said (per project), for when it can't be reached.
@@ -1735,6 +1735,7 @@ async function pollOnce($: EngineInterface) {
     // A teammate's crew_ping: echo it right away. The plugin answers; this Claude never sees it (no tokens).
     for (const id of Array.isArray(data.pings) ? data.pings : []) void relay($, 'POST', '/pong', { id }).catch(() => {})
     if (typeof data.uwu === 'string') armUwu(data.uwu)
+    if (Array.isArray(data.uwuUsed)) uwuLanded($, data.uwuUsed.map(String))
     // A first-ever connection shows recent history in the pane but doesn't replay it into the conversation.
     // Delivery runs on its own track (in order), so a slow image download never delays the next check-in.
     if (!skipDelivery && (stored >= 0 || prev.cursor > 0)) {
@@ -2526,8 +2527,8 @@ const UWU_OVER = `From the crew plugin: crew's joke command is over. Write norma
 const UWU_EXPIRES = 3600000
 const UWU_COMMAND = 'justuwutheclaudes' // never registered: the desktop's slash menu lists every registered command, hidden or not
 
-function armUwu(id: string) {
-  if (id !== uwu.id) uwu = { id, turns: 2, until: Date.now() + UWU_EXPIRES }
+function armUwu(id: string, mine = false) {
+  if (id !== uwu.id) uwu = { id, turns: 2, until: Date.now() + UWU_EXPIRES, told: mine }
 }
 
 // The note this prompt carries, if any: two turns of it, then one to say it's over. A prompt delivered into a running
@@ -2535,7 +2536,7 @@ function armUwu(id: string) {
 function uwuNote(turnId: unknown) {
   if (!uwu.until) return ''
   if (Date.now() > uwu.until) {
-    uwu = { id: uwu.id, turns: 0, until: 0 }
+    uwu = { ...uwu, turns: 0, until: 0 }
     return ''
   }
   if (uwu.turns && !turnId) {
@@ -2550,11 +2551,42 @@ function uwuNote(turnId: unknown) {
 async function uwuGo($: EngineInterface) {
   if (!cfg.configured || !joined) return "You're not in the crew right now: join from /crew first."
   try {
-    armUwu(String((await relay($, 'POST', '/uwu', {})).id)) // this Claude too, without waiting for the next check-in
-    return '^w^ *nuzzles* The Claudes in this project talk uwu for their next 2 turns. Shhh.'
+    const r = await relay($, 'POST', '/uwu', {})
+    armUwu(String(r.id), true) // this Claude too, without waiting for the next check-in
+    if (!Array.isArray(r.to)) return '^w^ *nuzzles* The Claudes in this project talk uwu for their next 2 turns. Shhh.' // an older relay
+    const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : [])
+    return uwuSent(list(r.to), list(r.old), list(r.quiet))
   } catch (err) {
     return momentError(err)
   }
+}
+
+// "bob's Claude", "bob's and carol's Claudes", "bob's, carol's and dan's Claudes"
+function claudesOf(names: string[]) {
+  const owned = names.map(n => `${n}'s`)
+  const list = owned.length > 1 ? `${owned.slice(0, -1).join(', ')} and ${owned[owned.length - 1]}` : (owned[0] ?? '')
+  return `${list} Claude${names.length > 1 ? 's' : ''}`
+}
+
+// What the one who typed the joke command sees: whose Claudes it reached (the whole crew, whatever project they're in)
+function uwuSent(to: string[], old: string[], quiet: string[] = []) {
+  const many = to.length > 1
+  const mute = quiet.filter(n => to.includes(n)) // crews from before 1.24.2 get it, but can't say when it kicks in
+  const who = to.length
+    ? `${claudesOf(to)} ${many ? 'talk' : 'talks'} uwu for ${many ? 'their' : 'its'} next 2 turns, and yours does too. Shhh.` +
+      (cfg.toasts === 'off' || mute.length === to.length
+        ? ''
+        : ` You'll get a toast when it kicks in on their side${mute.length ? ` (not from ${mute.join(', ')}: older crew)` : ''}.`)
+    : `${old.length ? 'Nobody online can get it right now' : 'Nobody else is online right now'}, so only yours talks uwu for its ` +
+      `next 2 turns. Anyone who joins within 5 minutes gets it too.`
+  const tooOld = old.length ? ` ${old.join(', ')} need${old.length === 1 ? 's' : ''} crew 1.20 or newer for it.` : ''
+  return `^w^ *nuzzles* ${who}${tooOld}`
+}
+
+// For the one who sent it: whose Claudes it has now kicked in on. Nobody else hears (the relay tells only them, once each).
+function uwuLanded($: EngineInterface, names: string[]) {
+  if (!names.length || cfg.toasts === 'off') return
+  $.ui.toast(`^w^ ${claudesOf(names)} ${names.length > 1 ? 'are' : 'is'} talking uwu now`, { timeoutMs: 8000 })
 }
 
 function quackPress($: EngineInterface) {
@@ -3685,6 +3717,10 @@ export const register: Register = (on, options) => {
     lastBump = 0
     bump($)
     const note = e.command ? '' : uwuNote(e.turnId)
+    if (note === UWU_NOTE && !uwu.told) {
+      uwu.told = true // it kicked in here: whoever sent it hears so (only they do)
+      void relay($, 'POST', '/uwu/used', { id: uwu.id }).catch(() => {})
+    }
     return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
   })
 

@@ -370,6 +370,17 @@ class RelayTest(unittest.TestCase):
             r = self.r.call("POST", "/send", "pluh", body={"to": "umbyz", "text": "fresh", "waited": waited})[1]
             self.assertNotIn("written", r)
 
+    def test_whoever_sent_the_uwu_hears_once_whose_claudes_it_reached(self):
+        self.poll("bob")
+        got = self.r.call("POST", "/uwu", "alice", body={})[1]
+        self.r.call("POST", "/uwu/used", "bob", body={"id": got["id"]})
+        self.r.call("POST", "/uwu/used", "bob", body={"id": got["id"]})  # once is enough
+        self.r.call("POST", "/uwu/used", "alice", body={"id": got["id"]})  # their own Claude doesn't count
+        self.r.call("POST", "/uwu/used", "carol", body={"id": "nope"})  # an old or made-up one doesn't either
+        self.assertNotIn("uwuUsed", self.poll("bob")[1])  # nobody else hears
+        self.assertEqual(self.poll("alice")[1]["uwuUsed"], ["bob"])
+        self.assertNotIn("uwuUsed", self.poll("alice")[1])  # told once
+
     def test_images_outlive_the_in_memory_cache(self):
         import base64
         ids = []
@@ -504,13 +515,18 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(code, 404)
         self.assertIn("bob", got["error"])
 
-    def test_uwu_stays_in_its_project_and_out_of_every_list(self):
+    def test_uwu_reaches_every_project_and_stays_out_of_every_list(self):
         self.poll("alice", project="game")
+        self.r.call("GET", "/poll?since=0", "bob", extra={"X-Crew-Version": "1.24.2"})
+        self.r.call("GET", "/poll?since=0", "cori", extra={"X-Crew-Version": "1.24.1"})  # gets it, can't say it landed
+        self.poll("pluh")  # a crew too old to say its version, let alone get the joke
         code, got = self.r.call("POST", "/uwu", "alice", project="game", body={})
         self.assertEqual(code, 200)
+        # who's online to get it (alice's own Claude gets it too)
+        self.assertEqual((got["to"], got["old"], got["quiet"]), (["bob", "cori"], ["pluh"], ["cori"]))
         self.assertEqual(self.poll("alice", project="game")[1]["uwu"], got["id"])
-        self.assertNotIn("uwu", self.poll("alice")[1])  # another project: untouched
-        self.assertEqual(self.r.call("POST", "/uwu", "alice", project="game", body={})[0], 429)
+        self.assertEqual(self.poll("bob")[1]["uwu"], got["id"])  # another project: the whole crew gets it
+        self.assertEqual(self.r.call("POST", "/uwu", "bob", body={})[0], 429)
         code, polled = self.poll("alice", project="game")
         self.assertFalse([m for m in polled["messages"] if "uwu" in m["text"].lower()])
         code, log = self.r.call("GET", "/log", "alice")

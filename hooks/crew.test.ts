@@ -1321,6 +1321,53 @@ test('a teammate using the joke reaches this Claude once, on its check-in', { op
   expect(contexts[2]?.[0]).toContain('is over')
 })
 
+// 1.24.2: it reaches the whole crew, whatever project each chat is in, and says whose Claudes it went to
+for (const [label, reply, says] of [
+  ['names whose Claudes it went to', { id: 'mark2', to: ['bob', 'carol'], old: ['pluh'] }, "bob's and carol's Claudes talk uwu"],
+  ['says too-old crews need an update', { id: 'mark3', to: ['bob'], old: ['pluh'] }, 'pluh needs crew 1.20 or newer'],
+  ["promises no toast an older crew can't send", { id: 'mark6', to: ['bob', 'carol'], old: [], quiet: ['carol'] }, '(not from carol: older crew)'],
+  ['says when nobody else is online', { id: 'mark4', to: [], old: [] }, 'Nobody else is online right now'],
+  ['keeps the old words with an older relay', { id: 'mark5' }, 'The Claudes in this project talk uwu'],
+] as const) {
+  test(`the joke command ${label}`, { options: OPTIONS }, async ($, on) => {
+    mock.store(on)
+    on('ui.status', async () => ({ value: undefined }))
+    on('http.fetch', async (_$: unknown, e: any) => {
+      const body = e.url.endsWith('/uwu') ? reply : POLL
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+    })
+    const r: any = await $.prompt.submit({ text: '/justuwutheclaudes' } as any)
+    expect(String(r.drop)).toContain(says)
+  })
+}
+
+test("a teammate's joke says once that it kicked in, and only the one who sent it gets a toast", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$: unknown, e: any) => (toasts.push(String(e.text ?? '')), { value: undefined }) as any)
+  on('prompt.submit', async (_$: unknown, e: any) => e)
+  const used: any[] = []
+  let extra: Record<string, unknown> = { uwu: 'mark9' }
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.url.endsWith('/uwu/used')) used.push(JSON.parse(e.init.body))
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, ...extra }) } }
+  })
+  await startSession(on, $)
+  await settle()
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // a teammate's mark arrives with the check-in
+  expect(used).toEqual([]) // not until it kicks in
+  await $.prompt.submit({ text: 'one' } as any)
+  await $.prompt.submit({ text: 'two' } as any)
+  await settle()
+  expect(used).toEqual([{ id: 'mark9' }]) // once, when it kicked in
+  expect(toasts.join(' ')).not.toContain('talking uwu') // the teammate whose Claude it is hears nothing
+  extra = { uwuUsed: ['bob', 'carol'] } // and the one who sent it hears whose Claudes it reached
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  expect(toasts.some(t => t.includes("bob's and carol's Claudes are talking uwu now"))).toBe(true)
+})
+
 test('the joke command typed any way never reaches the model, and is never in the slash menu', { options: OPTIONS }, async ($, on) => {
   const contexts = uwuSession($, on)
   const names: string[] = []
