@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.24.2"
+VERSION = "1.25.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -581,6 +581,7 @@ def peer_list(project=MAIN, viewer=None, host=False):
          "activity": p["activity"], "leader": n == leader, "acting": n == stand_in, "since": p["since"],
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
          "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"), "usageDetail": p.get("usageDetail"), "mcp": p.get("mcp"),
+         "client": p.get("client"),
          "project": p.get("project", MAIN) if can_see(p.get("project", MAIN), viewer) or n == viewer else "(private)",
          "friend": friend_kind(n) == "friend", "member": friend_kind(n) == "member",
          **({"ip": p.get("ip", "")} if host else {})}
@@ -675,6 +676,7 @@ def touch(name, headers, ip=""):
     c["chatTo"] = (headers.get("X-Crew-Chat-To") or "").strip()[:40] or None
     p["version"] = (headers.get("X-Crew-Version") or "").strip()[:20] or p.get("version")  # who needs to update
     p["model"] = (headers.get("X-Crew-Model") or "").strip()[:60] or p.get("model")  # the leader splits work by it
+    p["client"] = (headers.get("X-Crew-Client") or "").strip()[:20] or None  # another AI app (Codex…), not a Claude
     try:  # how much of their usage limit is gone: the leader gives big tasks to whoever has room
         p["usage"] = max(0, min(999, round(float(headers.get("X-Crew-Usage") or ""))))
     except ValueError:
@@ -731,6 +733,8 @@ class Handler(BaseHTTPRequestHandler):
     def host_pc(self):
         if args.test_remote and self.headers.get("X-Crew-Test-Remote"):
             return False  # the test suite playing a teammate on another PC
+        if self.headers.get("X-Crew-Client"):
+            return False  # another AI's bridge (Codex, Gemini…) on the host's PC is a teammate, not the host
         return self.client_address[0] in ("127.0.0.1", "::1")
 
     def authed(self, presence=True):
@@ -872,8 +876,10 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/poll":
                 # Read receipts: this member's plugin now has everything up to the cursor (shown in their /crew,
                 # handed to their Claude). Every poll reply carries everyone's mark, and any pings waiting for them.
-                peers[self.name]["read"] = state["next_id"] - 1
-                peers[self.name].setdefault("readIn", {})[self.project] = state["next_id"] - 1  # unread counts per project
+                # Another AI's bridge hands messages over only when its AI checks, and says so itself (POST /read).
+                if not self.headers.get("X-Crew-Client"):
+                    peers[self.name]["read"] = state["next_id"] - 1
+                    peers[self.name].setdefault("readIn", {})[self.project] = state["next_id"] - 1  # unread counts per project
                 self.extra = {"reads": {n: p.get("read", 0) for n, p in peers.items()},
                               "pings": [i for i, pg in pings.items() if pg["to"] == self.name and not pg["answeredAt"]]}
             if url.path == "/wait":
@@ -1409,7 +1415,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(429, {"error": f"try again in {int(UWU_SECONDS - (now - uwu['at'])) // 60 + 1} min"})
                 uwu.clear()
                 uwu.update({"id": secrets.token_hex(4), "at": now, "by": self.name, "used": [], "heard": []})
-                others = sorted(n for n, p in peers.items() if n != self.name and is_online(p, now))
+                others = sorted(n for n, p in peers.items()  # Claudes only: another AI's bridge can't play along
+                                if n != self.name and is_online(p, now) and not p.get("client"))
                 old = [n for n in others if older_than(peers[n].get("version"), (1, 20, 0))]  # crews that can't get it
                 quiet = [n for n in others if n not in old and older_than(peers[n].get("version"), (1, 24, 2))]  # can't say it landed
                 return self.reply(200, {"id": uwu["id"], "to": [n for n in others if n not in old], "old": old, "quiet": quiet})
@@ -1417,6 +1424,16 @@ class Handler(BaseHTTPRequestHandler):
                 if uwu and b.get("id") == uwu["id"] and self.name != uwu["by"] and self.name not in uwu["used"]:
                     uwu["used"].append(self.name)
                 return self.reply(200, {"ok": True})
+            if path == "/read":  # another AI's bridge: its AI has now seen the crew's messages up to this id
+                try:
+                    upto = min(int(b.get("id") or 0), state["next_id"] - 1)
+                except (TypeError, ValueError):
+                    return self.reply(400, {"error": "id must be a message id"})
+                p = peers.get(self.name)
+                if p is not None and upto > p.get("read", 0):
+                    p["read"] = upto
+                    p.setdefault("readIn", {})[self.project] = upto
+                return self.reply(200, {"read": p.get("read", 0) if p else 0})
             if path == "/ping":  # crew_ping: ask a teammate's plugin to echo (it answers on its next check-in)
                 now = time.time()
                 for old in [i for i, pg in pings.items() if now - pg["at"] > PING_SECONDS]:

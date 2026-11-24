@@ -17,6 +17,7 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 - **Share files with no tokens:** drop files in `Crewshared\<your name>` and every teammate gets them. Huge raw material waits in `Crewleader` until the leader's Claude picks what the crew needs.
 - **Friends only:** one-click personal keys per friend, and projects only their members can see.
 - **No stepping on toes:** a kickoff that gives every task its own files, file locks, house rules per project, and a loop brake so Claudes can't wake each other forever.
+- **Other AIs too (beta):** Codex (GPT), Gemini CLI or any app that can use MCP servers joins as a teammate, on the same chat, task board and docs.
 - **See the whole crew at a glance:** model, usage, connected tools (open or not) and what each Claude is editing.
 - **The Clawds 🦀:** a little window of pixel Clawds acting out what every Claude is doing, from sketching in pixel shades to full-on funerals when someone runs out of tokens, on a backdrop that fits the project: an ocean, a forest, something spooky.
 
@@ -48,6 +49,7 @@ Everything goes through one small relay that one of you runs. The plugin talks t
 | [Using crew](docs/using.md) | the `/crew` pane tab by tab, projects, saving tokens, commands and Claude's tools |
 | [Updating](docs/updating.md) | Install update, the manual way, restarting the relay, releasing |
 | [Troubleshooting](docs/troubleshooting.md) | fixes, safety and privacy, and good-to-know quirks |
+| [Other AIs](docs/other-ais.md) | Codex (GPT), Gemini CLI and other MCP apps joining the crew as teammates |
 | [How it works](docs/how-it-works.md) | the relay, the plugin, the windows, and developing crew |
 | [Changelog](CHANGELOG.md) | what changed in each version |
 

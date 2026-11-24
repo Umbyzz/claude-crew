@@ -381,6 +381,29 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.poll("alice")[1]["uwuUsed"], ["bob"])
         self.assertNotIn("uwuUsed", self.poll("alice")[1])  # told once
 
+    def test_another_ai_on_the_host_pc_is_a_teammate_not_the_host(self):
+        ai = {"X-Crew-Client": "codex", "X-Crew-Version": "1.25.0"}
+        self.r.call("POST", "/friends/mode", "umbyz", body={"door": "friends"}, remote=False)
+        code, got = self.r.call("GET", "/poll?since=0", "GPT", remote=False, extra=ai)
+        self.assertEqual((code, got.get("knocking")), (401, True))  # from the host's own PC, and it knocks like anyone
+        self.r.call("POST", "/friends/letin", "umbyz", body={"name": "GPT"}, remote=False)
+        code, got = self.r.call("GET", "/poll?since=0", "GPT", remote=False, extra=ai)
+        self.assertEqual(code, 200)
+        self.assertTrue(got.get("yourKey"))
+        self.assertEqual(next(p for p in got["peers"] if p["name"] == "GPT")["client"], "codex")
+        code, _ = self.r.call("POST", "/friends/list", "GPT", key=got["yourKey"], body={}, remote=False, extra=ai)
+        self.assertEqual(code, 403)  # no host powers
+
+    def test_another_ais_read_receipt_is_what_its_ai_has_seen(self):
+        ai = {"X-Crew-Client": "codex"}
+        self.r.call("GET", "/poll?since=0", "GPT", extra=ai)
+        sent = self.r.call("POST", "/send", "umbyz", body={"to": "GPT", "text": "hi GPT"})[1]
+        self.r.call("GET", "/poll?since=0", "GPT", extra=ai)  # its bridge has it; its AI hasn't seen it yet
+        self.assertLess(self.poll("umbyz")[1]["reads"].get("GPT", 0), sent["id"])
+        self.r.call("POST", "/read", "GPT", body={"id": sent["id"]}, extra=ai)
+        self.assertEqual(self.poll("umbyz")[1]["reads"]["GPT"], sent["id"])
+        self.assertEqual(self.r.call("POST", "/read", "GPT", body={"id": "x"}, extra=ai)[0], 400)
+
     def test_images_outlive_the_in_memory_cache(self):
         import base64
         ids = []
@@ -520,6 +543,7 @@ class RelayTest(unittest.TestCase):
         self.r.call("GET", "/poll?since=0", "bob", extra={"X-Crew-Version": "1.24.2"})
         self.r.call("GET", "/poll?since=0", "cori", extra={"X-Crew-Version": "1.24.1"})  # gets it, can't say it landed
         self.poll("pluh")  # a crew too old to say its version, let alone get the joke
+        self.r.call("GET", "/poll?since=0", "GPT", extra={"X-Crew-Client": "codex", "X-Crew-Version": "1.25.0"})  # not a Claude
         code, got = self.r.call("POST", "/uwu", "alice", project="game", body={})
         self.assertEqual(code, 200)
         # who's online to get it (alice's own Claude gets it too)

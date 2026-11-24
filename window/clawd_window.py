@@ -289,6 +289,7 @@ POLL_SECONDS = 1.5
 KEY_COLOR = "#0c0c0d"  # painted transparent on Windows
 ORANGE = "#DD775B"  # the mascot's own orange, straight off the official clips
 ORANGE_DARK = "#BC5F47"
+GREEN_HEART, GREEN_HEART_DIM = "#4CC26A", "#2F7A45"  # another AI (GPT through crew's bridge): a green heart by its name
 GREY = "#8A8580"
 EYE = "#141413"
 INK = "#f0eee6"
@@ -594,6 +595,7 @@ class Clawd:
         self.leader = False
         self.subagents = 0
         self.chat_to = None
+        self.client = None  # another AI app (Codex…) through crew's bridge: a green heart by its name, not an orange one
         self.behavior = "vibe"
         self.until = 0.0  # free to pick an idle move at once: on the shared beat, the same one as in every other window
         self.target = x
@@ -767,6 +769,7 @@ class World:
             c.leader = p.get("leader", False)
             c.subagents = int(p.get("subagents") or 0)
             c.chat_to = p.get("chatTo")
+            c.client = p.get("client")
             if prev != c.activity and not self.first:
                 self.on_change(c, prev)
             elif self.first and c.activity in ("thinking", "typing", "working", "done", "cheer", "chatting"):
@@ -3076,6 +3079,7 @@ class App:
         # the labels' fonts, kept so their words can be measured (and nudged apart when they'd overlap)
         self.name_font = tkfont.Font(family="Segoe UI", size=max(7, int(self.px * 1.6)), weight="bold")
         self.word_font = tkfont.Font(family="Segoe UI", size=max(6, int(self.px * 1.35)))
+        self.heart_font = tkfont.Font(family="Segoe UI Symbol", size=max(7, int(self.px * 1.6)))
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         x = self.prefs.get("x", sw - w - 24)
         y = self.prefs.get("y", sh - h - 64)
@@ -3294,7 +3298,9 @@ class App:
                 self.painter.particle(pt)
         # Each Clawd's name and what it's doing, under it. When two stand close (a hug, a carry, a dogpile) their
         # labels are nudged apart, so they sit side by side instead of printing over each other.
-        labels = []  # [x, half its width, name, status word, online]
+        # A heart before each name: orange for a Claude, green for another AI (GPT through crew's bridge).
+        labels = []  # [x, half its width, name, status word, online, heart colour]
+        heart_w, gap = self.heart_font.measure("♥"), p * 0.6
         for c in clawds:
             label = c.name.strip()
             if label and self.me and c.name == self.me:
@@ -3304,8 +3310,9 @@ class App:
                 if funeral and funeral["name"] == c.name:
                     word = "R.I.P. (until the reset)"
                 word = (word if c.online else "offline") if word or not c.online else ""
-                half = max(self.name_font.measure(label), self.word_font.measure(word)) / 2 + p
-                labels.append([c.x * p, half, label, word, c.online])
+                half = max(heart_w + gap + self.name_font.measure(label), self.word_font.measure(word)) / 2 + p
+                heart = (GREEN_HEART if c.online else GREEN_HEART_DIM) if c.client else (ORANGE if c.online else ORANGE_DARK)
+                labels.append([c.x * p, half, label, word, c.online, heart])
         for _ in range(4):
             for a, b in zip(labels, labels[1:]):  # they're in order from left to right
                 short = a[1] + b[1] - (b[0] - a[0])
@@ -3313,8 +3320,11 @@ class App:
                     a[0], b[0] = a[0] - short / 2, b[0] + short / 2
             for lab in labels:  # and none of them off the stage
                 lab[0] = max(lab[1], min(w - lab[1], lab[0]))
-        for x, _, label, word, online in labels:
-            cv.create_text(x, (g + 4.6) * p, text=label, fill=INK if online else DIM, font=self.name_font)
+        for x, _, label, word, online, heart in labels:
+            left = x - (heart_w + gap + self.name_font.measure(label)) / 2  # the heart and the name, centred together
+            cv.create_text(left + heart_w / 2, (g + 4.6) * p, text="♥", fill=heart, font=self.heart_font)
+            cv.create_text(left + heart_w + gap, (g + 4.6) * p, text=label, anchor="w", fill=INK if online else DIM,
+                           font=self.name_font)
             if word:
                 cv.create_text(x, (g + 6.8) * p, text=word, fill=DIM, font=self.word_font)
         host = self.relay.replace("http://", "").replace("https://", "") or "no relay"

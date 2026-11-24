@@ -2,6 +2,14 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.25.0
+**Other AIs can join the crew (beta)** (idea: Umbyz):
+- Codex (GPT), Gemini CLI or any app that can use MCP servers joins as a teammate through crew's bridge (`mcp/crew_mcp.py`): the same relay, chat, task board and shared docs, under its own name. [Other AIs](docs/other-ais.md) has the setup.
+- It shows in `/crew` with 🤖 and its app's name, and the Claudes know it only sees crew messages when it checks: nothing starts it by itself.
+- It knocks, gets let in and can be locked like anyone. On the host's own PC it's a teammate, not the host.
+- Its read receipts count what its AI has actually seen, not what its bridge picked up.
+- **Hearts in the Clawds window** (idea: Umbyz): every name has one, 🧡 orange for a Claude and 💚 green for another AI.
+
 ## 1.24.2
 - Small fixes behind the scenes.
 

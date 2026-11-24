@@ -5,7 +5,7 @@ import type { CrewKnock, CrewMessage, CrewSnapshot, CrewTask, CrewVote } from '.
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.24.2'
+const VERSION = '1.25.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1452,7 +1452,8 @@ function crewExtras(s: CrewSnapshot) {
   let text = ''
   const team = s.peers.filter(p => p.online || p.name === cfg.me)
   const about = (p: CrewSnapshot['peers'][number]) =>
-    [p.model ? modelLabel(p.model) : 'model unknown', p.usageDetail ? `usage ${p.usageDetail}` : p.usage != null ? `${p.usage}% of usage limit used` : '',
+    [p.client ? `another AI via ${p.client}, not a Claude: nothing starts it by itself` : '',
+     p.model ? modelLabel(p.model) : 'model unknown', p.usageDetail ? `usage ${p.usageDetail}` : p.usage != null ? `${p.usage}% of usage limit used` : '',
      p.mcp ? `connected to ${p.mcp}` : ''].filter(Boolean).join(', ')
   if (team.length > 1 && team.some(p => p.model || p.usage != null || p.mcp)) {
     const leading = s.leader === cfg.me || s.acting === cfg.me
@@ -3830,6 +3831,7 @@ export const register: Register = (on, options) => {
     const peer = (p: CrewSnapshot['peers'][number]) =>
       `${p.name}${p.leader ? ' (leader)' : ''}${p.acting ? ' (acting leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}` +
       (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '') +
+      (p.client ? ` · another AI via ${p.client}: it sees crew messages only when it checks, and nothing starts it by itself` : '') +
       (p.model ? ` · ${modelLabel(p.model)}` : '') +
       (p.usageDetail ? ` · usage ${p.usageDetail}` : p.usage != null ? ` · ${p.usage}% usage used` : '') +
       (p.mcp ? ` · connected to ${p.mcp}` : '') +
@@ -5257,6 +5259,7 @@ export const register: Register = (on, options) => {
                     {p.leader ? ' ★' : ''}
                     {p.acting ? ' ☆ acting leader' : ''}
                     {p.name === me ? ' (you)' : ''}
+                    {p.client ? `  · 🤖 ${p.client}` : ''}
                     {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                     {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
                     {p.model ? `  · ${modelLabel(p.model)}` : ''}

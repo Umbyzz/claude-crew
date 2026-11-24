@@ -1368,6 +1368,19 @@ test("a teammate's joke says once that it kicked in, and only the one who sent i
   expect(toasts.some(t => t.includes("bob's and carol's Claudes are talking uwu now"))).toBe(true)
 })
 
+test('another AI in the crew shows as one, so the Claudes know nothing starts it by itself', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const peers = [...POLL.peers, { name: 'GPT', online: true, lastSeen: 0, activity: 'idle', leader: false, client: 'codex' }]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers }) } }))
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(r.result).toContain('GPT: idle · another AI via codex: it sees crew messages only when it checks')
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  expect(await ui.find({ text: /🤖 codex/ } as any)).toBeDefined()
+  await ui.unmount()
+})
+
 test('the joke command typed any way never reaches the model, and is never in the slash menu', { options: OPTIONS }, async ($, on) => {
   const contexts = uwuSession($, on)
   const names: string[] = []

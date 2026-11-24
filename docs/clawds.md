@@ -1,6 +1,6 @@
 # The Clawds 🦀
 
-Each crew member is a pixel Clawd, named on the stage below it, that acts out what their Claude is doing right now. The leader wears a ★. They move with weight, timed after the real mascot's animations: the eyes lead a look-around, they lean into it, crouch before a jump, arc through the air and land with a little bounce. They're drawn on a fine pixel grid, and the motion glides smoothly between steps.
+Each crew member is a pixel Clawd, named on the stage below it, that acts out what their Claude is doing right now. Every name has a heart: 🧡 orange for a Claude, 💚 green for another AI in the crew (like GPT, see [Other AIs](other-ais.md)). The leader wears a ★. They move with weight, timed after the real mascot's animations: the eyes lead a look-around, they lean into it, crouch before a jump, arc through the air and land with a little bounce. They're drawn on a fine pixel grid, and the motion glides smoothly between steps.
 
 | Their Claude is… | Their Clawd… |
 |---|---|

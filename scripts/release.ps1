@@ -11,7 +11,8 @@ $utf8 = New-Object Text.UTF8Encoding $false
 $edits = @(
   @{ File = '.claude-plugin\plugin.json'; Pattern = '"version":\s*"[^"]+"'; With = "`"version`": `"$Version`"" },
   @{ File = 'hooks\register.tsx'; Pattern = "const VERSION = '[^']+'"; With = "const VERSION = '$Version'" },
-  @{ File = 'server\relay.py'; Pattern = 'VERSION = "[^"]+"'; With = "VERSION = `"$Version`"" }
+  @{ File = 'server\relay.py'; Pattern = 'VERSION = "[^"]+"'; With = "VERSION = `"$Version`"" },
+  @{ File = 'mcp\crew_mcp.py'; Pattern = 'VERSION = "[^"]+"'; With = "VERSION = `"$Version`"" }
 )
 foreach ($e in $edits) {
   $path = Join-Path $root $e.File
@@ -37,6 +38,10 @@ if ($claude) {
 # the relay's own tests: keys, friends, members-only projects, saves
 python (Join-Path $root 'server\test_relay.py')
 if ($LASTEXITCODE -ne 0) { throw 'relay tests failed' }
+
+# the bridge for other AIs (Codex, Gemini CLI…): MCP over stdio against a real relay
+python (Join-Path $root 'mcp\test_crew_mcp.py')
+if ($LASTEXITCODE -ne 0) { throw 'bridge tests failed' }
 
 Write-Host ""
 Write-Host "Now commit 'Release $Version' and push in GitHub Desktop."
