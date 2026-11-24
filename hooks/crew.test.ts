@@ -3270,3 +3270,127 @@ for (const [kept, wakes] of [['leader', false], ['', true]] as const) {
   })
 }
 
+// -- 1.26: the 🌙 mark (the leader or the host says an AI teammate may do a task unattended) and an AI's claim that
+// runs out (the relay's unattended / leaseUntil, mocked here)
+
+test('crew_task passes the 🌙 mark to the relay, and says so when an older relay leaves it out', { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const posts: any[] = []
+  let knowsMark = true
+  on('http.fetch', async (_$: unknown, e: any) => {
+    if (e.init?.method === 'POST' && e.url.endsWith('/tasks')) {
+      const body = JSON.parse(e.init.body)
+      posts.push(body)
+      const t = { ...POLL.tasks[0], ...(knowsMark && body.unattended ? { unattended: true } : {}) }
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(t) } }
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(POLL) } }
+  })
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_task', action: 'edit', id: '3', unattended: true } as any)
+  expect(posts[0]).toEqual({ action: 'edit', id: '3', unattended: true })
+  expect(r.result).toBe('T3 [open · for bob · 🌙 OK unattended] Write login tests')
+  await $.tool.call({ tool: 'mcp__crew__crew_task', action: 'claim', id: '3' } as any)
+  expect('unattended' in posts[1]).toBe(false) // only sent when it's given
+  knowsMark = false // a relay from before the mark
+  const old: any = await $.tool.call({ tool: 'mcp__crew__crew_task', action: 'edit', id: '3', unattended: true } as any)
+  expect(old.result).toContain("The 🌙 mark didn't change")
+})
+
+test("crew_status shows a task marked 🌙 OK unattended, and when an AI teammate's claim on one runs out", { options: OPTIONS }, async ($, on) => {
+  mock.store(on, { 'cursor:http://relay.test:7777': 1 })
+  on('ui.status', async () => ({ value: undefined }))
+  const until = Date.UTC(2026, 10, 24, 14, 5) / 1000
+  const tasks = [
+    { id: 4, title: 'Polish the lobby', note: '', status: 'open', owner: null, assignee: null, by: 'alice', at: 0, unattended: true },
+    { id: 5, title: 'Lava pits', note: '', status: 'claimed', owner: 'GPT', assignee: null, by: 'alice', at: 0, unattended: true, leaseUntil: until },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, tasks }) } }))
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(r.result).toContain('T4 [open · 🌙 OK unattended] Polish the lobby')
+  expect(r.result).toContain('T5 [claimed · GPT · 🌙 OK unattended · claim runs out 14:05 UTC unless they keep working] Lava pits')
+})
+
+function moonRelay(on: any, relay: { leader: string; acting?: string; version?: string; refuse?: boolean }) {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$: unknown, e: any) => (toasts.push(e.text), { value: undefined }))
+  const tasks = [
+    { id: 3, title: 'Polish the lobby', note: '', status: 'open', owner: null, assignee: null, by: 'alice', at: 0 },
+    { id: 4, title: 'Lava pits', note: '', status: 'open', owner: null, assignee: null, by: 'alice', at: 0, unattended: true },
+  ]
+  const posts: any[] = []
+  on('http.fetch', async (_$: unknown, e: any) => {
+    const version = relay.version ?? '1.26.0' // a relay that knows the mark
+    if (e.init?.method === 'POST' && e.url.endsWith('/tasks')) {
+      posts.push(JSON.parse(e.init.body))
+      return relay.refuse
+        ? { value: { status: 403, ok: false, headers: {}, text: '{"error": "only the leader or the host marks a task 🌙 OK to do unattended"}' } }
+        : { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(tasks[0]) } }
+    }
+    const body = e.url.endsWith('/health') ? { ok: true, version } : { ...POLL, leader: relay.leader, acting: relay.acting ?? null, tasks, version }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  return { posts, toasts }
+}
+
+test('the leader marks a task 🌙 OK unattended in the Tasks tab, takes the mark off, and hears why the relay said no', { options: OPTIONS }, async ($, on) => {
+  const relay = { leader: 'alice', refuse: false } // alice (us) leads
+  const { posts, toasts } = moonRelay(on, relay)
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-tasks' })
+  expect(await ui.find({ text: /T4 \[open · 🌙\] Lava pits/ } as any)).toBeDefined()
+  expect(((await ui.find({ key: 'task-unattended-3' })) as any).props.label).toBe('🌙 OK unattended')
+  expect(((await ui.find({ key: 'task-unattended-4' })) as any).props.label).toBe('🌙 unmark')
+  await ui.press({ key: 'task-unattended-3' })
+  await ui.press({ key: 'task-unattended-4' })
+  await settle()
+  expect(posts).toContainEqual({ action: 'edit', id: '3', unattended: true })
+  expect(posts).toContainEqual({ action: 'edit', id: '4', unattended: false })
+  relay.refuse = true // the relay knows better who may
+  await ui.press({ key: 'task-unattended-3' })
+  await settle()
+  await ui.unmount()
+  expect(toasts.some(t => t.includes('only the leader or the host marks a task 🌙 OK to do unattended'))).toBe(true)
+})
+
+test('everyone sees the 🌙 mark, but only the leader or acting leader gets its button, and only on a relay that knows it', { options: OPTIONS }, async ($, on) => {
+  const relay: { leader: string; acting?: string; version?: string } = { leader: 'bob' } // bob leads, and this PC doesn't host
+  moonRelay(on, relay)
+  const tasksTab = async () => {
+    await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+    const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+    await ui.press({ key: 'tab-tasks' })
+    return ui
+  }
+  let ui = await tasksTab()
+  expect(await ui.find({ text: /T4 \[open · 🌙\] Lava pits/ } as any)).toBeDefined()
+  expect(await ui.find({ key: 'task-unattended-3' })).toBeUndefined()
+  expect(await ui.find({ key: 'task-unattended-4' })).toBeUndefined()
+  await ui.unmount()
+  relay.acting = 'alice' // standing in for bob while he's away
+  ui = await tasksTab()
+  expect(await ui.find({ key: 'task-unattended-3' })).toBeDefined()
+  await ui.unmount()
+  Object.assign(relay, { leader: 'alice', acting: undefined, version: '1.25.1' }) // leads, on a relay from before the mark
+  ui = await tasksTab()
+  expect(await ui.find({ key: 'task-done-3' })).toBeDefined()
+  expect(await ui.find({ key: 'task-unattended-3' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the host gets the 🌙 button too, without leading', { options: { ...OPTIONS, relayUrl: 'http://127.0.0.1:7787' } }, async ($, on) => {
+  const { posts } = moonRelay(on, { leader: 'bob' })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  await settle()
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-tasks' })
+  await ui.press({ key: 'task-unattended-4' })
+  await settle()
+  await ui.unmount()
+  expect(posts).toContainEqual({ action: 'edit', id: '4', unattended: false })
+})
+

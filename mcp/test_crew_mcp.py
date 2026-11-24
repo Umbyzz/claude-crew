@@ -18,6 +18,55 @@ from test_relay import KEY, Relay  # noqa: E402  (a real relay on a free port, f
 
 BRIDGE = os.path.join(HERE, "crew_mcp.py")
 
+# A stand-in for Codex's command line: notes how it was run, and acts out a turn in the session it was given.
+FAKE_CODEX = r"""
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_CODEX_LOG"], "a", encoding="utf-8") as f:
+    f.write(json.dumps({"args": args, "prompt": sys.stdin.read(), "cwd": os.getcwd()}) + "\n")
+if args[0] == "queue":  # `codex queue`: the app runs it in that chat (acted out straight into the chat's file)
+    if os.environ.get("FAKE_QUEUE_FAIL"):
+        sys.exit(2)
+    message, rollout = args[args.index("--message") + 1], os.environ.get("FAKE_ROLLOUT")
+    if rollout:
+        turn = [{"type": "task_started", "turn_id": "t-q"},
+                {"type": "item_completed", "turn_id": "t-q", "item": {"type": "UserMessage", "content": [{"type": "Text", "text": message}]}},
+                {"type": "item_completed", "turn_id": "t-q", "item": {"type": "McpToolCall", "server": "crew", "tool": "crew_status", "status": "completed"}},
+                {"type": "item_completed", "turn_id": "t-q", "item": {"type": "AgentMessage", "content": [{"type": "Text", "text": "On it, from your chat."}]}},
+                {"type": "task_complete", "turn_id": "t-q", "last_agent_message": "Done, I replied to umbyz."}]
+        with open(rollout, "a", encoding="utf-8") as f:
+            for p in turn:
+                f.write(json.dumps({"type": "event_msg", "payload": p}) + "\n")
+    print("Queued message q-1 for thread " + args[args.index("--thread") + 1] + ".")
+    sys.exit(0)
+thread = args[args.index("resume") + 1] if "resume" in args else "thread-1"
+for e in ({"type": "thread.started", "thread_id": thread}, {"type": "turn.started"},
+          {"type": "item.completed", "item": {"type": "mcp_tool_call", "server": "crew", "tool": "crew_status", "status": "completed"}},
+          {"type": "item.completed", "item": {"type": "mcp_tool_call", "server": "crew", "tool": "crew_task", "status": "failed",
+                                              "error": {"message": "MCP tool call requires approval, but approval policy is never"}}},
+          {"type": "item.completed", "item": {"type": "file_change", "changes": [{"path": "C:/work/gate.lua", "kind": "update"}]}},
+          {"type": "item.completed", "item": {"type": "agent_message", "text": "Checked the gate, it's fine."}},
+          {"type": "turn.completed"}):
+    print(json.dumps(e), flush=True)
+"""
+
+
+def codex_home_with_a_chat(folder, crew=True, quiet=True):
+    """A stand-in for Codex's own list of chats: one chat of its person's in the app (that used the crew tools)."""
+    import sqlite3
+    rollout = os.path.join(folder, "rollout-chat.jsonl")
+    with open(rollout, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"payload": {"source": "vscode"}}) + "\n" + ('{"name": "crew_status"}\n' if crew else "hi\n"))
+    if quiet:
+        os.utime(rollout, (time.time() - 600, time.time() - 600))
+    con = sqlite3.connect(os.path.join(folder, "state_5.sqlite"))
+    con.execute("create table threads (id text, rollout_path text, updated_at integer, source text, originator text, archived integer)")
+    con.execute("insert into threads values ('chat-7', ?, 1, 'vscode', 'Codex Desktop', 0)", (rollout,))
+    con.execute("insert into threads values ('exec-1', 'none', 2, 'exec', 'codex_exec', 0)")
+    con.commit()
+    con.close()
+    return rollout
+
 
 def until(check, timeout=8.0):
     deadline = time.time() + timeout
@@ -34,7 +83,8 @@ class Bridge:
     def __init__(self, relay, name="GPT", key=KEY, home=None, **env):
         self.home = home or tempfile.mkdtemp(prefix="crew-mcp-test-")
         full = {**os.environ, "CREW_NAME": name, "CREW_KEY": key, "CREW_MCP_HOME": self.home, "CREW_MCP_POLL": "0.2",
-                "CREW_MCP_GRACE": "0", "CREW_MCP_BUSY": "1", "CREW_RELAY": f"http://127.0.0.1:{relay.port}" if relay else ""}
+                "CREW_MCP_GRACE": "0", "CREW_MCP_BUSY": "1", "CREW_RELAY": f"http://127.0.0.1:{relay.port}" if relay else "",
+                "CREW_CODEX_HOME": os.path.join(self.home, "no-codex")}  # not this PC's real Codex chats
         full.update(env)
         self.proc = subprocess.Popen([sys.executable, "-I", BRIDGE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, env=full)
@@ -102,6 +152,10 @@ class BridgeTest(unittest.TestCase):
     def said(self, kind):
         return [m for m in self.poll()["messages"] if m["from"] == "GPT" and m["kind"] == kind]
 
+    def moon(self):
+        """The 🌙 note the bridge posts after a wake (the relay's own "shared doc" lines aside)."""
+        return next((m["text"] for m in self.said("update") if m["text"].startswith("🌙")), "")
+
     def ask(self, text, kind="request"):
         return self.r.call("POST", "/send", "umbyz", body={"to": "GPT", "kind": kind, "text": text}, remote=False)[1]
 
@@ -112,9 +166,16 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual((init["serverInfo"]["name"], init["protocolVersion"]), ("crew", "2025-06-18"))
         self.assertIn("Your name in the crew is GPT", init["instructions"])
         self.assertIn("Waiting on you", init["instructions"])
-        names = {t["name"] for t in b.request("tools/list")["result"]["tools"]}
-        self.assertEqual(names, {"crew_status", "crew_send", "crew_task", "crew_wait", "crew_read_shared", "crew_share",
-                                 "crew_project"})
+        tools = b.request("tools/list")["result"]["tools"]
+        names = {t["name"] for t in tools}
+        hints = {t["name"]: t["annotations"] for t in tools}
+        self.assertTrue(hints["crew_status"]["readOnlyHint"])  # so an app can run it without asking its person
+        self.assertFalse(hints["crew_send"]["destructiveHint"])  # a message only adds
+        self.assertTrue(hints["crew_share"]["destructiveHint"])  # a doc can be overwritten
+        self.assertFalse(any(h["openWorldHint"] for h in hints.values()))  # all of it stays inside the crew
+        self.assertEqual(names, {"crew_status", "crew_send", "crew_task", "crew_task_unattended", "crew_wait",
+                                 "crew_read_shared", "crew_share", "crew_project"})
+        self.assertFalse(hints["crew_task_unattended"]["destructiveHint"])  # 🌙 tasks only: Codex runs it without asking
         self.assertEqual(b.request("ping")["result"], {})
         self.assertEqual(b.request("resources/list")["result"], {"resources": []})  # Codex asks anyway
         self.assertEqual(b.request("resources/templates/list")["result"], {"resourceTemplates": []})
@@ -155,6 +216,35 @@ class BridgeTest(unittest.TestCase):
         until(lambda: "is assigned to you" in b.tool("crew_status"))
         self.assertIn("claimed by GPT", b.tool("crew_task", action="claim", id="1"))
         self.assertNotIn("Waiting on you", b.tool("crew_status"))
+
+    def test_marked_tasks_can_be_done_unattended_and_its_claim_is_kept_alive(self):
+        b = self.bridge(CREW_MCP_RENEW="0.5", CREW_MCP_BUSY="5")
+        until(self.online)
+        add = lambda title, **kw: self.r.call("POST", "/tasks", "umbyz", body={"action": "add", "title": title, **kw},
+                                              remote=False)[1]["id"]
+        plain, marked = add("Plain"), add("Marked", unattended=True)
+        self.assertIn("isn't marked 🌙", b.tool("crew_task_unattended", action="claim", id=str(plain)))
+        self.assertIn("anything else is crew_task", b.tool("crew_task_unattended", action="remove", id=str(marked)))
+        self.assertIn("claimed by GPT", b.tool("crew_task_unattended", action="claim", id=str(marked)))
+        lease = lambda: next(t for t in self.poll()["tasks"] if t["id"] == marked).get("leaseUntil", 0)
+        first = lease()
+        until(lambda: lease() > first, timeout=6)  # it's working (busy), so the bridge renews its claim
+        status = b.tool("crew_status")
+        self.assertIn("🌙 OK unattended", status)
+        self.assertIn("claim runs out", status)
+        self.assertIn("done by GPT", b.tool("crew_task_unattended", action="done", id=str(marked), note="polished"))
+
+    def test_wake_from_a_list_the_leader_and_people_by_name(self):
+        self.r.call("POST", "/leader", "umbyz", body={"name": "umbyz"}, remote=False)
+        self.waker(mode="leader, Carol")
+        until(self.online)
+        self.r.call("POST", "/send", "bob", body={"to": "GPT", "kind": "request", "text": "from bob"})
+        time.sleep(1.5)
+        self.assertEqual(self.wakes(), [])  # not on the list
+        self.r.call("POST", "/send", "carol", body={"to": "GPT", "kind": "request", "text": "from carol"})
+        until(lambda: len(self.wakes()) == 1)  # by name (any case)
+        self.ask("from the leader")
+        until(lambda: len(self.wakes()) == 2)
 
     def test_the_task_board_and_shared_docs(self):
         b = self.bridge()
@@ -250,6 +340,189 @@ class BridgeTest(unittest.TestCase):
         b.close()
         self.assertFalse(self.online())  # at once, not a minute later
         self.assertEqual(len(self.said("leave")), 1)
+
+    # -- waking it: CREW_WAKE, with the stand-in for Codex's command line
+
+    def waker(self, mode="project", **kw):
+        folder = tempfile.mkdtemp(prefix="crew-mcp-wake-")
+        self.addCleanup(shutil.rmtree, folder, True)
+        fake = os.path.join(folder, "fake_codex.py")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write(FAKE_CODEX)
+        link = os.path.join(folder, "fake_link.py")
+        self.links_log = os.path.join(folder, "links.txt")
+        with open(link, "w", encoding="utf-8") as f:
+            f.write("import sys\nopen(sys.argv[1], 'a').write(sys.argv[2] + '\\n')\n".replace("sys.argv[1]", repr(self.links_log))
+                    .replace("sys.argv[2]", "sys.argv[1]"))
+        self.wakes_log = os.path.join(folder, "wakes.jsonl")
+        return self.bridge(CREW_WAKE=mode, CREW_CODEX=fake, CREW_WAKE_DIR=folder, FAKE_CODEX_LOG=self.wakes_log,
+                           CREW_OPEN_LINK=link, **kw)
+
+    def links(self):
+        try:
+            with open(self.links_log, encoding="utf-8") as f:
+                return [line.strip() for line in f if line.strip()]
+        except OSError:
+            return []
+
+    def wakes(self):
+        try:
+            with open(self.wakes_log, encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except OSError:
+            return []
+
+    def test_a_request_wakes_it_once_and_the_next_resumes_the_same_session(self):
+        self.waker()
+        until(self.online)
+        self.ask("please check the gate")
+        until(lambda: len(self.wakes()) == 1)
+        first = self.wakes()[0]
+        self.assertIn("please check the gate", first["prompt"])
+        self.assertIn("nobody is watching it", first["prompt"])
+        self.assertNotIn("resume", first["args"])  # the first wake makes its crew session
+        self.assertIn("workspace-write", first["args"])
+        self.assertNotIn("danger-full-access", first["args"])
+        self.assertIn('mcp_servers.crew.env.CREW_WAKE="off"', first["args"])  # the woken session can't wake itself
+        time.sleep(1.5)
+        self.assertEqual(len(self.wakes()), 1)  # once per request
+        self.ask("and the boat panel?")
+        until(lambda: len(self.wakes()) == 2)
+        second = self.wakes()[1]["args"]
+        self.assertEqual(second[second.index("resume") + 1], "thread-1")  # the same crew session, resumed
+
+    def test_waking_is_off_unless_its_person_turns_it_on(self):
+        self.waker(mode="off")
+        until(self.online)
+        self.ask("anyone there?")
+        time.sleep(1.5)
+        self.assertEqual(self.wakes(), [])
+
+    def test_on_leader_only_the_leader_wakes_it(self):
+        self.r.call("POST", "/leader", "umbyz", body={"name": "umbyz"}, remote=False)
+        self.waker(mode="leader")
+        until(self.online)
+        self.r.call("POST", "/send", "bob", body={"to": "GPT", "kind": "request", "text": "from bob"})
+        time.sleep(1.5)
+        self.assertEqual(self.wakes(), [])
+        self.ask("from the leader")
+        until(lambda: len(self.wakes()) == 1)
+        self.assertIn("from the leader", self.wakes()[0]["prompt"])
+
+    def test_not_while_a_session_of_it_is_working(self):
+        home = tempfile.mkdtemp(prefix="crew-mcp-test-")
+        self.waker(home=home)
+        until(self.online)
+        mine = self.bridge(home=home, CREW_MCP_BUSY="4")  # its person's own Codex window, busy with something
+        mine.tool("crew_read_shared")
+        self.ask("quick one")
+        time.sleep(2)
+        self.assertEqual(self.wakes(), [])  # that session sees the request itself
+        until(lambda: len(self.wakes()) == 1, timeout=10)  # idle again, and nobody answered it: now it wakes
+
+    def test_an_old_request_waits_for_its_person(self):
+        b = self.waker()
+        until(self.online)
+        self.r.call("POST", "/send", "umbyz", body={"to": "GPT", "kind": "request", "text": "from long ago", "waited": 1200},
+                    remote=False)
+        time.sleep(1.5)
+        self.assertEqual(self.wakes(), [])
+        self.assertIn("from long ago", b.tool("crew_status"))  # still waiting on it
+
+    def test_the_loop_brake_stops_waking_after_six_in_ten_minutes(self):
+        self.waker()
+        until(self.online)
+        for i in range(7):
+            self.ask(f"job {i}")
+        until(lambda: len(self.wakes()) == 6, timeout=20)
+        time.sleep(1.5)
+        self.assertEqual(len(self.wakes()), 6)
+
+    def test_after_a_wake_the_crew_hears_what_happened(self):
+        self.waker()
+        until(self.online)
+        sent = self.ask("is the gate ok?")
+        until(self.moon)
+        note = self.moon()
+        self.assertIn(f"woke in its crew session for #{sent['id']} from umbyz", note)
+        self.assertIn("used crew_status", note)
+        self.assertIn("changed gate.lua", note)  # the file's name, not where it lives
+        self.assertIn("blocked: crew_task (needs approval)", note)
+        self.assertIn("Last said: Checked the gate, it's fine.", note)
+        self.assertIn("The whole turn: the doc 'GPT-wakes'", note)
+        doc = self.r.call("GET", "/shared?name=GPT-wakes", "umbyz", remote=False)[1]["content"]
+        self.assertIn(f"#{sent['id']} from umbyz · in its crew session", doc)
+        self.assertIn("> is the gate ok?", doc)
+        self.assertIn("**GPT:** Checked the gate, it's fine.", doc)
+        self.assertIn("- `crew_task`: needs approval", doc)
+        self.assertIn("- changed gate.lua", doc)
+
+    def test_a_woken_turn_goes_into_its_persons_own_chat_once_its_quiet(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        rollout = codex_home_with_a_chat(codex, quiet=False)  # its person was just in that chat
+        self.waker(CREW_CODEX_HOME=codex, FAKE_ROLLOUT=rollout)
+        until(self.online)
+        sent = self.ask("the boat panel, please")
+        time.sleep(1.5)
+        self.assertEqual(self.wakes(), [])  # waits: its person may be typing there
+        os.utime(rollout, (time.time() - 600, time.time() - 600))
+        until(lambda: len(self.wakes()) == 1)
+        args = self.wakes()[0]["args"]
+        self.assertEqual(args[:3], ["queue", "--thread", "chat-7"])  # queued in the app's own chat…
+        self.assertIn(f"Crew request #{sent['id']} from umbyz", args[args.index("--message") + 1])
+        until(lambda: self.links() == ["codex://threads/wake/chat-7"])  # …and the app told to run it there
+        until(self.moon)
+        note = self.moon()
+        self.assertIn("woke in its person's Codex chat", note)
+        self.assertIn("used crew_status", note)
+        self.assertIn("Last said: Done, I replied to umbyz.", note)
+        doc = self.r.call("GET", "/shared?name=GPT-wakes", "umbyz", remote=False)[1]["content"]
+        self.assertIn("**GPT:** On it, from your chat.", doc)
+
+    def test_if_it_cant_be_queued_it_uses_its_crew_session(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        codex_home_with_a_chat(codex)
+        self.waker(CREW_CODEX_HOME=codex, FAKE_QUEUE_FAIL="1")
+        until(self.online)
+        self.ask("anything")
+        until(lambda: len(self.wakes()) == 2)
+        self.assertEqual(self.wakes()[0]["args"][0], "queue")
+        self.assertEqual(self.wakes()[1]["args"][0], "exec")  # once, in its crew session instead
+        until(self.moon)
+        self.assertIn("woke in its crew session", self.moon())
+
+    def test_queued_but_not_run_yet_says_so_and_isnt_run_twice(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        codex_home_with_a_chat(codex)
+        self.waker(CREW_CODEX_HOME=codex, CREW_MCP_APP_START="2")  # no Codex app here to pick it up
+        until(self.online)
+        self.ask("anything")
+        until(self.moon, timeout=12)
+        self.assertIn("Codex hasn't run it yet: it's queued in that chat", self.moon())
+        self.assertEqual([w["args"][0] for w in self.wakes()], ["queue"])  # not also run somewhere else
+
+    def test_a_chat_that_never_used_the_crew_isnt_woken_into(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        codex_home_with_a_chat(codex, crew=False)
+        self.waker(CREW_CODEX_HOME=codex)
+        until(self.online)
+        self.ask("anything")
+        until(lambda: len(self.wakes()) == 1)
+        self.assertNotIn("chat-7", self.wakes()[0]["args"])  # its own crew session instead
+
+    def test_wake_into_session_keeps_it_out_of_the_persons_chat(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        codex_home_with_a_chat(codex)
+        self.waker(CREW_CODEX_HOME=codex, CREW_WAKE_INTO="session")
+        until(self.online)
+        self.ask("anything")
+        until(lambda: len(self.wakes()) == 1)
+        self.assertNotIn("chat-7", self.wakes()[0]["args"])
 
     def test_without_settings_it_says_how_to_set_it_up(self):
         b = Bridge(None, name="")

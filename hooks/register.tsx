@@ -5,7 +5,7 @@ import type { CrewKnock, CrewMessage, CrewSnapshot, CrewTask, CrewVote } from '.
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.25.1'
+const VERSION = '1.26.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -899,7 +899,11 @@ function fmtTask(t: CrewTask, brief = false) {
   const waits = !brief && t.waiting?.length ? ` · waits for ${t.waiting.map(i => `T${i}`).join(', ')}` : ''
   const blocked = !brief && t.blocked ? ` · blocked: ${t.blocked}` : ''
   const checked = !brief && t.checkedBy ? ` · checked by ${t.checkedBy}` : ''
-  return `T${t.id} [${t.status}${who}${waits}${blocked}${checked}] ${t.title}${t.note ? ` — ${t.note}` : ''}`
+  // 🌙: OK for an AI teammate to do while nobody watches. An AI's claim runs out unless it keeps working, and the relay frees it.
+  const moon = t.unattended ? (brief ? ' · 🌙' : ' · 🌙 OK unattended') : ''
+  const lease =
+    !brief && t.status === 'claimed' && t.leaseUntil ? ` · claim runs out ${clockTime(t.leaseUntil).slice(11)} UTC unless they keep working` : ''
+  return `T${t.id} [${t.status}${who}${waits}${blocked}${checked}${moon}${lease}] ${t.title}${t.note ? ` — ${t.note}` : ''}`
 }
 
 function roleText(leader: string | null, peers: CrewSnapshot['peers'] = [], acting: string | null = null) {
@@ -3355,6 +3359,10 @@ const TOOLS = [
         note: { type: 'string', description: 'details, or the result summary on done' },
         after: { type: 'string', description: 'for add or edit: the tasks that must be done first, like "T3, T4" (its holder hears when they are)' },
         reason: { type: 'string', description: "for block: what it's stuck on" },
+        unattended: {
+          type: 'boolean',
+          description: 'for add or edit, by the leader or the host: true marks the task 🌙 OK for an AI teammate to do unattended, false clears it',
+        },
       },
       required: ['action'],
     },
@@ -3875,9 +3883,13 @@ export const register: Register = (on, options) => {
       note: e.note,
       ...(e.after !== undefined ? { after: e.after } : {}),
       reason: e.reason,
+      ...(typeof e.unattended === 'boolean' ? { unattended: e.unattended } : {}),
     })
     await poll($)
-    return ok(e.action === 'remove' ? `Removed T${t.id}.` : fmtTask(t))
+    if (e.action === 'remove') return ok(`Removed T${t.id}.`)
+    // a relay from before the 🌙 mark takes the rest and leaves the mark out: say so, rather than let it look set
+    const ignored = typeof e.unattended === 'boolean' && (e.action === 'add' || e.action === 'edit') && !!t.unattended !== e.unattended
+    return ok(fmtTask(t) + (ignored ? "\n(The 🌙 mark didn't change: the host's relay is too old for it.)" : ''))
   }).catch(failed)
 
   on('tool.call', { tool: 'mcp__crew__crew_lead' }, async ($, e: any) => {
@@ -4134,6 +4146,8 @@ export const register: Register = (on, options) => {
     const toCheck = reviews ? s.tasks.filter(t => t.status === 'done' && !orderOf(t).checkedBy) : []
     const lastChecked = s.tasks.filter(t => t.status === 'done' && orderOf(t).checkedBy).sort((a, b) => (orderOf(b).checkedAt ?? 0) - (orderOf(a).checkedAt ?? 0)).slice(0, 3)
     const isLeader = s.leader === me || s.acting === me // the relay lets the leader or the acting leader check
+    // and they or the host mark a task 🌙 OK for an AI teammate to do unattended (a relay from 1.26 on knows the mark)
+    const canMark = (isLeader || isHosting()) && newer(s.relayVersion, '1.25.99')
     const reviewRows = toCheck.length + lastChecked.length ? Math.min(toCheck.length, 5) + lastChecked.length + 2 : 0
     const taskRows = Math.max(3, body - 3 - (clearing ? 4 : 0) - reviewRows)
     const docRows = Math.max(3, body - 1 - (peek.name ? 12 : 0))
@@ -4763,6 +4777,16 @@ export const register: Register = (on, options) => {
                       {blocked ? '🚧' : '•'} {fmtTask(t, true)}
                     </Text>
                     <Box flexDirection="row">
+                      {canMark && (
+                        <Button
+                          key={`task-unattended-${t.id}`}
+                          label={t.unattended ? '🌙 unmark' : '🌙 OK unattended'}
+                          dimColor
+                          onPress={() =>
+                            taskAction($, { action: 'edit', id: String(t.id), unattended: !t.unattended }, t.unattended ? `T${t.id} unmarked` : `T${t.id} 🌙 OK unattended`)
+                          }
+                        />
+                      )}
                       <Button key={`task-done-${t.id}`} label="✓ done" dimColor onPress={() => taskAction($, { action: 'done', id: t.id }, `T${t.id} done`)} />
                       {(t.by === me || canModerate(s)) && (
                         <Button key={`task-rm-${t.id}`} label="✕" dimColor onPress={() => taskAction($, { action: 'remove', id: t.id }, `T${t.id} removed`)} />

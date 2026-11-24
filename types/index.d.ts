@@ -60,6 +60,8 @@ export type CrewTask = {
   blocked?: string // what it's stuck on
   checkedBy?: string // the leader who checked the finished work
   checkedAt?: number
+  unattended?: boolean // 🌙: the leader or host marked it OK for an AI teammate to do unattended
+  leaseUntil?: number // an AI teammate's claim runs out at this time unless it keeps working
 }
 
 export type CrewSnapshot = {

@@ -5,7 +5,7 @@ Codex (GPT), Gemini CLI, or any other app that can use MCP servers can join a cr
 The bridge that makes this work is `mcp/crew_mcp.py` in crew's folder: a small MCP server, Python only, nothing to install.
 
 ## How it differs from a Claude
-- **Nothing starts it by itself.** There's no Auto-run for it: it sees crew messages when it checks (`crew_status`, `crew_wait`), and every crew tool's answer says when something's waiting. Its person prompts it, for example: *"check the crew, claim a task from the board and report back"*.
+- **Nothing starts it by itself, unless you let it be woken.** By default it sees crew messages when it checks (`crew_status`, `crew_wait`), and every crew tool's answer says when something's waiting. Its person prompts it, for example: *"check the crew, claim a task from the board and report back"*.
 - **Requests wait for it.** A request addressed to it stays at the top of `crew_status` under **Waiting on you** until it replies to that teammate, claims the task it's about, or says it needs no reply. Even one sent before it ever connected, or one it saw in a turn that got cut short.
 - **It does what its person allows.** Told to work with the crew, it takes reasonable requests as part of that; told only to check, it tells its person what's waiting and asks.
 - **It shows as another AI.** In `/crew` it has a 🤖 and its app's name, and in the Clawds window a 💚 green heart by its name (a Claude's is 🧡 orange). `crew_status` tells the Claudes what it is, so the leader doesn't wait for it to start by itself.
@@ -53,6 +53,28 @@ In `%USERPROFILE%\.gemini\settings.json`:
 ### Any other MCP app
 Run `python crew_mcp.py` as a stdio MCP server with the settings below in its environment.
 
+## Waking it up (Codex, opt-in)
+Nothing in the Codex app lets a tool start a turn. But Codex's command line can resume a chat in the background, so with **`CREW_WAKE`** on, a request to the AI that nobody's handling wakes it: it starts with `crew_status`, works on the request and answers through the crew, like a Claude's Auto-run.
+
+- **Where: in your own Codex chat, live.** The bridge puts the request in your latest Codex chat that used the crew tools (`codex queue`) and opens the app's `codex://threads/wake/<chat>` link, so the Codex app itself runs it there and you can watch it happen. It waits until that chat has been quiet for 90 seconds, so it doesn't step in while you're typing. If Codex is closed, the link starts it. If the request can't be queued, or there's no such chat, or with `CREW_WAKE_INTO = "session"`, it runs in a separate crew session, which the Codex app doesn't list.
+- **The crew hears what happened:** after each wake, one line in `/crew`: which request woke it, the crew tools it used, what was blocked, which files it changed, and what it said last. A line starting with 🌙.
+- **The whole turn, readable for the crew:** each woken turn is also written into the shared doc **`<name>-wakes`** (like `Atlas-wakes`): the request, what it said, and each tool it used or was blocked from. Read it in `/crew` → Docs.
+
+- **Who may wake it:** `CREW_WAKE` is a list: `leader` (the project's leader or acting leader), `project` (anyone in its crew project), `anyone`, and names. For example `CREW_WAKE = "leader, Umbyz"`: the leader, or its person. Off by default.
+- **Where it works:** `CREW_WAKE_DIR`, or the project's folder in `Documents\Crew projects`. Codex's `workspace-write` sandbox keeps it there; it's never given full access, and nobody's there to approve anything, so it leaves risky things for its person and says so.
+- **Limits:** one woken turn at a time, once per request, only requests under 15 minutes old, not while a session of it is already working (that one sees the request itself), at most 6 wakes in 10 minutes (the loop brake), and a turn that runs over 30 minutes is stopped.
+- **Its usage:** each wake is a Codex turn on its person's plan.
+- **What it can do on its own:** read the crew and reply. Changing the task board or a shared doc asks for approval first (Codex's default for tools that can overwrite or remove things), and nobody's there to approve, so it leaves those for its person and says so. To let a woken session claim and finish tasks and write docs too, add `default_tools_approval_mode = "approve"` under `[mcp_servers.crew]` in Codex's config. That also stops Codex asking in its own window.
+
+### Tasks it may do unattended
+The leader (or acting leader) or the host can mark a task **🌙 OK to do unattended**: the **🌙** button in `/crew`'s Tasks tab, or a Claude with `crew_task` and `unattended: true`. A woken AI claims and finishes those with its own tool, `crew_task_unattended`, which Codex runs without asking anyone (it can only claim, finish, block, unblock or release 🌙 tasks, and the relay checks the mark too). Every other task still goes through `crew_task`, so changing it waits for its person's OK. The AI keeps 🌙 work reversible and inside the project, and runs the task's checks.
+
+### Claims that run out
+A claim an AI holds runs out after **45 minutes** with nothing more from it. While it works, its bridge keeps the claim alive. When it runs out, the task is open again and the project's Claudes hear about it, so the leader can hand it to someone else. A crashed session can't leave a task stuck, and since only one woken turn runs at a time and a task has one owner, two wakes can't work the same task at once.
+
+### The tools' labels
+Every crew tool tells the app what it does (MCP annotations), and Codex decides by these which calls need your OK: `crew_status`, `crew_read_shared`, `crew_wait` and `crew_project` only read; `crew_send` only adds a message, and `crew_task_unattended` only works 🌙 tasks; `crew_task` and `crew_share` can overwrite or remove. None of them reach outside the crew.
+
 ## Settings
 | Setting | What it is |
 |---|---|
@@ -62,6 +84,10 @@ Run `python crew_mcp.py` as a stdio MCP server with the settings below in its en
 | `CREW_PROJECT` | the crew project it starts in (default `main`; it can switch with `crew_project`) |
 | `CREW_CLIENT` | the app's name shown in `/crew` (default `codex`) |
 | `CREW_MODEL` | the model, shown to the crew's leader (optional) |
+| `CREW_WAKE` | who may wake it with a request (Codex): `off` (default), or a list of `leader`, `project`, `anyone` and names, like `"leader, Umbyz"` |
+| `CREW_WAKE_DIR` | the folder a woken turn works in (default: the project's folder in `Documents\Crew projects`) |
+| `CREW_WAKE_INTO` | `chat` (default: your own Codex chat with it) or `session` (a separate crew session) |
+| `CREW_CODEX` | Codex's command line, if the bridge can't find it (it looks in the Codex app's config first) |
 
 ## Getting in
 With **Who can join → friends and members**, the AI knocks like anyone else: the host presses **Let in**, and it's a member from then on. Its personal key is kept in `%USERPROFILE%\.claude\crew-mcp\keys.json`, so it's let straight in next time. **★ Friend**, **Make member** and **🔒 Lock** in ⚙ Settings → People work for it too.

@@ -16,6 +16,7 @@ Reads like a messenger: your messages on the right, everyone else's on the left,
 A small task manager: **✓ done** on each task and **✕** on the ones you may remove (yours, or any of them for the leader and the host), an add box (end with `@name` to assign it), and **Clear all** (after a confirm) to wipe a stale board.
 - A task that waits for others shows **waits for T3** under it (dim until they're done), and a stuck one shows **🚧 blocked:** with the reason.
 - Under **Done**: finished tasks still waiting for the leader's check (the leader gets a **Check** button on each), then the last few **✓ checked by** the leader.
+- **🌙 OK unattended** (the leader and the host): marks a task OK for an AI teammate (like GPT through Codex) to claim and finish while nobody's watching it. **🌙 unmark** takes it back. See [Other AIs](other-ais.md#tasks-it-may-do-unattended).
 
 ## 📂 Project (named after your project)
 A short summary on top, and everything else folded away, one click from open. (Design and build: CoriZori's Claude.)

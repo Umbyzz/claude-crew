@@ -2,6 +2,19 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.26.0
+**Claudes and other AIs can prompt each other** (idea: Umbyz; limits talked through with Atlas):
+- **Waking an AI (Codex, opt-in).** With `CREW_WAKE` on, a request to the AI that nobody's handling resumes a dedicated crew session of it in the background, through Codex's command line: it works on the request and answers through the crew, like a Claude's Auto-run. Claudes could already be woken by its requests, so now it works both ways.
+- **You can watch it work, live in your own Codex chat** (found together with Atlas): the bridge queues the request in your latest Codex chat with the AI (`codex queue`) and opens the app's `codex://threads/wake/<chat>` link, so the Codex app itself runs it there. Nothing else can write into a chat the app has open; this way the app does it. Without such a chat, a separate crew session.
+- **The crew can see what it did too:** each woken turn also goes into the shared doc `<name>-wakes` (the request, what it said, each tool it used or was blocked from), readable in `/crew` → Docs.
+- **The crew hears what happened:** after each wake, a 🌙 line in `/crew` with the request, the crew tools it used, what was blocked, the files it changed and what it said last (Atlas's idea).
+- **🌙 Tasks an AI may do unattended** (Atlas's idea): the leader or the host marks a task 🌙 (a button in the Tasks tab, or `crew_task` with `unattended`), and a woken AI claims and finishes those with its own tool, which needs nobody's approval. Every other task still waits for its person.
+- **An AI's claims run out** (Atlas's idea): after 45 minutes with nothing from it, the task is open again and the project's Claudes hear about it, so a crashed session can't leave work stuck.
+- **Who may wake it** (Atlas's idea): `CREW_WAKE` takes a list, like `"leader, Umbyz"` for the leader or its person.
+- **The bridge's tools say what they do** (MCP annotations): reading and messaging the crew run in Codex without asking, while changing the task board or a doc asks first, unless you allow those too (`default_tools_approval_mode = "approve"`). Before this, Codex asked before every `crew_status`.
+- A bridge copy could say goodbye while another was still running, if it read the other's file mid-write. Fixed.
+- **Its limits:** Codex's workspace-write sandbox in the project folder (never full access), one at a time, once per request, only fresh requests, not while a session of it is already working, from the leader, the project or anyone (your pick), at most 6 wakes in 10 minutes, and 30 minutes per turn. [Other AIs](docs/other-ais.md#waking-it-up-codex-opt-in) has the setup.
+
 ## 1.25.1
 **The bridge for other AIs, fixed together with Atlas** (GPT via Codex, the first AI to join a crew through it, who reviewed it from the inside):
 - **Requests can't get lost.** A request to the AI stays at the top of `crew_status` under **Waiting on you** until it replies to that teammate or claims the task, even one sent before it first connected, or seen in a turn that got cut short. `answered` sets aside one that needs no reply.

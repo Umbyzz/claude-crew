@@ -404,6 +404,43 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.poll("umbyz")[1]["reads"]["GPT"], sent["id"])
         self.assertEqual(self.r.call("POST", "/read", "GPT", body={"id": "x"}, extra=ai)[0], 400)
 
+    def test_only_the_leader_or_host_marks_a_task_ok_to_do_unattended(self):
+        self.r.call("POST", "/leader", "cori", body={"name": "cori"})
+        t = self.r.call("POST", "/tasks", "cori", body={"action": "add", "title": "Polish the lobby", "unattended": True})[1]
+        self.assertTrue(t["unattended"])
+        code, r = self.r.call("POST", "/tasks", "bob", body={"action": "edit", "id": str(t["id"]), "unattended": False})
+        self.assertEqual((code, r["error"]), (403, "only the leader or the host marks a task 🌙 OK to do unattended"))
+        self.assertEqual(self.r.call("POST", "/tasks", "bob", body={"action": "add", "title": "x", "unattended": True})[0], 403)
+        plain = self.r.call("POST", "/tasks", "bob", body={"action": "add", "title": "y", "unattended": False})
+        self.assertEqual(plain[0], 200)  # unattended: false marks nothing, so anyone may send it
+        self.assertEqual(self.r.call("POST", "/tasks", "bob", body={"action": "edit", "id": str(plain[1]["id"]),
+                                                                    "title": "y2", "unattended": False})[0], 200)
+        code, t = self.r.call("POST", "/tasks", "umbyz", body={"action": "edit", "id": str(t["id"]), "unattended": False},
+                              remote=False)  # the host
+        self.assertEqual(code, 200)
+        self.assertNotIn("unattended", t)
+
+    def test_an_ai_unattended_works_only_marked_tasks_and_its_claim_runs_out(self):
+        ai = {"X-Crew-Client": "codex"}
+        plain = self.r.call("POST", "/tasks", "umbyz", body={"action": "add", "title": "Plain"}, remote=False)[1]["id"]
+        marked = self.r.call("POST", "/tasks", "umbyz", body={"action": "add", "title": "Marked", "unattended": True},
+                             remote=False)[1]["id"]
+        code, r = self.r.call("POST", "/tasks", "GPT", extra=ai, body={"action": "claim", "id": str(plain), "onlyUnattended": True})
+        self.assertEqual(code, 403)
+        self.assertIn("isn't marked 🌙", r["error"])
+        code, r = self.r.call("POST", "/tasks", "GPT", extra=ai, body={"action": "remove", "id": str(marked), "onlyUnattended": True})
+        self.assertEqual(code, 403)
+        before = time.time()
+        code, t = self.r.call("POST", "/tasks", "GPT", extra=ai, body={"action": "claim", "id": str(marked), "onlyUnattended": True})
+        self.assertEqual((code, t["owner"]), (200, "GPT"))
+        self.assertAlmostEqual(t["leaseUntil"], before + 45 * 60, delta=5)
+        self.assertEqual(self.r.call("POST", "/tasks", "GPT", extra=ai, body={"action": "renew"})[1]["renewed"], [marked])
+        t = self.r.call("POST", "/tasks", "GPT", extra=ai, body={"action": "done", "id": str(marked), "onlyUnattended": True,
+                                                                 "note": "polished"})[1]
+        self.assertNotIn("leaseUntil", t)
+        t = self.r.call("POST", "/tasks", "cori", body={"action": "claim", "id": str(plain)})[1]
+        self.assertNotIn("leaseUntil", t)  # a Claude's claim: no lease
+
     def test_images_outlive_the_in_memory_cache(self):
         import base64
         ids = []
@@ -779,6 +816,25 @@ class SweepTest(unittest.TestCase):
             relay.state, relay.save = kept
             relay.peers.pop("Atlas", None)
             relay.peers.pop("bob", None)
+
+    def test_an_ais_claim_that_ran_out_is_freed_and_the_claudes_hear(self):
+        import relay
+        kept = (relay.state, relay.save)
+        relay.state = {"next_id": 1, "messages": [], "shared": {}, "leader": None,
+                       "tasks": [{"id": 5, "title": "Gate", "status": "claimed", "owner": "Atlas", "project": "main",
+                                  "leaseUntil": time.time() - 1}]}
+        relay.save = lambda: None
+        relay.peers["Atlas"] = {"seen": time.time(), "client": "codex"}  # still online: only its claim ran out
+        try:
+            with relay.lock:
+                relay.sweep()
+            t = relay.state["tasks"][0]
+            self.assertEqual((t["status"], t["owner"], t.get("leaseUntil")), ("open", None, None))
+            [m] = [m for m in relay.state["messages"] if "claim ran out" in m["text"]]
+            self.assertTrue(m.get("notice"))
+        finally:
+            relay.state, relay.save = kept
+            relay.peers.pop("Atlas", None)
 
     def test_a_vote_whose_time_is_up_ends_without_passing(self):
         import relay

@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.25.1"
+VERSION = "1.26.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -309,6 +309,7 @@ def new_task_id(project):
 
 STALE_MINUTES = 10  # a claim whose owner has been offline this long shows as stale
 RELEASE_MINUTES = 30  # ...and this long: it goes back on the board for someone else
+LEASE_MINUTES = 45  # a claim an AI holds through crew's bridge runs out after this long without it working on it
 STARTED = time.time()
 
 
@@ -613,6 +614,16 @@ def sweep():
     update_acting(now)
     for pr in list(votes):
         settle_vote(pr, now)
+    # An AI's claim (through crew's bridge) that ran out: whatever was working on it stopped, so the task is free again.
+    for t in state["tasks"]:
+        if t["status"] == "claimed" and t.get("leaseUntil") and now > t["leaseUntil"]:
+            owner = t["owner"]
+            t.update(status="open", owner=None)
+            t.pop("leaseUntil", None)
+            post_message(owner, "all", f"released task T{t['id']}: {owner}'s claim ran out (nothing more came from it "
+                                       f"for {LEASE_MINUTES} minutes), so it's open again: {t['title']}", "update",
+                         t.get("project", MAIN), notice=True)
+            save()
     # A claim nobody is working on any more goes back on the board. Unlike the board's other lines, the project's
     # Claudes are told (notice), so the leader can re-plan it.
     for t in state["tasks"]:
@@ -1582,6 +1593,16 @@ class Handler(BaseHTTPRequestHandler):
         tasks = state["tasks"]
         pr = self.project
         assignee = str(b.get("assignee") or "").strip()[:40] or None
+        if action == "renew":  # an AI's bridge: it's still working, so its claims don't run out
+            until = int(time.time() + LEASE_MINUTES * 60)
+            mine = [t for t in tasks if t["status"] == "claimed" and t.get("owner") == self.name and t.get("leaseUntil")]
+            for t in mine:
+                t["leaseUntil"] = until
+            if mine:
+                save()
+            return self.reply(200, {"renewed": [t["id"] for t in mine]})
+        if action == "add" and b.get("unattended") is True and not self.may_mark(pr):  # unattended: false sets nothing
+            return self.reply(403, {"error": "only the leader or the host marks a task 🌙 OK to do unattended"})
         if action == "add":
             title = str(b.get("title", "")).strip()[:500]
             if not title:
@@ -1592,8 +1613,11 @@ class Handler(BaseHTTPRequestHandler):
             after = self.after_ids(b, pr)
             if after:
                 t["after"] = after
+            if b.get("unattended") is True:
+                t["unattended"] = True  # 🌙: an AI teammate may do it unattended
             tasks.append(t)
-            post_message(self.name, "all", f"added task T{t['id']}: {title}", "update", pr)
+            post_message(self.name, "all", f"added task T{t['id']}: {title}" + (" (🌙 OK to do unattended)" if t.get("unattended") else ""),
+                         "update", pr)
             self.assign(t, assignee)
             save()
             return self.reply(200, task_view(t, time.time()))
@@ -1604,15 +1628,26 @@ class Handler(BaseHTTPRequestHandler):
         t = next((t for t in tasks if t["id"] == wanted and task_in(t, pr)), None)
         if t is None:
             return self.reply(404, {"error": f"no task T{wanted} in project {pr}"})
+        if b.get("onlyUnattended"):  # an AI's bridge working without its person: 🌙 tasks only, and only these actions
+            if not t.get("unattended"):
+                return self.reply(403, {"error": f"T{t['id']} isn't marked 🌙 OK to do unattended: that one needs your "
+                                                 f"person's OK (crew_task)"})
+            if action not in ("claim", "done", "block", "unblock", "release"):
+                return self.reply(403, {"error": "unattended, an AI only claims, finishes, blocks or releases 🌙 tasks"})
         taken = ""
         if action == "claim":
             stale = t.get("owner") and away_for(t["owner"], time.time()) >= STALE_MINUTES * 60
             if t["status"] == "claimed" and t["owner"] not in (None, self.name) and not stale:
                 return self.reply(409, {"error": f"already claimed by {t['owner']}"})
             t.update(owner=self.name, status="claimed")
+            if self.headers.get("X-Crew-Client"):  # an AI through the bridge: the claim runs out unless it keeps working
+                t["leaseUntil"] = int(time.time() + LEASE_MINUTES * 60)
+            else:
+                t.pop("leaseUntil", None)
         elif action == "done":
             t.update(status="done", owner=t["owner"] or self.name)
             t.pop("blocked", None)
+            t.pop("leaseUntil", None)
         elif action == "block":
             reason = str(b.get("reason") or b.get("note") or "").strip()[:300]
             if not reason:
@@ -1628,12 +1663,14 @@ class Handler(BaseHTTPRequestHandler):
             t.update(checkedBy=self.name, checkedAt=int(time.time()))
         elif action == "release":
             t.update(status="open", owner=None)
+            t.pop("leaseUntil", None)
         elif action == "assign":
             if b.get("note"):
                 t["note"] = str(b["note"])[:5000]
             old = t.get("owner") if t["status"] == "claimed" else None
             if old and old != assignee:  # the claim goes with the task, or the board keeps showing the old owner
                 t.update(status="open", owner=None)
+                t.pop("leaseUntil", None)
                 taken = f" (taken over from {old})"
                 post_message(self.name, old, f"T{t['id']} is now assigned to {assignee or 'nobody'}, so it's off "
                                              f"your list: {t['title']}", "chat", pr)
@@ -1645,6 +1682,9 @@ class Handler(BaseHTTPRequestHandler):
                                                  f"host removes it"})
             tasks.remove(t)
         elif action == "edit":  # fix a stale title or note without removing and re-adding the task
+            remark = "unattended" in b and bool(b.get("unattended")) != bool(t.get("unattended"))
+            if remark and not self.may_mark(pr):  # only changing the 🌙 mark needs the leader or the host
+                return self.reply(403, {"error": "only the leader or the host marks a task 🌙 OK to do unattended"})
             if str(b.get("title") or "").strip():
                 t["title"] = str(b["title"]).strip()[:500]
             if "after" in b:
@@ -1653,17 +1693,28 @@ class Handler(BaseHTTPRequestHandler):
                     t["after"] = after
                 else:
                     t.pop("after", None)
+            if remark:  # the leader or host (checked above) marks it 🌙, or takes the mark off
+                if b.get("unattended"):
+                    t["unattended"] = True
+                else:
+                    t.pop("unattended", None)
         else:
             return self.reply(400, {"error": "action must be add|claim|done|release|assign|edit|remove|block|unblock|check"})
         if b.get("note") and action not in ("assign", "block"):
             t["note"] = str(b["note"])[:5000]
         who = f" to {assignee}{taken}" if action == "assign" else ""
         why = f" ({t['blocked']})" if action == "block" else ""
+        if action == "edit" and remark:
+            why += " (🌙 OK to do unattended)" if b.get("unattended") else " (🌙 mark taken off)"
         post_message(self.name, "all", f"{action} task T{t['id']}{who}: {t['title']}{why}", "update", pr)
         if action == "done":
             self.wake_next(t, pr)
         save()
         self.reply(200, task_view(t, time.time()))
+
+    def may_mark(self, pr):
+        """The leader, the acting leader or the host: who may mark a task 🌙 OK for an AI to do unattended."""
+        return self.name in (leader_of(pr), acting.get(pr)) or self.host_pc()
 
     def after_ids(self, b, pr):
         """The tasks a task comes after: ones that exist in this project."""
