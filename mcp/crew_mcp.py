@@ -37,7 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.26.1"
+VERSION = "1.27.0"
 POLL_SECONDS = float(os.environ.get("CREW_MCP_POLL") or 4)  # how often it checks in (the tests go faster)
 WORKING_SECONDS = float(os.environ.get("CREW_MCP_BUSY") or 20)  # after a crew tool call (not crew_wait): working
 GRACE_SECONDS = float(os.environ.get("CREW_MCP_GRACE") or 15)  # a copy only opened to read the tools never joins
@@ -50,7 +50,10 @@ HOST_KEY = os.path.join(os.path.expanduser("~"), ".claude", "crew-relay", "crew_
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # the relay is on the VPN or LAN: no proxy
 TASK_REQUEST = re.compile(r"(?:Task )?T(\d+) (?:is assigned to you|can start)")
 WAKE_MODES = ("leader", "project", "anyone")
-WAKE_FRESH = 15 * 60  # only a request younger than this wakes the AI: an older one waits for its person
+# A request wakes the AI only if it reached it within WAKE_FRESH of being sent (one from before a disconnect waits for
+# its person), judged when it arrived: one that came in during a long wake still wakes it afterwards, up to WAKE_HOLD.
+WAKE_FRESH = float(os.environ.get("CREW_MCP_FRESH") or 15 * 60)
+WAKE_HOLD = max(WAKE_FRESH, 2 * 3600)
 WAKE_MAX, WAKE_WINDOW = 6, 600  # the loop brake: at most this many wakes in this many seconds
 WAKE_TIMEOUT = 30 * 60  # a woken turn that runs longer than this is stopped
 # The Codex app holds a queued crew request until that chat's running turn is done, then runs it as its own turn
@@ -155,6 +158,21 @@ def text_of(content):
     return ""
 
 
+def tool_error(item):
+    """Why a tool call failed, in its own words: Codex keeps it in error, or in an error result."""
+    err = item.get("error")
+    if isinstance(err, dict):
+        err = err.get("message") or json.dumps(err)
+    res = item.get("result")
+    if not err and isinstance(res, dict) and (res.get("isError") or res.get("is_error")):
+        err = text_of(res.get("content"))
+    return " ".join(str(err or "").split())
+
+
+def utc(t):
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(t))
+
+
 def wake_prompt(m, me, chat=False):
     if chat:  # in its person's own Codex chat: they may be watching it there, or be away
         return (f"📨 Crew request #{m.get('id')} from {m.get('from')}:\n\n{m.get('text')}\n\n"
@@ -192,6 +210,7 @@ class Crew:
         self.wake_mode = "on" if self.wake_rules else "off"
         self.renewed = 0.0
         self.waking = False
+        self.arrived = {}  # message id -> when this copy first saw it (requests are judged fresh by it)
         self.name = (name or "").strip()[:40]
         self.project = clean_project(project)
         self.client = clean_project(client or "codex")[:20]
@@ -200,6 +219,9 @@ class Crew:
             with open(HOST_KEY, encoding="utf-8") as f:
                 key = f.read().strip()
         self.key = str(read_json("keys.json").get(self.who()) or key or "").strip()
+        chosen = read_json("project.json").get(self.who())  # where crew_project last took it: every copy follows
+        if chosen:
+            self.project = clean_project(chosen)
         self.lock = threading.Lock()  # the state below
         self.poll_lock = threading.Lock()  # one check-in at a time
         self.stopped = threading.Event()
@@ -235,8 +257,9 @@ class Crew:
     def mark_live(self):
         try:
             os.makedirs(os.path.dirname(self.live_path()), exist_ok=True)
+            busy = max(self.busy_until, time.time() + POLL_SECONDS * 3) if self.waking else self.busy_until
             with open(self.live_path(), "w", encoding="utf-8") as f:
-                json.dump({"at": time.time(), "busy": self.busy_until}, f)
+                json.dump({"at": time.time(), "busy": busy}, f)  # a woken turn counts as working, for every copy
         except OSError:
             pass
 
@@ -280,7 +303,7 @@ class Crew:
         busy = max([self.busy_until] + self.siblings())
         headers = {"Content-Type": "application/json", "X-Crew-Key": self.key, "X-Crew-Name": self.name,
                    "X-Crew-Project": self.project, "X-Crew-Version": VERSION, "X-Crew-Client": self.client,
-                   "X-Crew-Activity": "working" if time.time() < busy else "idle"}
+                   "X-Crew-Activity": "working" if self.waking or time.time() < busy else "idle"}
         if self.model:
             headers["X-Crew-Model"] = self.model
         data = None if body is None else json.dumps(body).encode()
@@ -298,6 +321,11 @@ class Crew:
     def poll(self):
         """One check-in: being online, new messages, the board, a handed-over key, pings."""
         with self.poll_lock:
+            chosen = read_json("project.json").get(self.who())
+            if chosen and clean_project(chosen) != self.project:  # another copy of the bridge switched projects
+                with self.lock:
+                    self.project = clean_project(chosen)
+                    self.reset()
             try:
                 data = self.call("GET", f"/poll?since={self.cursor}")
             except Unreachable as e:
@@ -317,6 +345,8 @@ class Crew:
                     pass
             with self.lock:
                 if data.get("project"):
+                    if chosen and data["project"] != clean_project(chosen):
+                        remember("project.json", self.who(), data["project"])  # renamed: the copies follow the new name
                     self.project = data["project"]  # a renamed project: we follow it
                 fresh = [m for m in data.get("messages") or [] if isinstance(m, dict) and m.get("id") not in self.ids]
                 self.add(fresh)
@@ -334,11 +364,16 @@ class Crew:
 
     def add(self, msgs):
         """New messages into the recent list (callers hold the lock)."""
+        now = time.time()
         for m in msgs:
             self.ids.add(m.get("id"))
+            self.arrived.setdefault(int(m.get("id") or 0), now)
             if m.get("kind") == "deleted" and m.get("deleted") == self.project:
                 self.project = "main"
         self.recent = (self.recent + list(msgs))[-200:]
+        if len(self.arrived) > 3000:
+            for k in sorted(self.arrived)[:-2000]:
+                del self.arrived[k]
 
     def refused(self, e):
         why = str(e.data.get("error") or e)
@@ -350,6 +385,7 @@ class Crew:
             with self.lock:
                 self.project = "main"
                 self.reset()
+            remember("project.json", self.who(), "main")  # every copy goes back
             self.set_state("refused", why + " So this AI is back in main.")
         elif e.data.get("knocking"):
             self.set_state("knocking", why)
@@ -365,6 +401,7 @@ class Crew:
             self.mark_live()
             ok = self.poll()
             if ok and self.wake_mode != "off":
+                self.maybe_follow()
                 self.maybe_wake()
             if ok and time.time() - self.renewed > RENEW_SECONDS and (self.waking or time.time() < max([self.busy_until] + self.siblings())):
                 self.renewed = time.time()  # still working: its claims don't run out
@@ -454,8 +491,15 @@ class Crew:
         remember("wake.json", self.who(), state)
         self._chat = None
 
-    def join(self, leave=False):
-        """crew_join: this Codex chat becomes the crew chat (where wakes land), or stops being it."""
+    def join(self, leave=False, project=""):
+        """crew_join: this Codex chat becomes the crew chat (where wakes land), or stops being it. With a project, it
+        works in that crew project from now on, too."""
+        moved = ""
+        if (project or "").strip() and not leave and clean_project(project) != self.project:
+            moved = self.switch(project)
+            if self.project != clean_project(project):
+                return moved  # not a member, or no such project: it stays where it was
+            moved += "\n"
         if leave:
             self.set_pin(None)
             return ("Done: this chat isn't your crew chat any more. Requests that wake you go to your latest chat that "
@@ -470,9 +514,9 @@ class Crew:
             if newest is None or changed > newest[2]:
                 newest = (tid, path, changed)
         if not newest or time.time() - newest[2] > 120:
-            return "Couldn't tell which chat this is: only a chat in the Codex app can be your crew chat."
+            return moved + "Couldn't tell which chat this is: only a chat in the Codex app can be your crew chat."
         self.set_pin(newest[:2])
-        return ("Done: this is your crew chat now. A teammate's request that wakes you lands here, until your person "
+        return moved + ("Done: this is your crew chat now. A teammate's request that wakes you lands here, until your person "
                 "runs /prompts:crew in another chat, asks you to leave the crew, or archives this chat.")
 
     def find_person_chat(self):
@@ -507,9 +551,9 @@ class Crew:
         with self.lock:
             leaders = {self.snapshot.get("leader"), self.snapshot.get("acting")} - {None}
         for m in self.waiting():
-            mid = int(m.get("id") or 0)
-            if mid in woke or now - float(m.get("written") or m.get("at") or 0) > WAKE_FRESH:
-                continue
+            mid, sent = int(m.get("id") or 0), float(m.get("written") or m.get("at") or 0)
+            if mid in woke or self.arrived.get(mid, now) - sent > WAKE_FRESH or now - sent > WAKE_HOLD:
+                continue  # it reached the AI late (from before a disconnect), or it's waited for hours: for its person
             if m.get("project") not in (None, self.project):
                 continue  # from another crew project: it waits for its person, as with a Claude's Auto-run
             if not self.may_wake(m, leaders):
@@ -540,6 +584,57 @@ class Crew:
         names = {r.lower() for r in rules if r.lower() not in WAKE_MODES}
         return ("anyone" in rules or frm.lower() in names or ("leader" in rules and frm in leaders)
                 or ("project" in rules and m.get("project") in (None, self.project)))
+
+    def maybe_follow(self):
+        """An invite to another crew project from someone CREW_WAKE allows: the AI moves there by itself (every copy of
+        its bridge), so the requests waiting for it there wake it. Once per invite, only fresh ones, and never while
+        it's working on something (a woken turn, or its person's)."""
+        now = time.time()
+        if self.waking or now < max([self.busy_until] + self.siblings()):
+            return
+        with self.lock:
+            msgs = list(self.recent)
+            projects = {p.get("name"): p for p in self.snapshot.get("projects") or [] if isinstance(p, dict)}
+        followed = set((read_json("wake.json").get(self.who()) or {}).get("followed") or [])
+        for m in reversed(msgs):  # the newest invite first
+            mid, to = int(m.get("id") or 0), clean_project(m.get("invite"))
+            if m.get("kind") != "invite" or m.get("to") not in (self.name, "all") or not m.get("invite") or mid in followed:
+                continue
+            if m.get("to") == "all" and self.project != "main":
+                continue  # an invite to everyone ("Invite the crew here") doesn't pull it away from another project
+            sent = float(m.get("written") or m.get("at") or 0)
+            if to == self.project or self.arrived.get(mid, now) - sent > WAKE_FRESH or now - sent > WAKE_HOLD:
+                continue
+            if not self.may_follow(m, projects.get(to) or {}) or not self.lock_wake():
+                continue
+            try:
+                state = read_json("wake.json").get(self.who()) or {}
+                if mid in (state.get("followed") or []):
+                    return  # another copy of the bridge just followed it
+                remember("wake.json", self.who(), dict(state, followed=sorted(set(state.get("followed") or []) | {mid})[-100:]))
+                was = self.project
+                self.switch(to)
+                if self.project == to:
+                    self.call("POST", "/send", {"text": f"🌙 {self.name} followed {m.get('from')}'s invite (#{mid}) from "
+                                                        f"'{was}' into this project: requests from here wake it now.",
+                                                "to": "all", "kind": "update"}, timeout=10)
+            except (Unreachable, Refused):
+                pass
+            finally:
+                try:
+                    os.remove(self.lock_path())
+                except OSError:
+                    pass
+            return
+
+    def may_follow(self, m, project):
+        """Whether CREW_WAKE lets this invite move the AI: whoever could wake it there (anyone in a project may invite
+        people into it), the leader of either project, or a name on the list."""
+        rules, frm = self.wake_rules, str(m.get("from") or "")
+        names = {r.lower() for r in rules if r.lower() not in WAKE_MODES}
+        with self.lock:
+            leaders = {self.snapshot.get("leader"), self.snapshot.get("acting"), project.get("leader")} - {None}
+        return "anyone" in rules or "project" in rules or frm.lower() in names or ("leader" in rules and frm in leaders)
 
     def wake_who(self):
         words = {"leader": "the leader", "project": "anyone in the project", "anyone": "anyone"}
@@ -654,10 +749,15 @@ class Crew:
     def wake(self, m):
         """Work on the request in its person's own Codex chat, run by the app there (they can watch it), else in its
         crew session (made by the first wake, hidden in the app). Then tell the crew what happened."""
+        started = time.time()
+        log = os.path.join(HOME, f"wake-{self.tag()}.log")
         try:
-            log = os.path.join(HOME, f"wake-{self.tag()}.log")
             if os.path.exists(log) and os.path.getsize(log) > 2_000_000:
                 os.remove(log)
+        except OSError:
+            pass
+        try:
+            self.ack(m)
             chat = self.person_chat() if self.wake_into == "chat" else None
             got = self.app_wake(m, chat) if chat else None
             ran, events, where = False, [], "in its crew session"
@@ -678,9 +778,21 @@ class Crew:
                 elif session:
                     state.pop("session", None)  # that session didn't take: a fresh one next time
                 remember("wake.json", self.who(), state)
-            self.receipt(m, events, where, ran, queued=got is not None)
-        except OSError:
-            pass  # no Codex command line here: the request waits for its person
+            self.receipt(m, events, where, ran, queued=got is not None, started=started)
+            try:
+                with open(log, "a", encoding="utf-8") as f:  # one line per wake, for its person
+                    f.write(f"{utc(started)} wake for #{m.get('id')} from {m.get('from')}: {where}, "
+                            f"{'ran' if ran else 'queued, not run' if got is not None else 'did not start'}, "
+                            f"{round(time.time() - started)} s\n")
+            except OSError:
+                pass
+        except OSError:  # no Codex command line here: the request waits for its person, who asked hears so
+            try:
+                self.call("POST", "/send", {"text": f"🌙 #{m.get('id')} didn't start after all: Codex's command line "
+                                                    f"isn't there to wake me. It waits for my person.",
+                                            "to": m.get("from"), "kind": "chat"}, timeout=10)
+            except (Unreachable, Refused):
+                pass
         finally:
             try:
                 os.remove(self.lock_path())
@@ -688,7 +800,16 @@ class Crew:
                 pass
             self.waking = False
 
-    def receipt(self, m, events, where, ran, queued=False):
+    def ack(self, m):
+        """Tells whoever asked, at once, that the AI is on it: a woken turn can take a while, and a chat (unlike an
+        update) ends their crew_wait. It starts with 🌙, so it isn't taken for the answer to their requests."""
+        try:
+            self.call("POST", "/send", {"text": f"🌙 Got #{m.get('id')}: on it now (the crew woke me for it). My answer "
+                                                f"follows when I'm done.", "to": m.get("from"), "kind": "chat"}, timeout=10)
+        except (Unreachable, Refused):
+            pass
+
+    def receipt(self, m, events, where, ran, queued=False, started=None):
         """One line in the crew about the woken turn, so its person (and the leader) can pick up from there: which
         request, what it used, what was blocked, which files it changed, and what it said last."""
         used, blocked, files, last, commands, own = [], [], [], "", 0, 0
@@ -705,15 +826,17 @@ class Crew:
                     else:
                         own += 1  # one of the app's own tools (Codex's running summary…): counted, not named
                 else:
-                    why = "needs approval" if "approval" in json.dumps(item.get("error") or "") else "failed"
-                    blocked.append(f"{tool} ({why})")
+                    err = tool_error(item)
+                    why = "needs approval" if "approval" in err.lower() else "failed"
+                    blocked.append(f"{tool} ({why}{': ' + clip(err, 80) if err and why == 'failed' else ''})")
             elif kind == "command_execution":
                 commands += 1
             elif kind == "file_change":
                 files += [os.path.basename(str(c.get("path") or "")) for c in item.get("changes") or [] if isinstance(c, dict)]
             elif kind == "agent_message" and item.get("text"):
                 last = str(item["text"])
-        bits = [f"woke {where} for #{m.get('id')} from {m.get('from')}"]
+        took = f" ({max(1, round((time.time() - started) / 60))} min)" if started and ran else ""
+        bits = [f"woke {where} for #{m.get('id')} from {m.get('from')}{took}"]
         if not ran:
             bits.append("but Codex hasn't run it yet: it's queued in that chat" if queued
                         else "but the turn didn't start, so it waits for its person")
@@ -725,7 +848,7 @@ class Crew:
             bits.append("changed " + ", ".join(list(dict.fromkeys(f for f in files if f))[:6]))
         if blocked:
             bits.append("blocked: " + ", ".join(dict.fromkeys(blocked)))
-        doc = self.transcript(m, events, where, ran)
+        doc = self.transcript(m, events, where, ran, queued, started)
         text = ("🌙 " + " · ".join(bits) + (f"\nLast said: {clip(' '.join(last.split()), 240)}" if last else "")
                 + (f"\nThe whole turn: the doc '{doc}'" if doc else ""))
         try:
@@ -733,11 +856,15 @@ class Crew:
         except (Unreachable, Refused):
             pass
 
-    def transcript(self, m, events, where, ran):
+    def transcript(self, m, events, where, ran, queued=False, started=None):
         """The woken turn written out in a shared doc (<name>-wakes, newest at the end): the Codex app can't show it
-        while it has the person's chat open, so the crew can read it in /crew's Docs instead. Returns the doc's name."""
+        while it has the person's chat open, so the crew can read it in /crew's Docs instead. With when it started and
+        ended (UTC, like the crew's message stamps) and why a tool failed, in its own words. Returns the doc's name."""
         doc = f"{self.name}-wakes"
-        lines = [f"## {time.strftime('%Y-%m-%d %H:%M')} · #{m.get('id')} from {m.get('from')} · {where}",
+        start = started or time.time()
+        span = (time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(start)) + "–" + time.strftime("%H:%M:%S UTC", time.gmtime()))
+        outcome = "ran" if ran else "queued in the chat, not run yet" if queued else "didn't start"
+        lines = [f"## {span} · #{m.get('id')} from {m.get('from')} · {where} · {outcome}",
                  "> " + clip(" ".join(str(m.get("text") or "").split()), 800)]
         for e in events:
             item = e.get("item") if e.get("type") == "item.completed" else None
@@ -747,9 +874,10 @@ class Crew:
             if kind == "agent_message" and item.get("text"):
                 lines.append(f"**{self.name}:** {clip(str(item['text']).strip(), 4000)}")
             elif kind == "mcp_tool_call":
-                ok = item.get("status") == "completed"
-                why = "needs approval" if "approval" in json.dumps(item.get("error") or "") else "failed"
-                lines.append(f"- `{item.get('tool')}`: {'ok' if ok else why}")
+                ok, err = item.get("status") == "completed", tool_error(item)
+                why = "needs approval" if "approval" in err.lower() else "failed"
+                app = f" ({item.get('server')})" if item.get("server") not in (None, "crew") else ""
+                lines.append(f"- `{item.get('tool')}`{app}: {'ok' if ok else why}" + (f" — {clip(err, 300)}" if err and not ok else ""))
             elif kind == "command_execution":
                 lines.append(f"- ran `{clip(' '.join(str(item.get('command') or '').split()), 160)}`")
             elif kind == "file_change":
@@ -803,12 +931,14 @@ class Crew:
             mid = int(m.get("id") or 0)
             if not self.asked_me(m) or mid in handled or now - float(m.get("at") or 0) > REQUEST_SECONDS:
                 continue
-            if any(x.get("from") == self.name and int(x.get("id") or 0) > mid and x.get("to") == m.get("from") for x in msgs):
-                continue  # replied to them since
             ref = TASK_REQUEST.match(str(m.get("text") or ""))
             t = tasks.get(int(ref.group(1))) if ref else None
-            if t and (t.get("status") == "done" or t.get("owner") == self.name):
-                continue  # the task it was about is claimed by this AI, or done
+            if t:  # about a task ("T5 can start"): it waits for the task to be taken, a reply about something else won't do
+                if t.get("status") == "done" or t.get("owner") or t.get("assignee") not in (None, "", self.name):
+                    continue  # done, claimed (by this AI or someone else), or handed to someone else
+            elif any(x.get("from") == self.name and int(x.get("id") or 0) > mid and x.get("to") == m.get("from")
+                     and not str(x.get("text") or "").startswith("🌙") for x in msgs):
+                continue  # replied to them since (its 🌙 "on it" note when woken doesn't count)
             out.append(m)
         return out
 
@@ -873,8 +1003,39 @@ class Crew:
         bits = ([f"⏳ {w} request{'s' if w != 1 else ''} waiting on you"] if w else []) + \
                ([f"📨 {n} new crew message{'s' if n != 1 else ''}"] if n else [])
         extra = f"\n\n{' · '.join(bits)}: crew_status shows them." if bits else ""
+        with self.lock:
+            play = self.playing(self.snapshot)
         warn = self.note()
-        return extra + (f"\n\n{warn}" if warn else "")
+        return extra + (f"\n\n{play}" if play else "") + (f"\n\n{warn}" if warn else "")
+
+    def playing(self, s):
+        """Teammates playtesting right now (their plugin says so): edits to a Studio shared with them fail meanwhile."""
+        on = [p for p in s.get("peers") or [] if p.get("online") and p.get("playing") and p.get("name") != self.name]
+        if not on:
+            return ""
+        return ("▶ Playtesting right now: " + ", ".join(f"{p['name']} ({p['playing']})" for p in on) + ". If you edit "
+                "the same Studio, your edits fail until they stop: wait for their PLAY OFF, or do something else meanwhile.")
+
+    def elsewhere(self):
+        """Where the crew might be instead: the latest invite to another project, else how to look."""
+        with self.lock:
+            invites = [m for m in self.recent if m.get("kind") == "invite" and m.get("to") in (self.name, "all")
+                       and m.get("invite") and m.get("invite") != self.project]
+        if invites:
+            m = invites[-1]
+            return f"{m.get('from')} invited you to '{m['invite']}' (#{m.get('id')}): crew_project with that name switches there."
+        return "If the crew works in another project, crew_project lists them (and who's where) and switches."
+
+    def away(self, name):
+        """A heads-up when a teammate works in another crew project right now: a request from here won't start them."""
+        with self.lock:
+            p = next((x for x in self.snapshot.get("peers") or [] if x.get("name") == name), None)
+        where = (p or {}).get("project")
+        if not p or not p.get("online") or not where or where == self.project:
+            return ""
+        place = "another crew project" if where == "(private)" else f"the project '{where}'"
+        return (f"\n(Heads-up: {name} is in {place} right now, not '{self.project}'. It reaches them there, but a request "
+                f"from here won't start their work by itself: ask them, or their person, to switch to '{self.project}'.)")
 
     # -------------------------------------------------------------------------------------------- tools
     def status(self, n=15, full=False, one=None, answered=None):
@@ -896,12 +1057,15 @@ class Crew:
                    + (f" · requests from {self.wake_who()} can wake you" if self.wake_rules else ""))
         if self.state != "connected" and not s:
             return "\n\n".join(out)
+        play = self.playing(s)
+        if play:
+            out.append(play)
         waiting = self.waiting()
         if waiting:
             self.mark_read(waiting)
             out.append(f"⏳ Waiting on you ({len(waiting)}):\n" + "\n".join(self.line(m, 20000 if full else 3000) for m in waiting)
-                       + "\nThey stay here until you reply to that teammate with crew_send or claim the task. One that "
-                         "needs no reply: crew_status with answered=[its id].")
+                       + "\nThey stay here until you reply to that teammate with crew_send (one about a task: until you "
+                         "claim the task). One that needs no reply: crew_status with answered=[its id].")
         shown = [m for m in self.take_new() if not self.asked_me(m)]  # requests to it are under "Waiting on you"
         if shown:
             out.append(f"New messages ({len(shown)}):\n" + "\n".join(self.line(m, 20000 if full else 2000) for m in shown))
@@ -912,13 +1076,13 @@ class Crew:
         off = [p["name"] for p in peers if not p.get("online")]
 
         def who(p):
-            bits = [p.get("activity") or "idle"]
+            bits = [p.get("activity") or "idle"] + ([f"▶ playtesting in {p['playing']}"] if p.get("playing") else [])
             if p.get("client"):
                 bits.append(f"an AI via {p['client']}")
             elif p.get("model"):
                 bits.append(str(p["model"]))
             if p.get("project") and p.get("project") != self.project:
-                bits.append(f"in {p['project']}")
+                bits.append("in another project" if p["project"] == "(private)" else f"in {p['project']}")
             return f"{p['name']} ({', '.join(bits)})"
 
         out.append("Online: " + (", ".join(who(p) for p in on) or "nobody else") + (f" · offline: {', '.join(off)}" if off else ""))
@@ -963,7 +1127,7 @@ class Crew:
             with self.lock:  # so a reply counts at once: the request it answers stops waiting on the AI
                 if m.get("id") not in self.ids:
                     self.add([m])
-        return f"Sent #{m.get('id')} to {m.get('to') or to or 'all'}."
+        return f"Sent #{m.get('id')} to {m.get('to') or to or 'all'}." + self.away((to or "").strip())
 
     def task(self, args, unattended=False):
         body = {k: v for k, v in args.items() if v not in (None, "")}
@@ -984,7 +1148,8 @@ class Crew:
             state += f" by {t['owner']}"
         elif t.get("assignee"):
             state += f", for {t['assignee']}"
-        return f"T{t.get('id')} {body['action']}: {t.get('title')} [{state}]"
+        heads = self.away(body.get("assignee") or "") if body["action"] in ("add", "assign") else ""
+        return f"T{t.get('id')} {body['action']}: {t.get('title')} [{state}]" + heads
 
     def wait(self, frm="", timeout=60.0):
         timeout = max(1.0, min(90.0, float(timeout or 60)))
@@ -1030,10 +1195,15 @@ class Crew:
         if not name:
             docs = self.call("GET", "/shared").get("docs") or []
             if not docs:
-                return f"No shared docs in '{self.project}' yet."
+                return f"No shared docs in '{self.project}' yet. " + self.elsewhere()
             return f"Shared docs in '{self.project}':\n" + "\n".join(
                 f"  {d.get('name')} (by {d.get('by')}, {d.get('size')} chars)" for d in docs)
-        d = self.call("GET", "/shared?name=" + urllib.parse.quote(name))
+        try:
+            d = self.call("GET", "/shared?name=" + urllib.parse.quote(name))
+        except Refused as e:
+            if e.status != 404:
+                raise
+            return f"No doc '{name}' in the project '{self.project}' (each crew project has its own docs). " + self.elsewhere()
         return f"Shared doc '{d.get('name', name)}' by {d.get('by')}:\n\n{d.get('content', '')}"
 
     def share(self, name, content, append=False):
@@ -1048,7 +1218,8 @@ class Crew:
                     f"{' · here: ' + ', '.join(p.get('here') or []) if p.get('here') else ''}" for p in projects]
             return "Crew projects:\n" + ("\n".join(rows) or "  just main") + "\n\ncrew_project with a name switches."
         to = clean_project(name)
-        with self.lock:
+        remember("project.json", self.who(), to)  # first: every copy follows (the one that wakes it too), and a check-in
+        with self.lock:                           # meanwhile doesn't take it back to the project it was in
             self.project = to
             self.reset()
         self.poll()
@@ -1068,7 +1239,7 @@ class Crew:
             self.poll()  # a brand-new copy: know what's waiting on the AI before answering anything
         try:
             if tool == "crew_join":
-                return self.join(a.get("leave") is True) + "\n\n" + self.status(15), False
+                return self.join(a.get("leave") is True, a.get("project") or "") + "\n\n" + self.status(15), False
             if tool == "crew_status":
                 return self.status(a.get("messages") or 15, a.get("all") is True, a.get("id"), a.get("answered")), False
             if tool == "crew_wait":
@@ -1190,9 +1361,11 @@ TOOLS = [
                     "when your person runs /prompts:crew or /crew, or asks you to join the crew here; leave: true when they "
                     "ask you to leave it. Also shows the crew.",
      "inputSchema": {"type": "object", "properties": {
-         "leave": {"type": "boolean", "description": "true: this chat stops being your crew chat"}}}},
+         "leave": {"type": "boolean", "description": "true: this chat stops being your crew chat"},
+         "project": {"type": "string", "description": "the crew project to work in from now on (it switches there first)"}}}},
     {"name": "crew_project",
-     "description": "The crew's projects (each has its own chat, board, docs and leader): no name lists them, a name switches.",
+     "description": "The crew's projects (each has its own chat, board, docs and leader): no name lists them, a name "
+                    "switches (for good: requests from that project wake you from then on).",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}},
 ]
 
@@ -1281,17 +1454,29 @@ class Server:
 
 CREW_PROMPT = """---
 description: Make this chat your crew chat (crew requests that wake you land here)
+argument-hint: [crew project]
+---
+Join the crew in this chat: call crew_join (with project set to "$ARGUMENTS" if that names a crew project), then tell me in two or three lines who's online, what's on the board and what's waiting on you.
+"""
+OLD_PROMPTS = ("""---
+description: Make this chat your crew chat (crew requests that wake you land here)
 ---
 Join the crew in this chat: call crew_join, then tell me in two or three lines who's online, what's on the board and what's waiting on you.
-"""
+""",)  # earlier versions the bridge wrote: replaced; a file its person changed is left alone
 
 
 def install_prompt():
     """/prompts:crew in Codex: a custom prompt file the app lists in its slash menu. Written once, never overwritten."""
     folder = os.path.join(CODEX_HOME, "prompts")
     path = os.path.join(folder, "crew.md")
-    if not os.path.isdir(CODEX_HOME) or os.path.exists(path):
+    if not os.path.isdir(CODEX_HOME):
         return
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() not in OLD_PROMPTS:
+                return  # today's version, or its person's own
+    except OSError:
+        pass  # not there yet
     try:
         os.makedirs(folder, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:

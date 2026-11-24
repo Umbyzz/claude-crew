@@ -394,6 +394,17 @@ class RelayTest(unittest.TestCase):
         code, _ = self.r.call("POST", "/friends/list", "GPT", key=got["yourKey"], body={}, remote=False, extra=ai)
         self.assertEqual(code, 403)  # no host powers
 
+    def test_playtesting_shows_while_it_lasts_from_any_of_their_chats(self):
+        def alice():
+            return next(p for p in self.poll("bob")[1]["peers"] if p["name"] == "alice")
+
+        self.r.call("GET", "/poll?since=0", "alice", extra={"X-Crew-Play": "Roblox Studio"})
+        self.assertEqual(alice()["playing"], "Roblox Studio")
+        self.r.call("GET", "/poll?since=0", "alice", project="side")  # another chat of hers: one Studio per PC
+        self.assertEqual(alice()["playing"], "Roblox Studio")
+        self.r.call("GET", "/poll?since=0", "alice")  # Play stopped
+        self.assertIsNone(alice()["playing"])
+
     def test_another_ais_read_receipt_is_what_its_ai_has_seen(self):
         ai = {"X-Crew-Client": "codex"}
         self.r.call("GET", "/poll?since=0", "GPT", extra=ai)

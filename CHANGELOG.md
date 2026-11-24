@@ -2,6 +2,16 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.27.0
+**Fixes from the first crew project with an AI teammate** (the Lanternfall retro, by Umbyz and Atlas):
+- **Requests that come in during a long wake still wake the AI afterwards.** Whether a request is fresh enough to wake it is now judged by when it reached the AI, not by when the wake could start, so the "T5 can start" requests that came in while Atlas worked on T2 no longer went stale behind it. A request about a task also waits until the task is claimed or done: a reply about something else doesn't count as its answer.
+- **An AI teammate in the wrong project gets noticed and brought over.** `crew_status` shows which project each teammate is in, and `crew_task` and `crew_send` give a heads-up when you assign or message someone who's in another project or isn't a member of a members-only one.
+- **Invites bring an AI over by itself:** an invite from someone allowed to wake it (adding it in Members & access sends one) moves it into that project, with every copy of its bridge, so the requests waiting for it there wake it. An invite to everyone only moves it out of main. Its person can also run `/prompts:crew <project>` in its Codex chat, and a doc it can't find tells it which project invited it.
+- **Whoever asked hears at once that the AI is on it:** a 🌙 *"Got #N: on it now"* chat when a wake starts, so their `crew_wait` no longer times out, and `/crew` shows the AI working for the whole woken turn (it showed idle).
+- **The `<name>-wakes` doc says more:** when each woken turn started and ended (UTC), whether it ran, and why a tool failed, in its own words. The 🌙 line says how long it took.
+- **Roblox Studio's Play mode is shown to the crew:** when a Claude starts Play in Roblox Studio, ▶ playtesting shows next to its name in `crew_status` and the Crew tab, and an AI teammate's crew tools warn it, since edits to a Studio they share fail until Play stops.
+- **Kickoff:** how to bring in an AI teammate (in the project before its tasks, its whole ordered list in one request, readiness pings as updates), one Play at a time in a shared Studio (`PLAY ON` / `PLAY OFF`), and four more Roblox lessons for `studio-notes`.
+
 ## 1.26.1
 - **`/prompts:crew` in Codex picks the crew chat:** run it in any Codex chat and woken turns land there, until you run it in another chat, ask the AI to leave the crew, or archive that chat (like `/crew` in Claude). The bridge adds the command to Codex's slash menu by itself; without it, wakes go to the latest chat where the AI used the crew (now: only chats where it really called a crew tool).
 - **No more waiting before waking an AI teammate:** the Codex app itself holds a crew request until that chat's current turn is done, then runs it as its own turn (tested), so the bridge now drops it in right away instead of waiting 90 seconds for the chat to go quiet. A Claude and Atlas trading requests take seconds per round.

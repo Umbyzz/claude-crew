@@ -3394,3 +3394,125 @@ test('the host gets the 🌙 button too, without leading', { options: { ...OPTIO
   expect(posts).toContainEqual({ action: 'edit', id: '4', unattended: false })
 })
 
+// -- teammates elsewhere: who's in another project when work goes their way, and who has Roblox Studio in Play mode
+// (the relay's X-Crew-Play / peers' playing, mocked here)
+
+test("Roblox Studio's Play mode is told to the crew (X-Crew-Play) once it started, and Stop clears it", { options: OPTIONS }, async ($, on) => {
+  const seen = fakeRelay(on)
+  const PLAY = 'mcp__Roblox_Studio__start_stop_play'
+  let refuse = false
+  on('tool.call', { tool: PLAY }, async () => {
+    await settle(80) // Studio takes a moment: the check-in from before the call is done by then
+    return (refuse ? { deny: 'Studio is not open' } : { result: 'ok' }) as any
+  })
+  const play = async (is_start: boolean, extra = {}) => {
+    const from = seen.length
+    await $.tool.call({ tool: PLAY, is_start, studio_id: 'x', ...extra } as any)
+    await settle()
+    const atOnce = seen.slice(from).map(s => s.init.headers['X-Crew-Play'])
+    await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // the next check-in
+    return { atOnce, next: seen[seen.length - 1].init.headers['X-Crew-Play'] }
+  }
+  const started = await play(true)
+  expect(started.atOnce).toContain('Roblox Studio') // checked in right away, not on the next round
+  expect(started.next).toBe('Roblox Studio')
+  expect((await play(false)).next).toBe('')
+  refuse = true
+  expect((await play(true)).next).toBe('') // refused: Studio never started
+  refuse = false
+  expect((await play(true, { agentId: 'a1' })).next).toBe('Roblox Studio') // a subagent's Play counts too
+  expect((await play(false, { agentId: 'a1' })).next).toBe('')
+  await settle()
+})
+
+test("crew_status and the Crew tab say who's in another project, and who has Roblox Studio in Play mode", { options: OPTIONS }, async ($, on) => {
+  mock.store(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const peers = [
+    { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true, project: 'main' },
+    { name: 'bob', online: true, lastSeen: 0, activity: 'working', leader: false, project: 'Tweener', playing: 'Roblox Studio' },
+    { name: 'carol', online: true, lastSeen: 0, activity: 'idle', leader: false, project: '(private)' },
+    { name: 'dave', online: false, lastSeen: 0, activity: 'idle', leader: false, project: 'Tweener', playing: 'Roblox Studio' },
+  ]
+  on('http.fetch', async () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ...POLL, peers }) } }))
+  const r: any = await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  expect(r.result).toContain(
+    'Crew: alice (leader): idle, bob: working · in the project Tweener · ▶ playtesting in Roblox Studio: edits to it fail until they stop, ' +
+      "carol: idle · in a project you can't see, dave: offline\n", // offline: where they were, and their Play, may be long over
+  )
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  expect(await ui.find({ text: /bob.*in Tweener.*▶ playtesting/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /dave.*▶ playtesting/ } as any)).toBeUndefined()
+  await ui.unmount()
+})
+
+// A crew where GPT (an AI on crew's bridge) works in the project Tweener, dave in one alice can't see, and the project
+// secret is members-only (alice and GPT).
+function awayRelay(on: any) {
+  mock.store(on)
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.toast', async () => ({ value: undefined }))
+  const projects = [
+    { name: 'main', leader: 'alice', openTasks: 1, docs: 0, here: ['alice', 'bob'], members: [] },
+    { name: 'Tweener', leader: 'GPT', openTasks: 0, docs: 0, here: ['GPT'], members: [] },
+    { name: 'secret', leader: 'alice', openTasks: 0, docs: 0, here: ['alice'], private: true, members: ['alice', 'GPT'] },
+  ]
+  on('http.fetch', async (_$: unknown, e: any) => {
+    const body = JSON.parse(e.init?.body || '{}')
+    const peers = [
+      { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true, project: e.init?.headers?.['X-Crew-Project'] },
+      { name: 'bob', online: true, lastSeen: 0, activity: 'idle', leader: false, project: 'main' },
+      { name: 'GPT', online: true, lastSeen: 0, activity: 'idle', leader: false, project: 'Tweener', client: 'Codex' },
+      { name: 'dave', online: true, lastSeen: 0, activity: 'idle', leader: false, project: '(private)' },
+    ]
+    const reply = e.url.endsWith('/tasks')
+      ? { id: 9, title: body.title ?? 'Lava pits', note: '', status: 'open', owner: null, assignee: body.assignee ?? null, by: 'alice', at: 0 }
+      : e.url.endsWith('/send')
+        ? { id: 7, from: 'alice', to: body.to, kind: body.kind, text: body.text, at: 0 }
+        : { ...POLL, peers, projects }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(reply) } }
+  })
+}
+
+test("crew_task says so when the assignee is in another project, or isn't a member of this members-only one", { options: OPTIONS }, async ($, on) => {
+  awayRelay(on)
+  const task = async (input: Record<string, unknown>) => String(((await $.tool.call({ tool: 'mcp__crew__crew_task', ...input } as any)) as any).result)
+  expect(await task({ action: 'add', title: 'Lava pits', assignee: 'GPT' })).toBe(
+    "T9 [open · for GPT] Lava pits\n(Heads-up: GPT is in the project 'Tweener' right now, so this board isn't in front of them until they " +
+      "switch. GPT is an AI on crew's bridge: it moves here by itself when someone allowed to wake it invites it (/crew → Project tab), " +
+      'or when its person runs /prompts:crew main in its chat.)',
+  )
+  expect(await task({ action: 'assign', id: '9', assignee: 'bob' })).toBe('T9 [open · for bob] Lava pits') // bob works in main too
+  expect(await task({ action: 'assign', id: '9', assignee: 'dave' })).toContain("(Heads-up: dave is in a project you can't see right now")
+  expect(await task({ action: 'add', title: 'Moat' })).not.toContain('Heads-up')
+  await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'secret' } as any) // members-only: alice and GPT
+  const both = await task({ action: 'assign', id: '9', assignee: 'bob' })
+  expect(both).toContain("(Heads-up: bob is in the project 'main' right now")
+  expect(both).toContain('Ask them to, or invite them from /crew → Project tab.)') // bob is a person's Claude, not an AI on the bridge
+  expect(both).toContain(
+    "\n(Heads-up: bob isn't a member of this members-only project, so they can't see this task. Add them first: /crew → Project tab → Members & access.)",
+  )
+  const member = await task({ action: 'assign', id: '9', assignee: 'GPT' })
+  expect(member).toContain("GPT is in the project 'Tweener' right now")
+  expect(member).toContain('/prompts:crew secret in its chat.)')
+  expect(member).not.toContain("isn't a member") // GPT is one, just elsewhere right now
+  expect(await task({ action: 'add', title: 'Moat', assignee: 'carol' })).toBe( // not connected: only the members part
+    "T9 [open · for carol] Moat\n(Heads-up: carol isn't a member of this members-only project, so they can't see this task. Add them first: /crew → Project tab → Members & access.)",
+  )
+  await $.tool.call({ tool: 'mcp__crew__crew_project', name: 'main' } as any) // leave the shared module state on main
+})
+
+test('crew_send to a teammate in another project says where they are', { options: OPTIONS }, async ($, on) => {
+  awayRelay(on)
+  const send = async (input: Record<string, unknown>) => String(((await $.tool.call({ tool: 'mcp__crew__crew_send', ...input } as any)) as any).result)
+  expect(await send({ text: 'the boat panel is yours', to: 'GPT', kind: 'request' })).toBe(
+    "Sent #7 to GPT.\n(Heads-up: GPT is in the project 'Tweener' right now: it reaches them there, but a request from another " +
+      "project doesn't start their work by itself.)",
+  )
+  expect(await send({ text: 'and the dock?', to: 'dave' })).toBe("Sent #7 to dave.\n(Heads-up: dave is in a project you can't see right now: it reaches them there.)")
+  expect(await send({ text: 'nice', to: 'bob' })).toBe('Sent #7 to bob.') // here in main
+  expect(await send({ text: 'standup in 5' })).toBe('Sent #7 to all.')
+})
+

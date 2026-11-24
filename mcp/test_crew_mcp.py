@@ -20,7 +20,7 @@ BRIDGE = os.path.join(HERE, "crew_mcp.py")
 
 # A stand-in for Codex's command line: notes how it was run, and acts out a turn in the session it was given.
 FAKE_CODEX = r"""
-import json, os, sys
+import json, os, sys, time
 args = sys.argv[1:]
 with open(os.environ["FAKE_CODEX_LOG"], "a", encoding="utf-8") as f:
     f.write(json.dumps({"args": args, "prompt": sys.stdin.read(), "cwd": os.getcwd()}) + "\n")
@@ -44,9 +44,13 @@ for e in ({"type": "thread.started", "thread_id": thread}, {"type": "turn.starte
           {"type": "item.completed", "item": {"type": "mcp_tool_call", "server": "crew", "tool": "crew_status", "status": "completed"}},
           {"type": "item.completed", "item": {"type": "mcp_tool_call", "server": "crew", "tool": "crew_task", "status": "failed",
                                               "error": {"message": "MCP tool call requires approval, but approval policy is never"}}},
+          {"type": "item.completed", "item": {"type": "mcp_tool_call", "server": "codex_apps", "tool": "update_running_summary",
+                                              "status": "failed", "error": {"message": "summary store unavailable"}}},
           {"type": "item.completed", "item": {"type": "file_change", "changes": [{"path": "C:/work/gate.lua", "kind": "update"}]}},
           {"type": "item.completed", "item": {"type": "agent_message", "text": "Checked the gate, it's fine."}},
           {"type": "turn.completed"}):
+    if e["type"] == "turn.completed":
+        time.sleep(float(os.environ.get("FAKE_SLEEP") or 0))  # a long turn
     print(json.dumps(e), flush=True)
 """
 
@@ -459,7 +463,10 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("> is the gate ok?", doc)
         self.assertIn("**GPT:** Checked the gate, it's fine.", doc)
         self.assertIn("- `crew_task`: needs approval", doc)
+        self.assertIn("- `update_running_summary` (codex_apps): failed — summary store unavailable", doc)  # why, in its words
+        self.assertIn("update_running_summary (failed: summary store unavailable)", note)
         self.assertIn("- changed gate.lua", doc)
+        self.assertRegex(doc, r"## \d{4}-\d\d-\d\d \d\d:\d\d:\d\d–\d\d:\d\d:\d\d UTC · #\d+ from umbyz · in its crew session · ran")
 
     def test_a_woken_turn_goes_into_its_persons_own_chat_once_its_quiet(self):
         codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
@@ -559,6 +566,152 @@ class BridgeTest(unittest.TestCase):
         self.ask("from main")
         until(lambda: len(self.wakes()) == 1)
         self.assertIn("from main", self.wakes()[0]["prompt"])
+
+    def test_a_request_that_came_in_during_a_long_wake_still_wakes_it_afterwards(self):
+        self.waker(CREW_MCP_FRESH="2", FAKE_SLEEP="3")  # "fresh" is 2 s here, and each woken turn takes 3 s
+        until(self.online)
+        self.ask("first: the gate")
+        until(lambda: len(self.wakes()) == 1)
+        self.ask("second: the door")  # comes in while the first turn runs
+        until(lambda: len(self.wakes()) == 2, timeout=15)  # 3+ s old by then, but it came in fresh
+        self.assertIn("second: the door", self.wakes()[1]["prompt"])
+
+    def test_whoever_asked_hears_at_once_and_it_shows_as_working_meanwhile(self):
+        self.waker(FAKE_SLEEP="3")
+        until(self.online)
+        sent = self.ask("is the gate ok?")
+        got = self.r.call("GET", f"/wait?since={sent['id']}&from=GPT&timeout=6", "umbyz", remote=False)[1]  # crew_wait
+        self.assertEqual(got["messages"][0]["kind"], "chat")
+        self.assertIn(f"🌙 Got #{sent['id']}: on it now", got["messages"][0]["text"])
+        until(lambda: self.gpt().get("activity") == "working")  # for the whole woken turn
+        until(self.moon, timeout=10)
+        until(lambda: self.gpt().get("activity") == "idle", timeout=6)
+
+    def test_without_codexs_command_line_whoever_asked_hears_it_didnt_start(self):
+        folder = tempfile.mkdtemp(prefix="crew-mcp-wake-")
+        self.addCleanup(shutil.rmtree, folder, True)
+        b = self.bridge(CREW_WAKE="project", CREW_CODEX=os.path.join(folder, "no-such-codex.exe"), CREW_WAKE_DIR=folder)
+        until(self.online)
+        sent = self.ask("is the gate ok?")
+        until(lambda: any(f"#{sent['id']} didn't start after all" in m["text"] for m in self.said("chat")))
+        self.assertIn("Waiting on you (1)", b.tool("crew_status"))  # still there for its person: 🌙 notes aren't replies
+
+    def test_a_task_request_waits_until_the_task_is_taken_not_for_just_any_reply(self):
+        b = self.bridge()
+        until(self.online)
+        t = self.r.call("POST", "/tasks", "umbyz", body={"action": "add", "title": "the door"}, remote=False)[1]
+        self.ask(f"T{t['id']} can start: the door")
+        self.ask("and how's the gate?")
+        until(lambda: "Waiting on you (2)" in b.tool("crew_status"))
+        b.tool("crew_send", text="the gate's fine", to="umbyz")
+        status = b.tool("crew_status")
+        self.assertIn("Waiting on you (1)", status)  # the reply answered the question, not the task
+        self.assertIn("can start: the door", status)
+        b.tool("crew_task", action="claim", id=str(t["id"]))
+        self.assertNotIn("Waiting on you", b.tool("crew_status"))
+
+    def test_an_invite_from_someone_who_may_wake_it_moves_it_there_and_what_waits_there_wakes_it(self):
+        self.waker(mode="leader, umbyz")
+        until(self.online)
+        self.r.call("POST", "/send", "umbyz", project="side", body={"to": "GPT", "kind": "request", "text": "T9 for you"},
+                    remote=False)
+        time.sleep(1)
+        self.assertEqual(self.wakes(), [])  # from another project: not yet
+        self.r.call("POST", "/send", "umbyz", project="side", body={"to": "GPT", "kind": "invite", "text": "come over"},
+                    remote=False)
+        until(lambda: self.gpt().get("project") == "side")
+        until(lambda: len(self.wakes()) == 1)  # now it's in that project: the request there wakes it
+        self.assertIn("T9 for you", self.wakes()[0]["prompt"])
+        said = self.r.call("GET", "/poll?since=0", "umbyz", project="side", remote=False)[1]["messages"]
+        self.assertTrue(any(m["from"] == "GPT" and "followed umbyz's invite" in m["text"] for m in said))
+
+    def test_an_invite_to_everyone_moves_it_only_out_of_main(self):
+        self.waker(mode="umbyz")
+        until(self.online)
+        for p in ("side", "other"):  # open to the whole crew, so everyone can be invited at once
+            self.r.call("POST", "/project/private", "umbyz", project=p, body={"private": False}, remote=False)
+        self.r.call("POST", "/send", "umbyz", project="side", body={"to": "all", "kind": "invite", "text": "all of you"},
+                    remote=False)
+        until(lambda: self.gpt().get("project") == "side")  # from main, the lobby: it follows
+        self.r.call("POST", "/send", "umbyz", project="other", body={"to": "all", "kind": "invite", "text": "you too"},
+                    remote=False)
+        time.sleep(1.5)
+        self.assertEqual(self.gpt().get("project"), "side")  # in a project: an invite to everyone doesn't pull it away
+
+    def test_an_invite_from_someone_else_waits_for_its_person(self):
+        self.waker(mode="leader")
+        until(self.online)
+        self.r.call("POST", "/send", "bob", project="side", body={"to": "GPT", "kind": "invite", "text": "come over"})
+        time.sleep(1.5)
+        self.assertEqual(self.gpt().get("project"), "main")
+
+    def test_it_can_switch_projects_again_and_again(self):
+        b = self.bridge()
+        until(self.online)
+        self.assertIn("Now in the crew project 'side'", b.tool("crew_project", name="side"))
+        self.assertIn("Now in the crew project 'other'", b.tool("crew_project", name="other"))
+        self.assertIn("in the project 'other'", b.tool("crew_status"))
+        self.assertIn("Now in the crew project 'main'", b.tool("crew_project", name="main"))
+
+    def test_a_doc_in_another_project_says_where_to_look(self):
+        b = self.bridge()
+        until(self.online)
+        self.r.call("POST", "/shared", "umbyz", project="side", body={"name": "plan", "content": "the plan"}, remote=False)
+        self.r.call("POST", "/send", "umbyz", project="side", body={"to": "GPT", "kind": "invite", "text": "come over"},
+                    remote=False)
+        until(lambda: "umbyz invited you to 'side'" in b.tool("crew_read_shared", name="plan"))
+        self.assertIn("No doc 'plan' in the project 'main'", b.tool("crew_read_shared", name="plan"))
+
+    def test_it_hears_when_a_teammate_it_asks_is_in_another_project(self):
+        b = self.bridge()
+        until(self.online)
+        self.r.call("GET", "/poll?since=0", "bob", project="side")  # a new project: members-only, bob's
+        until(lambda: "bob (idle, in another project)" in b.tool("crew_status"))
+        self.assertIn("bob is in another crew project right now", b.tool("crew_send", text="look?", to="bob", kind="request"))
+        self.assertNotIn("Heads-up", b.tool("crew_send", text="hi all"))
+
+    def test_it_warns_while_a_teammate_is_playtesting(self):
+        b = self.bridge()
+        until(self.online)
+        self.r.call("GET", "/poll?since=0", "umbyz", remote=False, extra={"X-Crew-Play": "Roblox Studio"})
+        until(lambda: "▶ Playtesting right now: umbyz (Roblox Studio)" in b.tool("crew_status"))
+        self.assertIn("umbyz (idle, ▶ playtesting in Roblox Studio)", b.tool("crew_status"))  # by their name, too
+        self.assertIn("Playtesting right now", b.tool("crew_read_shared"))  # every crew tool's answer says so
+        self.r.call("GET", "/poll?since=0", "umbyz", remote=False)  # Play stopped
+        until(lambda: "Playtesting" not in b.tool("crew_status"))
+
+    def test_switching_projects_moves_every_copy_of_the_bridge(self):
+        home = tempfile.mkdtemp(prefix="crew-mcp-test-")
+        main = self.bridge(home=home)
+        until(self.online)
+        turn = self.bridge(home=home)  # the copy a Codex turn uses
+        self.assertIn("Now in the crew project 'side'", turn.tool("crew_project", name="side"))
+        until(lambda: "in the project 'side'" in main.tool("crew_status"))  # the other copy (the waker) follows
+        self.assertIn("in the project 'side'", self.bridge(home=home).tool("crew_status"))  # and so does a new one
+
+    def test_crew_join_with_a_project_moves_there_too(self):
+        b = self.bridge()
+        until(self.online)
+        out = b.tool("crew_join", project="side")
+        self.assertIn("Now in the crew project 'side'", out)
+        self.assertIn("in the project 'side'", out)  # the crew_status after it
+
+    def test_an_older_prompts_crew_file_is_brought_up_to_date(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        os.makedirs(os.path.join(codex, "prompts"))
+        old = ("---\ndescription: Make this chat your crew chat (crew requests that wake you land here)\n---\n"
+               "Join the crew in this chat: call crew_join, then tell me in two or three lines who's online, what's on "
+               "the board and what's waiting on you.\n")
+        with open(os.path.join(codex, "prompts", "crew.md"), "w", encoding="utf-8") as f:
+            f.write(old)
+        self.bridge(CREW_CODEX_HOME=codex)
+
+        def prompt():
+            with open(os.path.join(codex, "prompts", "crew.md"), encoding="utf-8") as f:
+                return f.read()
+
+        until(lambda: "argument-hint" in prompt())
 
     def test_if_it_cant_be_queued_it_uses_its_crew_session(self):
         codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")

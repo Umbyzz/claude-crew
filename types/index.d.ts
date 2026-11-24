@@ -39,6 +39,7 @@ export type CrewPeer = {
   usage?: number | null // the most of any usage-limit window they've used, in percent
   usageDetail?: string | null // each window on its own: "26% session · 35% week"
   mcp?: string | null // the MCP servers their Claude is connected to ("Roblox Studio, Unity")
+  playing?: string | null // while that teammate's Claude has an app (Roblox Studio) in Play mode: which one
   client?: string | null // another AI app (Codex, Gemini…) in the crew through crew's MCP bridge, not a Claude
   friend?: boolean // on the host's friends list (a personal key)
   member?: boolean // let in by the host after knocking (a personal key, but not a friend)

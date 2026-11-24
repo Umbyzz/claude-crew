@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.26.1"
+VERSION = "1.27.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -377,6 +377,8 @@ def show_busiest(p, now):
     chats = p.get("chats", {})
     for k in [k for k, c in chats.items() if now - c["seen"] >= CHAT_FRESH]:
         chats.pop(k)
+    # one Roblox Studio (or other app) per PC: any of their chats playtesting in it counts, whichever project it's in
+    p["playing"] = next((c["playing"] for c in chats.values() if c.get("playing")), None)
     if not chats:
         return
     pr, c = max(chats.items(), key=lambda kv: (BUSY.get(kv[1]["activity"], 1), kv[1]["seen"]))
@@ -582,7 +584,7 @@ def peer_list(project=MAIN, viewer=None, host=False):
          "activity": p["activity"], "leader": n == leader, "acting": n == stand_in, "since": p["since"],
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
          "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"), "usageDetail": p.get("usageDetail"), "mcp": p.get("mcp"),
-         "client": p.get("client"),
+         "client": p.get("client"), "playing": p.get("playing") if is_online(p, now) else None,
          "project": p.get("project", MAIN) if can_see(p.get("project", MAIN), viewer) or n == viewer else "(private)",
          "friend": friend_kind(n) == "friend", "member": friend_kind(n) == "member",
          **({"ip": p.get("ip", "")} if host else {})}
@@ -686,6 +688,8 @@ def touch(name, headers, ip=""):
     except ValueError:
         pass
     c["chatTo"] = (headers.get("X-Crew-Chat-To") or "").strip()[:40] or None
+    # playtesting in an app the crew may share (Roblox Studio…): edits there fail for everyone until it stops
+    c["playing"] = (headers.get("X-Crew-Play") or "").strip()[:60] or None
     p["version"] = (headers.get("X-Crew-Version") or "").strip()[:20] or p.get("version")  # who needs to update
     p["model"] = (headers.get("X-Crew-Model") or "").strip()[:60] or p.get("model")  # the leader splits work by it
     p["client"] = (headers.get("X-Crew-Client") or "").strip()[:20] or None  # another AI app (Codex…), not a Claude

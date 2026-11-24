@@ -50,6 +50,8 @@ In a live engine edited through MCP like Roblox Studio, everyone opens the same 
 
 Offer **Rojo** as an option: scripts live as `.luau` files in the git repo (a branch each), so diffs, reviews and crew's file locks all work on them. Each person syncs (`rojo serve`) into their own copy of the place to test; you sync the merged scripts into the shared Team Create place. Maps, models and UI built in Studio stay in Team Create. Without Rojo, scripts live only in the place, and ownership of paths in the game tree is the main guard.
 
+When two AIs work in one Studio (a Claude and a Codex teammate on the same PC, say), only one of them can be in Play at a time: while either plays, the other's edits fail. Make that a house rule for the project: one Play at a time, announced with `PLAY ON` before starting and `PLAY OFF` right after stopping. `crew_status` shows ▶ next to a Claude that's playtesting.
+
 Also `crew_share` a doc named `studio-notes` with these lessons from earlier crews, and point to it in the plan:
 
 - Requiring a ModuleScript from the command bar (or `execute_luau`) gets a fresh copy of the module, not the one the game is running. To test live game state, go through a DevHook in ServerStorage that the running scripts expose.
@@ -62,11 +64,15 @@ Also `crew_share` a doc named `studio-notes` with these lessons from earlier cre
 - A read-only layout checker that prints each HUD element's screen rectangle catches overlaps screenshots miss. Mind the top-bar inset (about 58 px) on ScreenGuis that ignore it.
 - The keyboard-input tool can report success with no effect: check the effect.
 - R15 joints may be AnimationConstraints, not Motor6Ds.
+- Don't assume `PlayerScripts.PlayerModule` exists: some places have none. To drive a character from code, set `StarterPlayer.DevComputerMovementMode` to `Scriptable` rather than relying on PlayerModule's controls.
+- RemoteEvents queue until a listener connects, so a UI script that starts late gets a burst of old events. Keep state in attributes, have the UI read them, and use events only as nudges.
+- Readbacks are floats: compare FOV, CFrames and positions with a tolerance (Studio returned 44.000003815 for an FOV of 44).
+- An autopilot's button press must last at least 6 frames: a 2-frame Jump is lost right after landing.
 - Per-script cost: MicroProfiler timers (read through LibMP from a code run) give the milliseconds each script takes per frame.
 - `Lighting.Technology` can't be set from code: ask a person.
 - `screen_capture` can time out, and it doesn't draw BillboardGuis: check those another way.
 - `script_grep` and `script_read` can miss matches while the game is in Play.
-- Edits need Play stopped.
+- Edits need Play stopped, for everyone in that Studio: one Play at a time (`PLAY ON` / `PLAY OFF`).
 - Studio ids change after a reconnect: list them again instead of reusing old ones.
 - Keep each MCP wait under about 25 seconds.
 - DataStores and teleports don't work in Studio: publish and test those in a real server.
@@ -110,6 +116,7 @@ Ask your user before removing or rewriting rules the crew wrote.
 - One `crew_send` to all: the plan doc's name and who takes what, in 2-3 lines. Give teammates a moment to object; their person's wishes win.
 - Once the crew agrees what it's making, set the stage: `crew_stage` with the backdrop that fits (`baseplate` for a Roblox game, `ocean`, `forest`, `city`, `spooky` for horror, `space`, `workshop` for an app or tool, `plain` when nothing fits). Everyone working in the project sees it in their Clawds window.
 - Add the tasks with `crew_task` (assignee set), the skeleton first, and claim your own.
+- **An AI teammate** (🤖 in `/crew`: Codex or another app on crew's bridge) needs two things before its first task, or its requests pile up unseen: it's a member of the project (members-only: /crew → Project tab → Members & access), and it's working in it (`crew_status` shows each teammate's project). An invite from someone allowed to wake it brings it over by itself; otherwise its person runs `/prompts:crew <project>` in its chat. Then send it **one** request with its whole ordered list (T-numbers, what each owns, the plan doc's name) rather than one request per task: each request is a separate woken turn on its person's plan. Send readiness pings ("T5 is ready for you") as updates: the board tells it when a task can start. It answers a wake with a 🌙 "on it" chat, and its whole turn goes into the `<name>-wakes` doc.
 - Tell your user in a few lines what's set up and who's on what.
 
 ## 6. Checkpoints

@@ -5,7 +5,7 @@ import type { CrewKnock, CrewMessage, CrewSnapshot, CrewTask, CrewVote } from '.
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.26.1'
+const VERSION = '1.27.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -140,6 +140,23 @@ function bump($: EngineInterface) {
   poll($).catch(() => {})
 }
 
+// Roblox Studio in Play mode, started by this Claude (or one of its subagents): everyone's edits to that Studio fail
+// until it stops, so the crew is told (X-Crew-Play). A stop that never came clears itself after 20 minutes.
+const PLAY_TOOL = /start_stop_play$/i
+let playingSince = 0
+
+function playingNow() {
+  return playingSince && Date.now() - playingSince < 20 * 60 * 1000 ? 'Roblox Studio' : ''
+}
+
+// Once a Play or Stop went through (not refused, didn't fail): note it, and check in at once so the crew sees it.
+function notePlay($: EngineInterface, e: any, r: any) {
+  if (!PLAY_TOOL.test(String(e.tool)) || !r || r.deny) return
+  playingSince = e.is_start === true ? Date.now() : 0
+  lastBump = 0
+  bump($)
+}
+
 // The crew key this plugin last knew to work, per relay, in its own store. Saving a setting can be refused (or land
 // where the next load doesn't read it), and a key that then quietly reverts locks you out: a new crew key, or a
 // friend's personal key, must survive restarts whatever happens to the settings write.
@@ -217,6 +234,7 @@ async function relay($: EngineInterface, method: 'GET' | 'POST', path: string, b
       'X-Crew-Key': cfg.key,
       'X-Crew-Name': cfg.me,
       'X-Crew-Activity': activityNow(),
+      'X-Crew-Play': playingNow(),
       'X-Crew-Subagents': String(subagents),
       'X-Crew-Chat-To': chatUntil > Date.now() ? chatTo : '',
       'X-Crew-Version': VERSION,
@@ -3237,6 +3255,41 @@ function ok(text: string) {
   return { result: text }
 }
 
+// The project a teammate is working in, when it isn't this session's ('' when they're here, or unknown). The relay
+// shows a members-only project this person isn't in as "(private)".
+function awayIn(s: CrewSnapshot, name: string) {
+  const p = s.peers.find(x => x.name === name)
+  return name !== cfg.me && p?.project && p.project !== projectName ? p.project : ''
+}
+
+function projectWords(project: string) {
+  return project === '(private)' ? "a project you can't see" : `the project '${project}'`
+}
+
+// A task handed to someone who can't see this board right now: the reply says so, so nobody waits on a teammate who
+// never got it (an AI on crew's bridge once sat in another project while its tasks piled up here).
+async function assignHeadsUp($: EngineInterface, e: any, t: CrewTask) {
+  const to = e.action === 'assign' || (e.action === 'add' && e.assignee) ? String(t.assignee || e.assignee || '').trim() : ''
+  if (!to || to === cfg.me) return ''
+  const s = await read($, snapshot)
+  const away = awayIn(s, to)
+  const ai = !!s.peers.find(p => p.name === to)?.client
+  const here = (s.projects ?? []).find(p => p.name === projectName)
+  return (
+    (away
+      ? `\n(Heads-up: ${to} is in ${projectWords(away)} right now, so this board isn't in front of them until they switch. ` +
+        (ai
+          ? `${to} is an AI on crew's bridge: it moves here by itself when someone allowed to wake it invites it ` +
+            `(/crew → Project tab), or when its person runs /prompts:crew ${projectName} in its chat.)`
+          : 'Ask them to, or invite them from /crew → Project tab.)')
+      : '') +
+    (here?.private && Array.isArray(here.members) && !here.members.includes(to)
+      ? `\n(Heads-up: ${to} isn't a member of this members-only project, so they can't see this task. ` +
+        `Add them first: /crew → Project tab → Members & access.)`
+      : '')
+  )
+}
+
 // A crew tool whose relay call failed answers the model with the reason instead of a bare failure.
 function failed(_$: unknown, _e: unknown, next: any) {
   const msg = plainError(next.error?.message ?? 'the relay call failed')
@@ -3734,12 +3787,16 @@ export const register: Register = (on, options) => {
   })
 
   // Every tool the main loop runs sets the Clawd's pose; subagents become mini Clawds.
-  // Registered before the crew tools' own hooks, so it wraps them too.
+  // Registered before the crew tools' own hooks, so it wraps them too. Studio's Play and Stop are noted once they ran.
   on('tool.call', async ($, e: any, next) => {
     noteMcp(String(e.tool))
     const locked = fileLock($, e) // subagents' edits count too
     if (locked) return locked
-    if (e.agentId) return next(e)
+    if (e.agentId) {
+      const r = await next(e)
+      notePlay($, e, r) // a subagent's Play counts too
+      return r
+    }
     const tool = String(e.tool)
     const isAgent = tool === 'Agent' || tool === 'Task'
     if (isAgent) subagents += 1
@@ -3748,11 +3805,13 @@ export const register: Register = (on, options) => {
       chatTo = typeof e.to === 'string' && e.to !== 'all' ? e.to : ''
     } else phase = TYPING_TOOLS.has(tool) ? 'typing' : 'working'
     bump($)
+    let r: any
     try {
-      return await next(e)
+      return (r = await next(e))
     } finally {
       if (isAgent) subagents = Math.max(0, subagents - 1)
       else if (phase !== 'idle') phase = 'thinking'
+      notePlay($, e, r)
     }
   })
 
@@ -3813,7 +3872,15 @@ export const register: Register = (on, options) => {
       )
     }
     await poll($)
-    return ok(`Sent #${msg.id} to ${msg.to}.`)
+    // someone working in another project has that one's chat and board in front of them, not this one's
+    const away = awayIn(await read($, snapshot), String(msg.to ?? ''))
+    return ok(
+      `Sent #${msg.id} to ${msg.to}.` +
+        (away
+          ? `\n(Heads-up: ${msg.to} is in ${projectWords(away)} right now: it reaches them there` +
+            (body.kind === 'request' ? ", but a request from another project doesn't start their work by itself.)" : '.)')
+          : ''),
+    )
   }).catch(failed)
 
   on('tool.call', { tool: 'mcp__crew__crew_status' }, async ($, e: any) => {
@@ -3838,6 +3905,11 @@ export const register: Register = (on, options) => {
     const full = e.all === true
     const peer = (p: CrewSnapshot['peers'][number]) =>
       `${p.name}${p.leader ? ' (leader)' : ''}${p.acting ? ' (acting leader)' : ''}: ${!p.online ? 'offline' : p.activity === 'out' ? 'OUT OF TOKENS' : p.activity}` +
+      (p.online && p.project && p.project !== projectName
+        ? ` · in ${p.project === '(private)' ? "a project you can't see" : `the project ${p.project}`}`
+        : '') +
+      // from their last check-in: once they're offline it may be long over
+      (p.online && p.playing ? ` · ▶ playtesting in ${p.playing}: edits to it fail until they stop` : '') +
       (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '') +
       (p.client ? ` · another AI via ${p.client}: it sees crew messages only when it checks, and nothing starts it by itself` : '') +
       (p.model ? ` · ${modelLabel(p.model)}` : '') +
@@ -3889,7 +3961,7 @@ export const register: Register = (on, options) => {
     if (e.action === 'remove') return ok(`Removed T${t.id}.`)
     // a relay from before the 🌙 mark takes the rest and leaves the mark out: say so, rather than let it look set
     const ignored = typeof e.unattended === 'boolean' && (e.action === 'add' || e.action === 'edit') && !!t.unattended !== e.unattended
-    return ok(fmtTask(t) + (ignored ? "\n(The 🌙 mark didn't change: the host's relay is too old for it.)" : ''))
+    return ok(fmtTask(t) + (ignored ? "\n(The 🌙 mark didn't change: the host's relay is too old for it.)" : '') + (await assignHeadsUp($, e, t)))
   }).catch(failed)
 
   on('tool.call', { tool: 'mcp__crew__crew_lead' }, async ($, e: any) => {
@@ -5286,6 +5358,7 @@ export const register: Register = (on, options) => {
                     {p.client ? `  · 🤖 ${p.client}` : ''}
                     {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                     {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
+                    {p.online && p.playing ? '  · ▶ playtesting' : ''}
                     {p.model ? `  · ${modelLabel(p.model)}` : ''}
                     {p.usage != null ? `  · ${shortUsage(p)}${p.usage >= 80 ? ' ⚠' : ''}` : ''}
                     {p.online && editingNow(p.name) ? `  · ✎ ${editingNow(p.name)?.path}` : ''}
