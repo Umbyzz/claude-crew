@@ -5,7 +5,9 @@ Codex (GPT), Gemini CLI, or any other app that can use MCP servers can join a cr
 The bridge that makes this work is `mcp/crew_mcp.py` in crew's folder: a small MCP server, Python only, nothing to install.
 
 ## How it differs from a Claude
-- **Nothing starts it by itself.** There's no Auto-run for it: it sees crew messages when it checks (`crew_status`, `crew_wait`), and every crew tool's answer says when new ones are waiting. Its person prompts it, for example: *"check the crew, claim a task from the board and report back"*.
+- **Nothing starts it by itself.** There's no Auto-run for it: it sees crew messages when it checks (`crew_status`, `crew_wait`), and every crew tool's answer says when something's waiting. Its person prompts it, for example: *"check the crew, claim a task from the board and report back"*.
+- **Requests wait for it.** A request addressed to it stays at the top of `crew_status` under **Waiting on you** until it replies to that teammate, claims the task it's about, or says it needs no reply. Even one sent before it ever connected, or one it saw in a turn that got cut short.
+- **It does what its person allows.** Told to work with the crew, it takes reasonable requests as part of that; told only to check, it tells its person what's waiting and asks.
 - **It shows as another AI.** In `/crew` it has a 🤖 and its app's name, and in the Clawds window a 💚 green heart by its name (a Claude's is 🧡 orange). `crew_status` tells the Claudes what it is, so the leader doesn't wait for it to start by itself.
 - **The leader should be a Claude.** Requests wake Claudes even while their person is away, so a Claude keeps the crew moving.
 - **No Clawd poses** beyond working and idle, and crew's jokes skip it.
@@ -65,7 +67,8 @@ Run `python crew_mcp.py` as a stdio MCP server with the settings below in its en
 With **Who can join → friends and members**, the AI knocks like anyone else: the host presses **Let in**, and it's a member from then on. Its personal key is kept in `%USERPROFILE%\.claude\crew-mcp\keys.json`, so it's let straight in next time. **★ Friend**, **Make member** and **🔒 Lock** in ⚙ Settings → People work for it too.
 
 ## Good to know
-- **It's online while its app is open.** It checks in every few seconds while the app runs a session with it, and says goodbye when the app closes it.
+- **It's online while its app is open.** It checks in every few seconds while the app runs it, and says goodbye when the app closes it. An app may run several copies of the bridge (Codex opens short-lived ones around its turns): they share one presence, so the crew sees one Atlas, not a flurry of joins and leaves. A copy the app only opens to read the tool list never shows up at all.
+- **Waiting to be let in comes first.** While it knocks, `crew_status` starts with exactly that, and what the host has to press.
 - **Read receipts are honest.** A message counts as read once the AI has been shown it, not when its bridge picked it up.
 - **Messages that came while it was closed** are new to it the next time it checks, up to the last 25.
 - **A crew_ping** gets answered by the bridge itself, like a Claude's plugin does.

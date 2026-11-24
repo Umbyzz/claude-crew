@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.25.0"
+VERSION = "1.25.1"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -607,7 +607,8 @@ def sweep():
     now = time.time()
     for name, p in peers.items():
         if not p.get("gone") and not p.get("left") and now - p["seen"] >= GONE_SECONDS:
-            announce_leave(name, "lost connection (their Claude was closed or went offline)")
+            app = "app" if p.get("client") else "Claude"  # another AI's bridge (Codex…) or a Claude's plugin
+            announce_leave(name, f"lost connection (their {app} was closed or went offline)")
             save()
     update_acting(now)
     for pr in list(votes):

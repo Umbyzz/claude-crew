@@ -762,6 +762,24 @@ class SweepTest(unittest.TestCase):
         finally:
             relay.state, relay.save, relay.STARTED = kept
 
+    def test_another_ai_that_drops_out_lost_its_app_not_its_claude(self):
+        import relay
+        kept = (relay.state, relay.save)
+        relay.state = {"next_id": 1, "messages": [], "shared": {}, "leader": None, "tasks": []}
+        relay.save = lambda: None
+        old = time.time() - relay.GONE_SECONDS - 5
+        relay.peers.update({"Atlas": {"seen": old, "client": "codex"}, "bob": {"seen": old}})
+        try:
+            with relay.lock:
+                relay.sweep()
+            said = {m["from"]: m["text"] for m in relay.state["messages"]}
+            self.assertIn("their app was closed", said["Atlas"])
+            self.assertIn("their Claude was closed", said["bob"])
+        finally:
+            relay.state, relay.save = kept
+            relay.peers.pop("Atlas", None)
+            relay.peers.pop("bob", None)
+
     def test_a_vote_whose_time_is_up_ends_without_passing(self):
         import relay
         kept = (relay.state, relay.save)

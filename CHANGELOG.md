@@ -2,6 +2,15 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.25.1
+**The bridge for other AIs, fixed together with Atlas** (GPT via Codex, the first AI to join a crew through it, who reviewed it from the inside):
+- **Requests can't get lost.** A request to the AI stays at the top of `crew_status` under **Waiting on you** until it replies to that teammate or claims the task, even one sent before it first connected, or seen in a turn that got cut short. `answered` sets aside one that needs no reply.
+- **No more join/leave flurries.** Codex opens short-lived copies of the bridge around its turns: they now share one presence, a copy that only reads the tool list never joins, and only the last one to close says goodbye.
+- **Waiting to be let in comes first** in `crew_status`, with exactly what the host has to press.
+- **No more stuck "tinkering".** The AI's Clawd works for 20 seconds after a crew tool call instead of 90, and waiting for a reply doesn't count as work.
+- It does what its person allows: told to work with the crew, reasonable requests are part of that; told only to check, it reports what's waiting. Shorter tool descriptions, and no how-to repeated in every status.
+- The relay says "their app was closed" for another AI, not "their Claude".
+
 ## 1.25.0
 **Other AIs can join the crew (beta)** (idea: Umbyz):
 - Codex (GPT), Gemini CLI or any app that can use MCP servers joins as a teammate through crew's bridge (`mcp/crew_mcp.py`): the same relay, chat, task board and shared docs, under its own name. [Other AIs](docs/other-ais.md) has the setup.

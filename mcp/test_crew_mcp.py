@@ -34,7 +34,7 @@ class Bridge:
     def __init__(self, relay, name="GPT", key=KEY, home=None, **env):
         self.home = home or tempfile.mkdtemp(prefix="crew-mcp-test-")
         full = {**os.environ, "CREW_NAME": name, "CREW_KEY": key, "CREW_MCP_HOME": self.home, "CREW_MCP_POLL": "0.2",
-                "CREW_RELAY": f"http://127.0.0.1:{relay.port}" if relay else ""}
+                "CREW_MCP_GRACE": "0", "CREW_MCP_BUSY": "1", "CREW_RELAY": f"http://127.0.0.1:{relay.port}" if relay else ""}
         full.update(env)
         self.proc = subprocess.Popen([sys.executable, "-I", BRIDGE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, env=full)
@@ -64,7 +64,7 @@ class Bridge:
 
     def close(self, keep_home=False):
         if self.proc.poll() is None:
-            self.proc.stdin.close()  # the app closing this session
+            self.proc.stdin.close()  # the app closing this copy
             try:
                 self.proc.wait(5)
             except subprocess.TimeoutExpired:
@@ -93,37 +93,68 @@ class BridgeTest(unittest.TestCase):
     def poll(self, name="umbyz"):
         return self.r.call("GET", "/poll?since=0", name, remote=False)[1]  # the host, on this PC
 
-    def online(self, name="GPT"):
-        return any(p["name"] == name and p["online"] for p in self.poll().get("peers", []))
+    def gpt(self):
+        return next((p for p in self.poll().get("peers", []) if p["name"] == "GPT"), {})
+
+    def online(self):
+        return bool(self.gpt().get("online"))
+
+    def said(self, kind):
+        return [m for m in self.poll()["messages"] if m["from"] == "GPT" and m["kind"] == kind]
+
+    def ask(self, text, kind="request"):
+        return self.r.call("POST", "/send", "umbyz", body={"to": "GPT", "kind": kind, "text": text}, remote=False)[1]
 
     def test_an_mcp_app_sees_the_crew_tools_and_how_crew_works(self):
         b = self.bridge()
         init = b.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                         "clientInfo": {"name": "test", "version": "0"}})["result"]
         self.assertEqual((init["serverInfo"]["name"], init["protocolVersion"]), ("crew", "2025-06-18"))
-        self.assertIn("crew_status", init["instructions"])
         self.assertIn("Your name in the crew is GPT", init["instructions"])
+        self.assertIn("Waiting on you", init["instructions"])
         names = {t["name"] for t in b.request("tools/list")["result"]["tools"]}
         self.assertEqual(names, {"crew_status", "crew_send", "crew_task", "crew_wait", "crew_read_shared", "crew_share",
                                  "crew_project"})
         self.assertEqual(b.request("ping")["result"], {})
+        self.assertEqual(b.request("resources/list")["result"], {"resources": []})  # Codex asks anyway
+        self.assertEqual(b.request("resources/templates/list")["result"], {"resourceTemplates": []})
         self.assertIn("error", b.request("nope/nothing"))
 
-    def test_it_joins_as_another_ai_and_chats_both_ways(self):
+    def test_a_request_waits_on_it_until_it_replies(self):
         b = self.bridge()
         until(self.online)
-        row = next(p for p in self.poll()["peers"] if p["name"] == "GPT")
-        self.assertEqual(row["client"], "codex")
-        self.assertIn("Sent #", b.tool("crew_send", text="hi from GPT", to="umbyz"))
-        self.assertTrue(any(m["text"] == "hi from GPT" and m["from"] == "GPT" for m in self.poll()["messages"]))
-        sent = self.r.call("POST", "/send", "umbyz", body={"to": "GPT", "kind": "request", "text": "review the gate"})[1]
-        until(lambda: "1 new crew message waiting" in b.tool("crew_read_shared"))  # every crew tool says so
+        self.assertEqual(self.gpt()["client"], "codex")
+        sent = self.ask("review the gate")
+        until(lambda: "1 request waiting on you" in b.tool("crew_read_shared"))  # every crew tool says so
         self.assertLess(self.poll()["reads"].get("GPT", 0), sent["id"])  # its AI hasn't seen it yet: not read
         status = b.tool("crew_status")
-        self.assertIn("New for you (1)", status)
-        self.assertIn("umbyz → GPT (request): review the gate", status)
+        self.assertIn("Waiting on you (1)", status)
+        self.assertIn("umbyz → you (request): review the gate", status)
         self.assertEqual(self.poll()["reads"]["GPT"], sent["id"])  # now it has
-        self.assertNotIn("New for you", b.tool("crew_status"))  # shown once
+        self.assertIn("Waiting on you (1)", b.tool("crew_status"))  # still: a turn cut short loses nothing
+        self.assertIn("Sent #", b.tool("crew_send", text="done, the gate's fine", to="umbyz"))
+        self.assertTrue(self.said("chat"))
+        self.assertNotIn("Waiting on you", b.tool("crew_status"))  # answered
+
+    def test_a_request_sent_before_its_first_connection_waits_on_it(self):
+        self.ask("welcome! take T1 when you're in")
+        b = self.bridge()
+        self.assertIn("welcome! take T1", b.tool("crew_status"))
+
+    def test_a_request_that_needs_no_reply_can_be_set_aside(self):
+        b = self.bridge()
+        sent = self.ask("fyi: the build is green")
+        until(lambda: "Waiting on you (1)" in b.tool("crew_status"))
+        self.assertNotIn("Waiting on you", b.tool("crew_status", answered=[sent["id"]]))
+
+    def test_an_assigned_task_stops_waiting_once_claimed(self):
+        b = self.bridge()
+        until(self.online)
+        self.r.call("POST", "/tasks", "umbyz", body={"action": "add", "title": "Polish the boat panel", "assignee": "GPT"},
+                    remote=False)
+        until(lambda: "is assigned to you" in b.tool("crew_status"))
+        self.assertIn("claimed by GPT", b.tool("crew_task", action="claim", id="1"))
+        self.assertNotIn("Waiting on you", b.tool("crew_status"))
 
     def test_the_task_board_and_shared_docs(self):
         b = self.bridge()
@@ -144,11 +175,20 @@ class BridgeTest(unittest.TestCase):
     def test_crew_wait_returns_as_soon_as_a_reply_lands(self):
         b = self.bridge()
         until(self.online)
-        threading.Timer(0.8, lambda: self.r.call("POST", "/send", "umbyz", body={"to": "GPT", "text": "yes, go"})).start()
+        threading.Timer(0.8, lambda: self.ask("yes, go", kind="chat")).start()
         start = time.time()
         self.assertIn("yes, go", b.tool("crew_wait", timeout_s=20))
         self.assertLess(time.time() - start, 10)
         self.assertIn("No message", b.tool("crew_wait", timeout_s=1))
+
+    def test_working_after_a_crew_tool_but_not_while_waiting(self):
+        b = self.bridge()
+        until(self.online)
+        b.tool("crew_send", text="on it")
+        until(lambda: self.gpt().get("activity") == "working")
+        until(lambda: self.gpt().get("activity") == "idle", timeout=6)  # its tail is short (1 s in this test)
+        b.tool("crew_wait", timeout_s=1.5)
+        self.assertEqual(self.gpt().get("activity"), "idle")  # waiting for a reply isn't working
 
     def test_it_knocks_gets_let_in_and_keeps_its_key(self):
         self.r.call("POST", "/friends/mode", "umbyz", body={"door": "friends"}, remote=False)
@@ -156,36 +196,60 @@ class BridgeTest(unittest.TestCase):
         b = self.bridge(home=home)
         knocks = lambda: self.r.call("POST", "/friends/list", "umbyz", body={}, remote=False)[1].get("knocks", [])
         until(lambda: "GPT" in [k["name"] for k in knocks()])  # on the host's own PC, and still not the host
-        self.assertIn("Knocking", b.tool("crew_status"))
+        status = b.tool("crew_status")
+        self.assertTrue(status.startswith("🚪 Waiting for the host to let you in"), status[:80])  # first, not buried
+        self.assertIn('presses Let in next to "GPT"', status)
         self.r.call("POST", "/friends/letin", "umbyz", body={"name": "GPT"}, remote=False)
         until(self.online)
         until(lambda: os.path.exists(os.path.join(home, "keys.json")))
         b.close(keep_home=True)
         again = self.bridge(home=home, CREW_KEY="no-longer-needed")  # its own key from now on
         until(self.online)
-        self.assertNotIn("Knocking", again.tool("crew_status"))
+        self.assertNotIn("Waiting for the host", again.tool("crew_status"))
 
     def test_messages_from_while_the_app_was_closed_are_new_next_time(self):
         home = tempfile.mkdtemp(prefix="crew-mcp-test-")
         b = self.bridge(home=home)
         until(self.online)
-        self.r.call("POST", "/send", "umbyz", body={"to": "GPT", "text": "first"})
+        self.ask("first", kind="chat")
         until(lambda: "first" in b.tool("crew_status"))
         b.close(keep_home=True)
         until(lambda: not self.online())
-        self.r.call("POST", "/send", "umbyz", body={"to": "GPT", "kind": "request", "text": "while you were away"})
+        self.ask("while you were away", kind="chat")
         again = self.bridge(home=home)
-        until(self.online)
         status = again.tool("crew_status")
-        self.assertIn("New for you (1)", status)
+        self.assertIn("New messages (1)", status)
         self.assertIn("while you were away", status)
+
+    def test_copies_of_the_bridge_share_one_presence(self):
+        home = tempfile.mkdtemp(prefix="crew-mcp-test-")
+        main = self.bridge(home=home)
+        until(self.online)
+        turn = self.bridge(home=home)  # the short-lived copy an app opens around a turn
+        turn.tool("crew_status")
+        turn.close(keep_home=True)
+        time.sleep(1)
+        self.assertEqual(self.said("leave"), [])  # the other copy is still there: no goodbye
+        self.assertTrue(self.online())
+        main.close()
+        self.assertEqual(len(self.said("leave")), 1)  # the last copy says it
+        self.assertFalse(self.online())
+
+    def test_a_copy_only_opened_to_read_the_tools_never_joins(self):
+        b = self.bridge(CREW_MCP_GRACE="30")
+        b.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+        b.request("tools/list")
+        b.close()
+        time.sleep(0.5)
+        self.assertEqual(self.gpt(), {})  # never showed up, so never left either
+        self.assertEqual(self.said("join") + self.said("leave"), [])
 
     def test_it_says_goodbye_when_the_app_closes(self):
         b = self.bridge()
         until(self.online)
         b.close()
         self.assertFalse(self.online())  # at once, not a minute later
-        self.assertTrue(any(m["kind"] == "leave" and m["from"] == "GPT" for m in self.poll()["messages"]))
+        self.assertEqual(len(self.said("leave")), 1)
 
     def test_without_settings_it_says_how_to_set_it_up(self):
         b = Bridge(None, name="")
