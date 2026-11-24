@@ -76,6 +76,27 @@ def codex_home_with_a_chat(folder, crew=True, quiet=True):
     return rollout
 
 
+def token_count(*windows, ago=0, plan="plus"):
+    """The record Codex notes in a chat's file after each turn, with its rate limits: (% used, window in minutes,
+    seconds until it resets) for each window. Made-up numbers."""
+    def window(w):
+        return {"used_percent": float(w[0]), "window_minutes": w[1], "resets_at": int(time.time() + w[2])}
+    limits = {"limit_id": "codex", "limit_name": None, "primary": window(windows[0]),
+              "secondary": window(windows[1]) if len(windows) > 1 else None, "credits": None, "plan_type": plan}
+    return {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - ago)), "type": "event_msg",
+            "payload": {"type": "token_count", "info": {"total_token_usage": {"total_tokens": 1234}},
+                        "rate_limits": limits}}
+
+
+def codex_home_with_usage(folder, *records):
+    """A stand-in for Codex's session files: one chat in its day folder, whose turns noted these records."""
+    day = os.path.join(folder, "sessions", "2026", "11", "24")
+    os.makedirs(day)
+    with open(os.path.join(day, "rollout-2026-11-24T09-30-00-made-up-thread.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "session_meta", "payload": {"id": "made-up-thread"}}) + "\n")
+        f.writelines(json.dumps(r) + "\n" for r in records)
+
+
 def until(check, timeout=8.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -761,6 +782,58 @@ class BridgeTest(unittest.TestCase):
         b = Bridge(None, name="")
         self.bridges.append(b)
         self.assertIn("CREW_RELAY", b.tool("crew_status"))
+
+    # -- what the crew sees of it: who may wake it, and how much of Codex's usage limits is used
+
+    def test_the_crew_hears_who_may_wake_it(self):
+        folder = tempfile.mkdtemp(prefix="crew-mcp-wake-")
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.waker(mode="leader, Umbyz")
+        self.bridge(name="Off")  # off unless its person turns it on
+        self.bridge(name="Lost", CREW_WAKE="project", CREW_CODEX=os.path.join(folder, "no-such-codex.exe"))
+        wake = lambda: {p["name"]: p.get("wake") for p in self.poll()["peers"] if p["name"] in ("GPT", "Off", "Lost")}
+        until(lambda: len(wake()) == 3)
+        self.assertEqual(wake(), {"GPT": "leader, Umbyz", "Off": "off",
+                                  "Lost": "off: Codex's command line isn't found"})
+
+    def test_codexs_usage_shows_in_the_crew_like_a_claudes(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        codex_home_with_usage(codex, token_count((61, 300, 3600), (19, 10080, 86400), ago=600),
+                              token_count((35, 300, 3000), (20, 10080, 86000)))  # the newest one counts
+        self.bridge(CREW_CODEX_HOME=codex)
+        until(lambda: self.gpt().get("usage") is not None)
+        self.assertEqual((self.gpt()["usage"], self.gpt()["usageDetail"]), (35, "35% session · 20% week"))
+
+    def test_a_usage_window_past_its_reset_time_counts_0(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        codex_home_with_usage(codex, token_count((90, 300, -60), (20, 10080, 86400)))  # its session reset a minute ago
+        self.bridge(CREW_CODEX_HOME=codex)
+        until(lambda: self.gpt().get("usage") is not None)
+        self.assertEqual((self.gpt()["usage"], self.gpt()["usageDetail"]), (20, "0% session · 20% week"))
+
+    def test_a_free_plans_month_window_from_codexs_list_of_chats(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        rollout = codex_home_with_a_chat(codex)  # a chat in Codex's list only, not in a day folder
+        with open(rollout, "a", encoding="utf-8") as f:
+            f.write(json.dumps(token_count((12, 43200, 20 * 86400), plan="free")) + "\n")  # one window, a month long
+        self.bridge(CREW_CODEX_HOME=codex)
+        until(lambda: self.gpt().get("usage") is not None)
+        self.assertEqual((self.gpt()["usage"], self.gpt()["usageDetail"]), (12, "12% month"))
+
+    def test_no_usage_without_codexs_files_or_for_another_app(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        codex_home_with_usage(codex, token_count((35, 300, 3000)))
+        self.bridge()  # its Codex home has nothing in it
+        self.bridge(name="Gem", CREW_CLIENT="gemini", CREW_CODEX_HOME=codex)  # Codex's limits aren't another app's
+        usage = lambda: {p["name"]: (p.get("usage"), p.get("usageDetail")) for p in self.poll()["peers"]
+                         if p["name"] in ("GPT", "Gem") and p.get("online")}
+        until(lambda: len(usage()) == 2)
+        time.sleep(1)  # a few check-ins later
+        self.assertEqual(usage(), {"GPT": (None, None), "Gem": (None, None)})
 
 
 if __name__ == "__main__":

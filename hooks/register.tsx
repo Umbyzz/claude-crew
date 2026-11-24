@@ -5,7 +5,7 @@ import type { CrewKnock, CrewMessage, CrewSnapshot, CrewTask, CrewVote } from '.
 
 const PANE = 'crew'
 // Kept in step with plugin.json and server/relay.py by scripts/release.ps1.
-const VERSION = '1.27.0'
+const VERSION = '1.28.0'
 const LATEST_URL = 'https://raw.githubusercontent.com/Umbyzz/claude-crew/main/.claude-plugin/plugin.json'
 const UPDATE_COMMANDS =
   'claude plugin marketplace update claude-crew\nclaude plugin update crew@claude-crew\n# then restart Claude'
@@ -1038,13 +1038,12 @@ async function checkApps($: EngineInterface) {
   } catch {}
 }
 
-// The Crew tab's short forms: "58% session · 39% week" reads "58S%-39W% usage", and tools read "🔌 2 MCPs".
-// Claude's own instructions keep the long, clear wording.
+// The Crew tab's short forms: "58% session · 39% week" reads "58S%-39W% usage" (a 30-day window, as on Codex's free
+// plan, is "12M%"), and tools read "🔌 2 MCPs". Claude's own instructions keep the long, clear wording.
 
 function shortUsage(p: { usage?: number | null; usageDetail?: string | null }) {
-  const parts = [...String(p.usageDetail ?? '').matchAll(/(\d+)% (session|week|spend limit)/g)].map(
-    m => `${m[1]}${m[2] === 'session' ? 'S' : m[2] === 'week' ? 'W' : '$'}%`,
-  )
+  const short: Record<string, string> = { session: 'S', week: 'W', month: 'M', 'spend limit': '$' }
+  const parts = [...String(p.usageDetail ?? '').matchAll(/(\d+)% (session|week|month|spend limit)/g)].map(m => `${m[1]}${short[m[2]]}%`)
   return `${parts.length ? parts.join('-') : `${p.usage}%`} usage`
 }
 
@@ -1148,6 +1147,59 @@ function fileLock($: EngineInterface, e: any) {
   }
   void relay($, 'POST', '/touch', { path: rel }).catch(() => {})
   return null
+}
+
+// One Roblox Studio shared on one PC (a Claude's and an AI's on crew's bridge, say): while one has it in Play mode, the
+// other's edits to it fail ("Edit datamodel is not available in Play mode"). A Claude about to start Play while someone
+// else on this PC is busy is stopped once and told who; one about to change the place while someone else on this PC
+// has Play on is stopped once per that Play. Trying again goes through. Plugin-side: no tokens unless it stops a call.
+// The Studio tools that change the place (execute_luau in a running game, Client or Server, is playtesting instead):
+const STUDIO_CHANGE = /^mcp__.*roblox.*__(multi_edit|execute_luau|insert_asset)$/i
+const warnedPlay = new Map<string, number>() // a teammate on this PC -> when a Play start was last stopped for them
+const warnedPlaying = new Set<string>() // teammates on this PC whose current Play already stopped an edit
+
+function onThisPc(p: CrewSnapshot['peers'][number]) {
+  return p.client ? `${p.name} (an AI on crew's bridge)` : `${p.name}'s Claude`
+}
+
+function andList(items: string[]) {
+  return items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}` : (items[0] ?? '')
+}
+
+async function sharedStudio($: EngineInterface, e: any) {
+  const tool = String(e.tool)
+  const starting = PLAY_TOOL.test(tool) && e.is_start === true
+  const changing = STUDIO_CHANGE.test(tool) && !/^(client|server)$/i.test(String(e.datamodel_type ?? ''))
+  if (!joined || (!starting && !changing)) return null
+  const s = await read($, snapshot)
+  if (!s.connected) return null // who's busy comes from the relay: stale while it can't be reached
+  const now = Date.now()
+  const mates = s.peers.filter(p => p.samePC && p.online && p.name !== cfg.me)
+  if (starting) {
+    const busy = mates.filter(p => p.playing || p.activity === 'working' || p.activity === 'thinking' || p.activity === 'typing')
+    if (!busy.some(p => now - (warnedPlay.get(p.name) ?? 0) >= 10 * 60 * 1000)) return null
+    for (const p of busy) warnedPlay.set(p.name, now)
+    const names = andList(busy.map(p => p.name))
+    $.ui.toast(`crew: ${names} ${busy.length > 1 ? 'are' : 'is'} busy on this PC, so your Claude checks with them before starting Play`, { timeoutMs: 8000 })
+    return {
+      deny:
+        `crew Play check: on this PC, ${andList(busy.map(p => `${onThisPc(p)} ${p.playing ? `has ${p.playing} in Play mode already` : 'is working right now'}`))}. ` +
+        `If they're editing this same Roblox Studio, your Play makes their edits fail until it stops. Tell ${names} first ` +
+        `(crew_send "PLAY ON", and "PLAY OFF" once you've stopped it), or wait until they're done. When it's fine (you told ` +
+        `them, or it's another Studio), call start_stop_play again: the second try goes through.`,
+    }
+  }
+  const playing = mates.filter(p => p.playing && /roblox/i.test(p.playing) && !warnedPlaying.has(p.name))
+  if (!playing.length) return null
+  for (const p of playing) warnedPlaying.add(p.name)
+  const names = andList(playing.map(p => p.name))
+  $.ui.toast(`crew: ${names} ${playing.length > 1 ? 'have' : 'has'} Roblox Studio in Play mode on this PC, so your Claude checks with them before editing it`, { timeoutMs: 8000 })
+  return {
+    deny:
+      `crew Play check: on this PC, ${andList(playing.map(p => `${onThisPc(p)} has ${p.playing} in Play mode`))}, so edits to ` +
+      `that Studio fail until they stop. Wait for their "PLAY OFF" (crew_status stops showing ▶ for them), or ask ${names} ` +
+      `with crew_send when they'll stop. If yours is another Studio, or they've stopped, make the call again: the second try goes through.`,
+  }
 }
 
 // -- shared folders: one member shares a folder of the project, and every teammate's plugin mirrors it into the
@@ -1469,12 +1521,51 @@ async function addRule($: EngineInterface, value: string) {
   }
 }
 
+// A request can wake an AI on crew's bridge, as its person's CREW_WAKE allows (the bridge tells the relay). Its rules:
+// null when an older bridge doesn't say, none when nothing wakes it ("off", or "off: <why>"), else leader, project,
+// anyone and names, read the way the bridge reads them.
+const WAKE_MODES = ['leader', 'project', 'anyone']
+
+function wakeRules(wake: string | null | undefined) {
+  if (wake == null || !wake.trim()) return null
+  if (/^\s*off\b/i.test(wake)) return []
+  return wake
+    .split(/[,;]+/)
+    .map(w => w.trim().replace(/^["']+|["']+$/g, ''))
+    .filter(w => w && w.toLowerCase() !== 'off')
+    .map(w => (WAKE_MODES.includes(w.toLowerCase()) ? w.toLowerCase() : w))
+}
+
+// "the leader or Umbyz"
+function wakeWho(rules: string[]) {
+  const words: Record<string, string> = { leader: 'the leader', project: 'anyone in its project', anyone: 'anyone' }
+  return rules.map(r => words[r] ?? r).join(' or ')
+}
+
+// Whether a request from this Claude, sent in the AI's own project, wakes it. As the bridge decides: the leader is the
+// project's leader or acting leader, and names match whatever their case.
+function wakesFor(rules: string[], s: CrewSnapshot) {
+  const leading = s.leader === cfg.me || s.acting === cfg.me
+  return rules.some(
+    r => r === 'anyone' || r === 'project' || (r === 'leader' && leading) || (!WAKE_MODES.includes(r) && r.toLowerCase() === cfg.me.toLowerCase()),
+  )
+}
+
+// What the Claudes are told starts that AI (a request from another project never wakes it).
+function aiWakes(p: CrewSnapshot['peers'][number]) {
+  const rules = wakeRules(p.wake)
+  if (!rules) return 'nothing starts it by itself'
+  if (!rules.length) return 'nothing starts it by itself, its person prompts it'
+  const where = rules.every(r => r === 'project') ? '' : ' (in its own project)' // "anyone in its project" says it already
+  return `a request wakes it if it's from ${wakeWho(rules)}${where}, and it answers with a 🌙 "on it" chat`
+}
+
 // What every Claude's instructions get on top of its role: who runs which model, and the project's house rules.
 function crewExtras(s: CrewSnapshot) {
   let text = ''
   const team = s.peers.filter(p => p.online || p.name === cfg.me)
   const about = (p: CrewSnapshot['peers'][number]) =>
-    [p.client ? `another AI via ${p.client}, not a Claude: nothing starts it by itself` : '',
+    [p.client ? `another AI via ${p.client}, not a Claude: ${aiWakes(p)}` : '',
      p.model ? modelLabel(p.model) : 'model unknown', p.usageDetail ? `usage ${p.usageDetail}` : p.usage != null ? `${p.usage}% of usage limit used` : '',
      p.mcp ? `connected to ${p.mcp}` : ''].filter(Boolean).join(', ')
   if (team.length > 1 && team.some(p => p.model || p.usage != null || p.mcp)) {
@@ -1822,6 +1913,8 @@ async function pollOnce($: EngineInterface) {
       $.ui.toast("crew: you're in! Your personal key for this crew is saved; nothing else to do.", { timeoutMs: 10000 })
     }
     othersEditing = Array.isArray(data.editing) ? data.editing : [] // absent from an older relay
+    // a teammate on this PC whose Play has ended: their next Play stops an edit once again (sharedStudio)
+    for (const n of warnedPlaying) if (!(data.peers ?? []).some((p: any) => p.name === n && p.online && p.playing)) warnedPlaying.delete(n)
     if (isHosting() && Date.now() - friendsLoadedAt > 10000) {
       friendsLoadedAt = Date.now()
       void loadFriends($) // keeps "seen" and "connected now" current in the Friends card
@@ -3266,6 +3359,17 @@ function projectWords(project: string) {
   return project === '(private)' ? "a project you can't see" : `the project '${project}'`
 }
 
+// A request to an AI on crew's bridge in this project: whether it wakes it, so nobody waits on an AI that's asleep.
+// Nothing when its bridge doesn't say.
+function wakeHeadsUp(s: CrewSnapshot, to: string) {
+  const p = s.peers.find(x => x.name === to)
+  const rules = p?.client && p.online ? wakeRules(p.wake) : null
+  if (!rules) return ''
+  if (!rules.length) return `\n(Heads-up: nothing wakes ${to} by itself: it sees this when its person prompts it.)`
+  if (wakesFor(rules, s)) return `\n(${to} gets woken for it: expect its 🌙 "on it" chat shortly.)`
+  return `\n(Heads-up: this won't wake ${to} by itself: only ${wakeWho(rules)} can. It sees it when its person prompts it.)`
+}
+
 // A task handed to someone who can't see this board right now: the reply says so, so nobody waits on a teammate who
 // never got it (an AI on crew's bridge once sat in another project while its tasks piled up here).
 async function assignHeadsUp($: EngineInterface, e: any, t: CrewTask) {
@@ -3790,7 +3894,9 @@ export const register: Register = (on, options) => {
   // Registered before the crew tools' own hooks, so it wraps them too. Studio's Play and Stop are noted once they ran.
   on('tool.call', async ($, e: any, next) => {
     noteMcp(String(e.tool))
-    const locked = fileLock($, e) // subagents' edits count too
+    // subagents' edits and Plays count too; a call stopped for a shared Studio isn't reported as an edit, and a check
+    // that fails never holds up the tool
+    const locked = (await sharedStudio($, e).catch(() => null)) ?? fileLock($, e)
     if (locked) return locked
     if (e.agentId) {
       const r = await next(e)
@@ -3873,13 +3979,16 @@ export const register: Register = (on, options) => {
     }
     await poll($)
     // someone working in another project has that one's chat and board in front of them, not this one's
-    const away = awayIn(await read($, snapshot), String(msg.to ?? ''))
+    const s = await read($, snapshot)
+    const away = awayIn(s, String(msg.to ?? ''))
     return ok(
       `Sent #${msg.id} to ${msg.to}.` +
         (away
           ? `\n(Heads-up: ${msg.to} is in ${projectWords(away)} right now: it reaches them there` +
             (body.kind === 'request' ? ", but a request from another project doesn't start their work by itself.)" : '.)')
-          : ''),
+          : body.kind === 'request'
+            ? wakeHeadsUp(s, String(msg.to ?? ''))
+            : ''),
     )
   }).catch(failed)
 
@@ -3911,7 +4020,7 @@ export const register: Register = (on, options) => {
       // from their last check-in: once they're offline it may be long over
       (p.online && p.playing ? ` · ▶ playtesting in ${p.playing}: edits to it fail until they stop` : '') +
       (p.version ? ` · crew ${p.version}${versionMark(p.version)}` : '') +
-      (p.client ? ` · another AI via ${p.client}: it sees crew messages only when it checks, and nothing starts it by itself` : '') +
+      (p.client ? ` · another AI via ${p.client}: it sees crew messages only when it checks, ${wakeRules(p.wake)?.length ? 'but' : 'and'} ${aiWakes(p)}` : '') +
       (p.model ? ` · ${modelLabel(p.model)}` : '') +
       (p.usageDetail ? ` · usage ${p.usageDetail}` : p.usage != null ? ` · ${p.usage}% usage used` : '') +
       (p.mcp ? ` · connected to ${p.mcp}` : '') +
@@ -5356,6 +5465,7 @@ export const register: Register = (on, options) => {
                     {p.acting ? ' ☆ acting leader' : ''}
                     {p.name === me ? ' (you)' : ''}
                     {p.client ? `  · 🤖 ${p.client}` : ''}
+                    {p.client && wakeRules(p.wake)?.length ? '  · wakes' : ''}
                     {activityWord(p) ? `  · ${activityWord(p)}` : ''}
                     {p.online && p.project && p.project !== projectName ? `  · in ${p.project}` : ''}
                     {p.online && p.playing ? '  · ▶ playtesting' : ''}

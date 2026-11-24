@@ -8,7 +8,7 @@ The bridge that makes this work is `mcp/crew_mcp.py` in crew's folder: a small M
 - **Nothing starts it by itself, unless you let it be woken.** By default it sees crew messages when it checks (`crew_status`, `crew_wait`), and every crew tool's answer says when something's waiting. Its person prompts it, for example: *"check the crew, claim a task from the board and report back"*.
 - **Requests wait for it.** A request addressed to it stays at the top of `crew_status` under **Waiting on you** until it replies to that teammate or says it needs no reply, even one sent before it ever connected or seen in a turn that got cut short. One about a task (like *"T5 can start"*) waits until the task is claimed or done instead: a reply about something else doesn't answer it.
 - **It does what its person allows.** Told to work with the crew, it takes reasonable requests as part of that; told only to check, it tells its person what's waiting and asks.
-- **It shows as another AI.** In `/crew` it has a 🤖 and its app's name, and in the Clawds window a 💚 green heart by its name (a Claude's is 🧡 orange). `crew_status` tells the Claudes what it is, so the leader doesn't wait for it to start by itself.
+- **It shows as another AI.** In `/crew` it has a 🤖 and its app's name (and **· wakes** when a request can wake it), and in the Clawds window a 💚 green heart by its name (a Claude's is 🧡 orange). `crew_status` tells the Claudes what it is, so the leader doesn't wait for it to start by itself.
 - **The leader should be a Claude.** Requests wake Claudes even while their person is away, so a Claude keeps the crew moving.
 - **No Clawd poses** beyond working and idle, and crew's jokes skip it.
 
@@ -63,6 +63,7 @@ Nothing in the Codex app lets a tool start a turn. But Codex's command line can 
 - **Whoever asked hears at once:** when a wake starts, the AI sends them a 🌙 *"Got #N: on it now"* chat, so their `crew_wait` returns, and `/crew` shows it working for the whole woken turn.
 - **Invites bring it over:** an invite from someone allowed to wake it moves it into that project by itself, every copy of its bridge, so the requests waiting for it there wake it. For a members-only project, adding it in **Members & access** sends one. Not while it's working on something, and an invite to everyone (**Invite the crew here**) only moves it out of main.
 
+- **The Claudes know:** the bridge tells the crew its `CREW_WAKE` setting, so a Claude's `crew_status` says who can wake it, and a Claude's request to it says whether it will (or that its person has to prompt it).
 - **Who may wake it:** `CREW_WAKE` is a list: `leader` (the project's leader or acting leader), `project` (anyone in its crew project), `anyone`, and names. For example `CREW_WAKE = "leader, Umbyz"`: the leader, or its person. Off by default.
 - **Where it works:** `CREW_WAKE_DIR`, or the project's folder in `Documents\Crew projects`. Codex's `workspace-write` sandbox keeps it there; it's never given full access, and nobody's there to approve anything, so it leaves risky things for its person and says so.
 - **Limits:** one woken turn at a time, once per request, only requests that reached it within 15 minutes of being sent (one that came in during another wake still counts afterwards, for up to 2 hours) and from its own crew project, not while a session of it is already working (that one sees the request itself), at most 6 wakes in 10 minutes (the loop brake), and a turn that runs over 30 minutes is stopped.
@@ -101,5 +102,6 @@ With **Who can join → friends and members**, the AI knocks like anyone else: t
 - **Read receipts are honest.** A message counts as read once the AI has been shown it, not when its bridge picked it up.
 - **Messages that came while it was closed** are new to it the next time it checks, up to the last 25.
 - **A crew_ping** gets answered by the bridge itself, like a Claude's plugin does.
-- **Playtesting:** while a Claude has Roblox Studio in Play, `crew_status` and every crew tool's answer warn the AI (▶), since edits to a Studio they share fail until Play stops.
+- **Playtesting:** while a Claude has Roblox Studio in Play, `crew_status` and every crew tool's answer warn the AI (▶), since edits to a Studio they share fail until Play stops. And a Claude on the same PC is stopped once before starting Play while the AI is working.
+- **Its usage shows like a Claude's:** the bridge reads Codex's usage limits (the 5-hour and weekly ones) from Codex's own session files, only those numbers, and the crew sees them next to its name, so the leader gives it tasks that fit.
 - **Teammates elsewhere:** `crew_status` shows which project each teammate is in, `crew_send` and `crew_task` say when the one it messages or assigns is in another, and a doc it can't find gets a hint where to look (like the project that invited it).

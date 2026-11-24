@@ -41,6 +41,8 @@ export type CrewPeer = {
   mcp?: string | null // the MCP servers their Claude is connected to ("Roblox Studio, Unity")
   playing?: string | null // while that teammate's Claude has an app (Roblox Studio) in Play mode: which one
   client?: string | null // another AI app (Codex, Gemini…) in the crew through crew's MCP bridge, not a Claude
+  wake?: string | null // that AI's CREW_WAKE: who may wake it with a request ("off…": nobody; null: its bridge doesn't say)
+  samePC?: boolean // connects from this PC (an AI's bridge sharing your Roblox Studio, say); never yourself
   friend?: boolean // on the host's friends list (a personal key)
   member?: boolean // let in by the host after knocking (a personal key, but not a friend)
   ip?: string // where they connect from (only the host sees it)

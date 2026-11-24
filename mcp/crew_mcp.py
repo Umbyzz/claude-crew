@@ -19,6 +19,8 @@ Settings, as environment variables in the AI app's MCP config:
   CREW_WAKE_DIR the folder a woken turn works in (default: Documents/Crew projects/<project>)
   CREW_WAKE_INTO where a woken turn runs: chat (default: its person's own Codex chat with it, the latest one that used
                 the crew tools, so the turn shows up in the app) or session (a separate crew session, hidden in the app)
+The crew sees who may wake it (or that waking is off), and for Codex how much of its usage limits is used, like a
+Claude's: read from the rate-limit fields Codex notes in its chats' files. Nothing else in those files leaves this PC.
 Kept in ~/.claude/crew-mcp: keys.json (a personal key the host handed over), seen.json (what the AI has seen),
 answered.json (requests it said need no reply) and live/ (the copies of the bridge running right now: an app may open
 several, and they share one presence in the crew).
@@ -28,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -37,7 +40,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.27.0"
+VERSION = "1.28.0"
 POLL_SECONDS = float(os.environ.get("CREW_MCP_POLL") or 4)  # how often it checks in (the tests go faster)
 WORKING_SECONDS = float(os.environ.get("CREW_MCP_BUSY") or 20)  # after a crew tool call (not crew_wait): working
 GRACE_SECONDS = float(os.environ.get("CREW_MCP_GRACE") or 15)  # a copy only opened to read the tools never joins
@@ -62,6 +65,9 @@ CHAT_QUIET = float(os.environ.get("CREW_MCP_QUIET") or 0)
 OWN_TAIL = float(os.environ.get("CREW_MCP_OWN_TAIL") or 10)  # what Codex writes into the chat this soon after a woken turn ends is still that turn's
 APP_START = float(os.environ.get("CREW_MCP_APP_START") or 180)  # the Codex app should start a queued turn within this
 CODEX_HOME = os.environ.get("CREW_CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+CODEX_CHECK = 300  # whether Codex's command line is there is looked at again this often (not on every check-in)
+USAGE_SECONDS, USAGE_TAIL = 60, 512 * 1024  # Codex's usage is read at most this often, from the end of its chats' files
+WINDOWS = {300: "session", 10080: "week", 43200: "month"}  # Codex's limit windows (minutes), as the crew says them
 
 
 class Unreachable(Exception):
@@ -128,6 +134,102 @@ def codex_command():
     except OSError:
         pass
     return ["codex"]
+
+
+def codex_found(cmd):
+    """Whether Codex's command line, as codex_command() gives it, is there to run: that file (for the tests' stand-in,
+    its script), or a bare name on PATH the way Windows looks for one (codex.exe: a codex.cmd there wouldn't run)."""
+    path = cmd[-1]
+    if len(cmd) > 1 or os.path.dirname(path):
+        return os.path.isfile(path)
+    if sys.platform == "win32" and not os.path.splitext(path)[1]:
+        path += ".exe"
+    return bool(shutil.which(path))
+
+
+def codex_db():
+    """Codex's own list of chats: its newest state_*.sqlite, or None."""
+    dbs = sorted(glob.glob(os.path.join(glob.escape(CODEX_HOME), "state_*.sqlite")),
+                 key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0))
+    return dbs[-1] if dbs else None
+
+
+def codex_rollouts(n=3):
+    """The chats' files Codex wrote to last, newest first: [(when it changed, path)]. Any chat counts, exec ones too.
+    From its list of chats (which knows an old chat that's in use again) and its latest days' folders."""
+    paths = set()
+    try:
+        db = codex_db()
+        if db:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
+            try:
+                paths.update(str(p) for (p,) in con.execute(
+                    "select rollout_path from threads where rollout_path != '' order by updated_at desc limit ?", (n,)))
+            finally:
+                con.close()
+    except (sqlite3.Error, OSError, ValueError):
+        pass
+    for day in sorted(glob.glob(os.path.join(glob.escape(CODEX_HOME), "sessions", "*", "*", "*")), reverse=True)[:n]:
+        paths.update(glob.glob(os.path.join(glob.escape(day), "rollout-*.jsonl")))  # sessions/YYYY/MM/DD
+    dated = []
+    for path in paths:
+        try:
+            dated.append((os.path.getmtime(path), path))
+        except (OSError, ValueError):
+            pass
+    return sorted(dated, reverse=True)[:n]
+
+
+def limit_windows(limits, now):
+    """[(window in minutes, % used)] from one of Codex's rate_limits. A window past its reset time has reset: 0."""
+    out = []
+    for w in (limits.get("primary"), limits.get("secondary")) if isinstance(limits, dict) else ():
+        try:
+            used, minutes, resets = (float(w["used_percent"]), float(w.get("window_minutes") or 0),
+                                     float(w.get("resets_at") or 0))
+        except (TypeError, KeyError, ValueError, AttributeError):
+            continue  # no such window (a free plan has only one)
+        out.append((minutes, 0.0 if 0 < resets <= now else used))
+    return out
+
+
+def codex_usage():
+    """Codex's usage, the way the crew shows a Claude's: ("35", "35% session · 20% week"), the most used of any window
+    as a whole percent and each window, or None while nothing's known. Codex notes its rate limits after each turn, in a
+    token_count record in that chat's file: the newest one at the end of the files it wrote to last counts (the limits
+    are the account's, whichever chat). Only their rate_limits part is used: nothing else from those files leaves."""
+    now, best = time.time(), None
+    for changed, path in codex_rollouts():
+        try:
+            with open(path, "rb") as f:
+                f.seek(max(0, os.fstat(f.fileno()).st_size - USAGE_TAIL))
+                tail = f.read(USAGE_TAIL)
+        except OSError:
+            continue
+        for n, line in enumerate(tail.split(b"\n")):
+            if b"rate_limits" not in line or b"token_count" not in line:
+                continue  # the chat itself isn't even parsed
+            try:
+                r = json.loads(line)
+                if r["type"] != "event_msg" or r["payload"]["type"] != "token_count":
+                    continue
+                limits = r["payload"]["rate_limits"]
+                windows = limit_windows(limits, now)
+                # the newest record, Codex's own limit before another one (a premium model's, say)
+                key = (limits.get("limit_id") in (None, "codex"), str(r.get("timestamp") or ""), changed, n)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                continue
+            if windows and (best is None or key > best[0]):
+                best = (key, windows)
+    if not best:
+        return None
+    detail = ""
+    for minutes, used in sorted(best[1], key=lambda w: w[0] or float("inf")):  # session, week, month
+        part = f"{round(used)}% " + (WINDOWS.get(minutes) or (f"{round(minutes / 60, 1):g}h" if minutes else "limit"))
+        if len(f"{detail} · {part}") >= 60:
+            break  # the crew keeps 60 characters of it
+        detail = f"{detail} · {part}" if detail else part
+    return str(round(max(used for _, used in best[1]))), detail
 
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -215,6 +317,9 @@ class Crew:
         self.project = clean_project(project)
         self.client = clean_project(client or "codex")[:20]
         self.model = (model or "").strip()[:60]
+        self.usage, self.usage_at = None, 0.0  # Codex's usage for the crew, and when it was last read
+        self.usage_lock = threading.Lock()  # held while it's being read, in the background
+        self.codex_at, self.codex_there = 0.0, False  # whether Codex's command line is there, and when that was seen
         if not key and os.path.exists(HOST_KEY):  # on the host's own PC: the relay's own key file
             with open(HOST_KEY, encoding="utf-8") as f:
                 key = f.read().strip()
@@ -299,13 +404,51 @@ class Crew:
             pass
 
     # -------------------------------------------------------------------------------------------- the relay
+    def wake_header(self):
+        """Who may wake this AI with a request, for the crew (X-Crew-Wake), so a teammate's Claude can say truthfully
+        whether a request will. Whether Codex's command line is there: checked once at start, then every few minutes."""
+        if self.wake_mode == "off":
+            return "off"
+        if time.time() - self.codex_at > CODEX_CHECK:
+            try:
+                there = codex_found(codex_command())
+            except (OSError, ValueError):
+                there = False
+            self.codex_at, self.codex_there = time.time(), there
+        if not self.codex_there:
+            return "off: Codex's command line isn't found"
+        # as its person wrote them. A header carries latin-1 only: a name in other letters gets ?s, rather than stopping
+        # every check-in
+        return ", ".join(self.wake_rules).encode("latin-1", "replace").decode("latin-1")
+
+    def usage_now(self):
+        """Codex's usage for the crew, or None: read in the background at most once a minute, so a slow or missing
+        file never holds up a check-in. Only for Codex: another app's AI isn't on Codex's limits."""
+        due = time.time() - self.usage_at >= USAGE_SECONDS
+        if due and "codex" in self.client.lower() and self.usage_lock.acquire(blocking=False):
+            self.usage_at = time.time()
+            threading.Thread(target=self.read_usage, daemon=True).start()
+        return self.usage
+
+    def read_usage(self):
+        try:
+            self.usage = codex_usage()
+        except Exception:  # a file it can't make sense of: the last reading stands
+            pass
+        finally:
+            self.usage_lock.release()
+
     def call(self, method, path, body=None, timeout=15):
         busy = max([self.busy_until] + self.siblings())
         headers = {"Content-Type": "application/json", "X-Crew-Key": self.key, "X-Crew-Name": self.name,
                    "X-Crew-Project": self.project, "X-Crew-Version": VERSION, "X-Crew-Client": self.client,
-                   "X-Crew-Activity": "working" if self.waking or time.time() < busy else "idle"}
+                   "X-Crew-Activity": "working" if self.waking or time.time() < busy else "idle",
+                   "X-Crew-Wake": self.wake_header()}
         if self.model:
             headers["X-Crew-Model"] = self.model
+        usage = self.usage_now()
+        if usage:  # like a Claude's: the most used of any window, and each one; left out while nothing's known
+            headers["X-Crew-Usage"], headers["X-Crew-Usage-Detail"] = usage
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
@@ -466,11 +609,10 @@ class Crew:
         """Its person's chats in the Codex app (not archived), newest first: [(id, rollout file)], or None when
         Codex's list can't be read."""
         try:
-            dbs = sorted(glob.glob(os.path.join(CODEX_HOME, "state_*.sqlite")),
-                         key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0))
-            if not dbs:
+            db = codex_db()
+            if not db:
                 return None
-            con = sqlite3.connect(f"file:{dbs[-1]}?mode=ro", uri=True, timeout=3)
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
             try:
                 sql = ("select id, rollout_path from threads where archived = 0 and source = 'vscode' "
                        "and originator != 'codex_exec'")

@@ -3516,3 +3516,207 @@ test('crew_send to a teammate in another project says where they are', { options
   expect(await send({ text: 'standup in 5' })).toBe('Sent #7 to all.')
 })
 
+// -- an AI on crew's bridge that a request can wake (the relay's peers' wake: its CREW_WAKE as its bridge says), and
+// one Roblox Studio shared on one PC (the relay's samePC): a one-time stop before Play, and before an edit while
+// someone else on this PC plays
+
+// alice is this Claude. GPT, Pal, Gem and Old are AIs on crew's bridge: the leader or Umbyz may wake GPT, anyone in
+// its project may wake Pal, nothing wakes Gem, and Old's bridge is too old to say.
+const AI_PEERS = [
+  { name: 'alice', online: true, lastSeen: 0, activity: 'idle', leader: true, project: 'main', model: 'claude-opus-5-5' },
+  { name: 'GPT', online: true, lastSeen: 0, activity: 'idle', leader: false, project: 'main', client: 'codex', model: 'gpt-5.5', wake: 'leader, Umbyz' },
+  { name: 'Pal', online: true, lastSeen: 0, activity: 'idle', leader: false, project: 'main', client: 'codex', model: 'gpt-5.5', wake: 'project' },
+  { name: 'Gem', online: true, lastSeen: 0, activity: 'idle', leader: false, project: 'main', client: 'gemini', model: 'gemini-3', wake: "off: Gemini's command line isn't found" },
+  { name: 'Old', online: true, lastSeen: 0, activity: 'idle', leader: false, project: 'main', client: 'codex', model: 'gpt-5', wake: null },
+]
+
+const mate = (name: string, more: Record<string, unknown> = {}) => ({ name, online: true, lastSeen: 0, activity: 'idle', leader: false, project: 'main', ...more })
+
+// A relay that answers every check-in with the crew as it is right then (a test changes it between calls). Keeps the toasts.
+function crewRelay(on: any, crew: { peers: any[]; leader?: string; acting?: string | null }) {
+  mock.store(on)
+  mock.session(on)
+  on('ui.status', async () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$: unknown, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('http.fetch', async (_$: unknown, e: any) => {
+    const body = JSON.parse(e.init?.body || '{}')
+    const reply = e.url.endsWith('/send')
+      ? { id: 7, from: 'alice', to: body.to, kind: body.kind, text: body.text, at: 0 }
+      : { ...POLL, peers: crew.peers, leader: crew.leader ?? 'alice', acting: crew.acting ?? null }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(reply) } }
+  })
+  return toasts
+}
+
+test("the Claudes hear what wakes an AI on crew's bridge: who may, nobody, or (an older bridge) nothing by itself", { options: OPTIONS }, async ($, on) => {
+  crewRelay(on, { peers: AI_PEERS })
+  on('prompt.compose', async () => ({ sections: [] }) as any)
+  const status = String(((await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)) as any).result)
+  expect(status).toContain(
+    "GPT: idle · another AI via codex: it sees crew messages only when it checks, but a request wakes it if it's from the leader or " +
+      'Umbyz (in its own project), and it answers with a 🌙 "on it" chat · gpt-5.5',
+  )
+  expect(status).toContain(
+    "Pal: idle · another AI via codex: it sees crew messages only when it checks, but a request wakes it if it's from anyone in its " +
+      'project, and it answers with a 🌙 "on it" chat · gpt-5.5',
+  )
+  expect(status).toContain('Gem: idle · another AI via gemini: it sees crew messages only when it checks, and nothing starts it by itself, its person prompts it · gemini-3')
+  expect(status).toContain('Old: idle · another AI via codex: it sees crew messages only when it checks, and nothing starts it by itself · gpt-5') // as before
+  const composed: any = await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] } as any)
+  const role = composed.sections.find((s: any) => s.id === 'crew:role').text
+  expect(role).toContain(
+    "GPT (another AI via codex, not a Claude: a request wakes it if it's from the leader or Umbyz (in its own project), and it " +
+      'answers with a 🌙 "on it" chat, gpt-5.5)',
+  )
+  expect(role).toContain(`Pal (another AI via codex, not a Claude: a request wakes it if it's from anyone in its project, and it answers with a 🌙 "on it" chat, gpt-5.5)`)
+  expect(role).toContain('Gem (another AI via gemini, not a Claude: nothing starts it by itself, its person prompts it, gemini-3)')
+  expect(role).toContain('Old (another AI via codex, not a Claude: nothing starts it by itself, gpt-5)')
+})
+
+test("crew_send's request to an AI on crew's bridge says whether it wakes it, as its wake setting and your role say", { options: OPTIONS }, async ($, on) => {
+  const crew = {
+    peers: [
+      ...AI_PEERS,
+      mate('bob'),
+      mate('Ivy', { client: 'codex', wake: '"ALICE"' }), // a name, in any case
+      mate('Far', { client: 'codex', wake: 'anyone', project: 'Tweener' }),
+      mate('Nap', { client: 'codex', wake: 'anyone', online: false }),
+    ],
+    leader: 'alice',
+    acting: null as string | null,
+  }
+  crewRelay(on, crew)
+  const send = async (to: string, kind = 'request') =>
+    String(((await $.tool.call({ tool: 'mcp__crew__crew_send', text: 'the boat panel is yours', to, kind } as any)) as any).result)
+  const woken = (name: string) => `Sent #7 to ${name}.\n(${name} gets woken for it: expect its 🌙 "on it" chat shortly.)`
+  expect(await send('GPT')).toBe(woken('GPT')) // alice leads
+  expect(await send('GPT', 'chat')).toBe('Sent #7 to GPT.') // only a request wakes it
+  expect(await send('Pal')).toBe(woken('Pal')) // anyone in its project
+  expect(await send('Ivy')).toBe(woken('Ivy'))
+  expect(await send('Gem')).toBe('Sent #7 to Gem.\n(Heads-up: nothing wakes Gem by itself: it sees this when its person prompts it.)')
+  expect(await send('Old')).toBe('Sent #7 to Old.') // its bridge doesn't say
+  expect(await send('Nap')).toBe('Sent #7 to Nap.') // offline: nothing there to wake
+  expect(await send('bob')).toBe('Sent #7 to bob.') // a Claude: its own Auto-run decides
+  expect(await send('Far')).toBe( // in another project: the heads-up from before, unchanged
+    "Sent #7 to Far.\n(Heads-up: Far is in the project 'Tweener' right now: it reaches them there, but a request from another " +
+      "project doesn't start their work by itself.)",
+  )
+  crew.leader = 'bob'
+  expect(await send('GPT')).toBe(
+    "Sent #7 to GPT.\n(Heads-up: this won't wake GPT by itself: only the leader or Umbyz can. It sees it when its person prompts it.)",
+  )
+  crew.acting = 'alice' // standing in for the leader counts as the leader
+  expect(await send('GPT')).toBe(woken('GPT'))
+})
+
+test('the Crew tab marks an AI that a request can wake', { options: OPTIONS }, async ($, on) => {
+  crewRelay(on, { peers: AI_PEERS })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  expect(await ui.find({ text: /GPT {2}· 🤖 codex {2}· wakes/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /Pal {2}· 🤖 codex {2}· wakes/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /Gem.*wakes/ } as any)).toBeUndefined() // nothing wakes it
+  expect(await ui.find({ text: /Old.*wakes/ } as any)).toBeUndefined() // its bridge doesn't say
+  await ui.unmount()
+})
+
+test("a 30-day usage window (Codex's free plan) reads M in the Crew tab", { options: OPTIONS }, async ($, on) => {
+  const peers = [AI_PEERS[0], mate('GPT', { client: 'codex', usage: 12, usageDetail: '12% month' }), mate('Pal', { client: 'codex', usage: 40, usageDetail: '40% session · 12% month' })]
+  crewRelay(on, { peers })
+  await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  const ui = await $.ui.mount({ plugin: 'crew', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-crew' })
+  expect(await ui.find({ text: /GPT.*· 12M% usage/ } as any)).toBeDefined()
+  expect(await ui.find({ text: /Pal.*· 40S%-12M% usage/ } as any)).toBeDefined()
+  await ui.unmount()
+})
+
+test('starting Play while someone else on this PC is busy is stopped once with who, and the second try goes through', { options: OPTIONS }, async ($, on) => {
+  const crew = { peers: [] as any[] }
+  const toasts = crewRelay(on, crew)
+  const PLAY = 'mcp__Roblox_Studio__start_stop_play'
+  let played = 0
+  on('tool.call', { tool: PLAY }, async () => {
+    played += 1
+    return { result: 'ok' } as any
+  })
+  const play = async (is_start: boolean, mates: any[], extra = {}) => {
+    crew.peers = [AI_PEERS[0], ...mates]
+    await $.tool.call({ tool: 'mcp__crew__crew_status' } as any) // the crew as it is now
+    const before = played
+    const r: any = await $.tool.call({ tool: PLAY, is_start, studio_id: 'x', ...extra } as any)
+    return { stopped: String(r.deny ?? ''), ran: played > before }
+  }
+  const through = { stopped: '', ran: true }
+  expect(await play(false, [mate('dave', { samePC: true, activity: 'working' })])).toEqual(through) // Stop is never held up
+  expect(await play(true, [mate('bob', { activity: 'working' })])).toEqual(through) // busy, but on another PC
+  await play(false, [])
+  expect(await play(true, [mate('GPT', { client: 'codex', samePC: true })])).toEqual(through) // on this PC, but idle
+  await play(false, [])
+  const busy = [mate('GPT', { client: 'codex', samePC: true, activity: 'working' })]
+  expect(await play(true, busy)).toEqual({
+    stopped:
+      "crew Play check: on this PC, GPT (an AI on crew's bridge) is working right now. If they're editing this same Roblox " +
+      'Studio, your Play makes their edits fail until it stops. Tell GPT first (crew_send "PLAY ON", and "PLAY OFF" once ' +
+      "you've stopped it), or wait until they're done. When it's fine (you told them, or it's another Studio), call " +
+      'start_stop_play again: the second try goes through.',
+    ran: false,
+  })
+  expect(toasts).toContain('crew: GPT is busy on this PC, so your Claude checks with them before starting Play')
+  expect(await play(true, busy)).toEqual(through) // the second try goes through
+  expect(await play(false, busy)).toEqual(through)
+  expect(await play(true, busy)).toEqual(through) // and Play isn't stopped again within minutes
+  await play(false, busy)
+  // a subagent's Play is checked too: now carol's Claude on this PC has Studio in Play already
+  const both = [...busy, mate('carol', { samePC: true, playing: 'Roblox Studio' })]
+  const sub = await play(true, both, { agentId: 'a1' })
+  expect(sub.ran).toBe(false)
+  expect(sub.stopped).toContain(
+    "crew Play check: on this PC, GPT (an AI on crew's bridge) is working right now and carol's Claude has Roblox Studio in Play mode already. ",
+  )
+  expect(sub.stopped).toContain('Tell GPT and carol first')
+  expect(await play(true, both, { agentId: 'a1' })).toEqual(through)
+  await play(false, [], { agentId: 'a1' }) // Studio stopped again: no Play left on for the tests after this
+})
+
+test('an edit to Roblox Studio while someone else on this PC has it in Play is stopped once per their Play', { options: OPTIONS }, async ($, on) => {
+  const crew = { peers: [] as any[] }
+  const toasts = crewRelay(on, crew)
+  const EDIT = 'mcp__Roblox_Studio__multi_edit'
+  const LUAU = 'mcp__Roblox_Studio__execute_luau'
+  for (const tool of [EDIT, LUAU, 'mcp__Roblox_Studio__script_read']) on('tool.call', { tool }, async () => ({ result: 'ok' }) as any)
+  const checkIn = async (mates: any[]) => {
+    crew.peers = [AI_PEERS[0], ...mates]
+    await $.tool.call({ tool: 'mcp__crew__crew_status' } as any)
+  }
+  const call = async (tool: string, extra = {}) => {
+    const input = { tool, studio_id: 'x', file_path: 'game.Workspace.Boat.Steer', edits: [], code: 'print(1)', datamodel_type: 'Edit', ...extra }
+    const r: any = await $.tool.call(input as any)
+    return r.deny ? String(r.deny) : r.result === 'ok' ? 'ran' : JSON.stringify(r)
+  }
+  await checkIn([mate('bob', { playing: 'Roblox Studio' })])
+  expect(await call(EDIT)).toBe('ran') // bob plays on another PC
+  const gptPlays = [mate('GPT', { client: 'codex', samePC: true, activity: 'working', playing: 'Roblox Studio' })]
+  await checkIn(gptPlays)
+  expect(await call('mcp__Roblox_Studio__script_read')).toBe('ran') // reading isn't editing
+  expect(await call(LUAU, { datamodel_type: 'Server' })).toBe('ran') // code in the running game is playtesting
+  expect(await call(EDIT)).toBe(
+    "crew Play check: on this PC, GPT (an AI on crew's bridge) has Roblox Studio in Play mode, so edits to that Studio fail " +
+      'until they stop. Wait for their "PLAY OFF" (crew_status stops showing ▶ for them), or ask GPT with crew_send when ' +
+      "they'll stop. If yours is another Studio, or they've stopped, make the call again: the second try goes through.",
+  )
+  expect(toasts).toContain('crew: GPT has Roblox Studio in Play mode on this PC, so your Claude checks with them before editing it')
+  expect(await call(EDIT)).toBe('ran') // the second try goes through
+  expect(await call(LUAU)).toBe('ran') // once per their Play, not on every edit
+  await checkIn([mate('GPT', { client: 'codex', samePC: true, activity: 'working' })]) // GPT stopped Play…
+  expect(await call(LUAU)).toBe('ran')
+  await checkIn(gptPlays) // …and started a new one
+  expect(await call(LUAU, { agentId: 'a1' })).toContain("crew Play check: on this PC, GPT (an AI on crew's bridge) has Roblox Studio in Play mode") // a subagent's edit too
+  expect(await call(LUAU, { agentId: 'a1' })).toBe('ran')
+})
+

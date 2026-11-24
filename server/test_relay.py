@@ -405,6 +405,26 @@ class RelayTest(unittest.TestCase):
         self.r.call("GET", "/poll?since=0", "alice")  # Play stopped
         self.assertIsNone(alice()["playing"])
 
+    def test_an_ais_wake_setting_shows_to_the_crew(self):
+        self.r.call("GET", "/poll?since=0", "GPT", extra={"X-Crew-Client": "codex", "X-Crew-Wake": "leader, Umbyz"})
+        self.r.call("GET", "/poll?since=0", "carol", extra={"X-Crew-Wake": "anyone"})  # only an AI's bridge says this
+        peers = {p["name"]: p for p in self.poll("bob")[1]["peers"]}
+        self.assertEqual(peers["GPT"]["wake"], "leader, Umbyz")
+        self.assertIsNone(peers["carol"]["wake"])
+
+    def test_who_shares_your_pc_is_marked_for_you_alone(self):
+        def peers(name, ip, **extra):
+            got = self.r.call("GET", "/poll?since=0", name, extra={"X-Crew-Test-Ip": ip, **extra})[1]
+            return {p["name"]: p for p in got["peers"]}
+
+        peers("GPT", "10.0.0.2", **{"X-Crew-Client": "codex"})
+        mine = peers("alice", "10.0.0.2")
+        self.assertTrue(mine["GPT"]["samePC"])  # GPT's bridge runs on alice's PC
+        self.assertFalse(mine["alice"]["samePC"])  # not yourself
+        theirs = peers("bob", "10.0.0.3")
+        self.assertFalse(theirs["GPT"]["samePC"])  # bob's on another PC
+        self.assertNotIn("ip", theirs["GPT"])  # and nobody but the host sees where anyone connects from
+
     def test_another_ais_read_receipt_is_what_its_ai_has_seen(self):
         ai = {"X-Crew-Client": "codex"}
         self.r.call("GET", "/poll?since=0", "GPT", extra=ai)

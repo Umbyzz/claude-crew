@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.27.0"
+VERSION = "1.28.0"
 MAX_MESSAGES = 2000
 MAX_TEXT = 50_000
 MAX_SHARED = 200_000
@@ -576,7 +576,15 @@ def update_acting(now):
         save()
 
 
-def peer_list(project=MAIN, viewer=None, host=False):
+LOCAL_IPS = ("127.0.0.1", "::1")
+
+
+def same_pc(a, b):
+    """Two connections from one PC: the same address, or both this PC's own (the host's Claude and a bridge on it)."""
+    return bool(a and b) and (a == b or (a in LOCAL_IPS and b in LOCAL_IPS))
+
+
+def peer_list(project=MAIN, viewer=None, host=False, ip=None):
     now = time.time()
     leader, stand_in = leader_of(project), acting.get(project)
     return [
@@ -585,6 +593,8 @@ def peer_list(project=MAIN, viewer=None, host=False):
          "subagents": p["subagents"], "chatTo": p["chatTo"], "joinedAt": p["joinedAt"],
          "version": p.get("version"), "model": p.get("model"), "usage": p.get("usage"), "usageDetail": p.get("usageDetail"), "mcp": p.get("mcp"),
          "client": p.get("client"), "playing": p.get("playing") if is_online(p, now) else None,
+         "wake": p.get("wake"),  # an AI on the bridge: who may wake it with a request ("off": nobody)
+         "samePC": n != viewer and same_pc(ip, p.get("ip")),  # on the viewer's own PC (a shared Roblox Studio…)
          "project": p.get("project", MAIN) if can_see(p.get("project", MAIN), viewer) or n == viewer else "(private)",
          "friend": friend_kind(n) == "friend", "member": friend_kind(n) == "member",
          **({"ip": p.get("ip", "")} if host else {})}
@@ -693,6 +703,7 @@ def touch(name, headers, ip=""):
     p["version"] = (headers.get("X-Crew-Version") or "").strip()[:20] or p.get("version")  # who needs to update
     p["model"] = (headers.get("X-Crew-Model") or "").strip()[:60] or p.get("model")  # the leader splits work by it
     p["client"] = (headers.get("X-Crew-Client") or "").strip()[:20] or None  # another AI app (Codex…), not a Claude
+    p["wake"] = ((headers.get("X-Crew-Wake") or "").strip()[:120] or None) if p["client"] else None
     try:  # how much of their usage limit is gone: the leader gives big tasks to whoever has room
         p["usage"] = max(0, min(999, round(float(headers.get("X-Crew-Usage") or ""))))
     except ValueError:
@@ -745,6 +756,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def peer_ip(self):
+        """Where this request comes from. This PC talking to its own address (the host's Claude through its VPN address)
+        counts as this PC. The test suite can play another PC with X-Crew-Test-Ip."""
+        if args.test_remote and self.headers.get("X-Crew-Test-Ip"):
+            return self.headers["X-Crew-Test-Ip"]
+        ip = self.client_address[0]
+        try:
+            if ip == self.connection.getsockname()[0]:
+                return "127.0.0.1"
+        except OSError:
+            pass
+        return ip
 
     def host_pc(self):
         if args.test_remote and self.headers.get("X-Crew-Test-Remote"):
@@ -817,7 +841,7 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if presence:
             with lock:
-                touch(name, self.headers, self.client_address[0])
+                touch(name, self.headers, self.peer_ip())
                 peers[name]["hostPc"] = self.host_pc()
                 note_person(name, self.client_address[0], time.time())
         return True
@@ -982,7 +1006,7 @@ class Handler(BaseHTTPRequestHandler):
                 uwu_news = [n for n in uwu.get("used", []) if n not in uwu["heard"]] if uwu.get("by") == self.name else []
                 uwu.get("heard", []).extend(uwu_news)
                 self.reply(200, {"messages": msgs[-200:], "team": team[-200:],
-                                 "peers": peer_list(pr, self.name, self.host_pc()), "project": pr,
+                                 "peers": peer_list(pr, self.name, self.host_pc(), self.peer_ip()), "project": pr,
                                  "friendsOnly": bool(state.get("friendsOnly")),
                                  **({"knocks": knock_list(now)} if self.host_pc() else {}),
                                  **({"vote": vote_view(votes[pr])} if pr in votes else {}),

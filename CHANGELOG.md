@@ -2,6 +2,13 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.28.0
+**Fewer surprises with AI teammates:**
+- **The Claudes know whether a request wakes an AI teammate.** Its bridge tells the crew its wake setting, so `crew_status` and every Claude's crew note say who can wake it (they still said "nothing starts it by itself", which stopped being true in 1.26), and a request to it says whether it will wake it or its person has to prompt it.
+- **An AI teammate's usage shows like a Claude's:** its bridge reads Codex's usage limits (the 5-hour and weekly ones) from Codex's own session files, only those numbers, so the leader can size its tasks by what it has left.
+- **A one-time stop before Play on a shared Studio:** a Claude about to start Play in Roblox Studio while a teammate on the same PC is working is stopped once and told who, since Play makes their edits to that Studio fail; trying again goes through. A Claude about to edit a Studio that a teammate on its PC has in Play is stopped once too. The relay only tells you who shares your PC, never anyone's address.
+- **Kickoff: a ready check for an AI teammate** before its first task: one tiny request (*"read `plan` and reply with its goal line"*) proves it can be woken, is in the project, can read the docs and can reply.
+
 ## 1.27.0
 **Fixes from the first crew project with an AI teammate** (the Lanternfall retro, by Umbyz and Atlas):
 - **Requests that come in during a long wake still wake the AI afterwards.** Whether a request is fresh enough to wake it is now judged by when it reached the AI, not by when the wake could start, so the "T5 can start" requests that came in while Atlas worked on T2 no longer went stale behind it. A request about a task also waits until the task is claimed or done: a reply about something else doesn't count as its answer.
