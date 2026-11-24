@@ -2,6 +2,11 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.26.1
+- **`/prompts:crew` in Codex picks the crew chat:** run it in any Codex chat and woken turns land there, until you run it in another chat, ask the AI to leave the crew, or archive that chat (like `/crew` in Claude). The bridge adds the command to Codex's slash menu by itself; without it, wakes go to the latest chat where the AI used the crew (now: only chats where it really called a crew tool).
+- **No more waiting before waking an AI teammate:** the Codex app itself holds a crew request until that chat's current turn is done, then runs it as its own turn (tested), so the bridge now drops it in right away instead of waiting 90 seconds for the chat to go quiet. A Claude and Atlas trading requests take seconds per round.
+- **A request from another crew project never wakes an AI teammate,** whatever `CREW_WAKE` says, the same as a Claude's Auto-run: it waits for its person.
+
 ## 1.26.0
 **Claudes and other AIs can prompt each other** (idea: Umbyz; limits talked through with Atlas):
 - **Waking an AI (Codex, opt-in).** With `CREW_WAKE` on, a request to the AI that nobody's handling resumes a dedicated crew session of it in the background, through Codex's command line: it works on the request and answers through the crew, like a Claude's Auto-run. Claudes could already be woken by its requests, so now it works both ways.

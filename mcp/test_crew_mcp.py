@@ -56,7 +56,11 @@ def codex_home_with_a_chat(folder, crew=True, quiet=True):
     import sqlite3
     rollout = os.path.join(folder, "rollout-chat.jsonl")
     with open(rollout, "w", encoding="utf-8") as f:
-        f.write(json.dumps({"payload": {"source": "vscode"}}) + "\n" + ('{"name": "crew_status"}\n' if crew else "hi\n"))
+        used = {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "McpToolCall", "server": "crew",
+                                                                                    "tool": "crew_status", "status": "completed"}}}
+        said = {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "UserMessage",
+                                                                                    "content": "what does crew_status do?"}}}
+        f.write(json.dumps({"payload": {"source": "vscode"}}) + "\n" + json.dumps(used if crew else said) + "\n")
     if quiet:
         os.utime(rollout, (time.time() - 600, time.time() - 600))
     con = sqlite3.connect(os.path.join(folder, "state_5.sqlite"))
@@ -174,7 +178,7 @@ class BridgeTest(unittest.TestCase):
         self.assertTrue(hints["crew_share"]["destructiveHint"])  # a doc can be overwritten
         self.assertFalse(any(h["openWorldHint"] for h in hints.values()))  # all of it stays inside the crew
         self.assertEqual(names, {"crew_status", "crew_send", "crew_task", "crew_task_unattended", "crew_wait",
-                                 "crew_read_shared", "crew_share", "crew_project"})
+                                 "crew_read_shared", "crew_share", "crew_project", "crew_join"})
         self.assertFalse(hints["crew_task_unattended"]["destructiveHint"])  # 🌙 tasks only: Codex runs it without asking
         self.assertEqual(b.request("ping")["result"], {})
         self.assertEqual(b.request("resources/list")["result"], {"resources": []})  # Codex asks anyway
@@ -461,7 +465,7 @@ class BridgeTest(unittest.TestCase):
         codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
         self.addCleanup(shutil.rmtree, codex, True)
         rollout = codex_home_with_a_chat(codex, quiet=False)  # its person was just in that chat
-        self.waker(CREW_CODEX_HOME=codex, FAKE_ROLLOUT=rollout)
+        self.waker(CREW_CODEX_HOME=codex, FAKE_ROLLOUT=rollout, CREW_MCP_QUIET="30")  # the optional wait
         until(self.online)
         sent = self.ask("the boat panel, please")
         time.sleep(1.5)
@@ -479,6 +483,82 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("Last said: Done, I replied to umbyz.", note)
         doc = self.r.call("GET", "/shared?name=GPT-wakes", "umbyz", remote=False)[1]["content"]
         self.assertIn("**GPT:** On it, from your chat.", doc)
+
+    def test_after_its_own_woken_turn_the_next_request_needs_no_quiet_wait(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        rollout = codex_home_with_a_chat(codex)
+        self.waker(CREW_CODEX_HOME=codex, FAKE_ROLLOUT=rollout, CREW_MCP_OWN_TAIL="1", CREW_MCP_QUIET="30")
+        until(self.online)
+        self.ask("ping 1")
+        until(lambda: len(self.wakes()) == 1)
+        until(self.moon)  # its turn is done, and it just wrote into that chat
+        start = time.time()
+        self.ask("ping 2")
+        until(lambda: len(self.wakes()) == 2, timeout=8)  # no 30 s wait: that change was its own turn
+        self.assertLess(time.time() - start, 8)
+        until(lambda: len([m for m in self.said("update") if m["text"].startswith("🌙")]) == 2)
+        time.sleep(1.5)  # past what Codex still writes after its own turn
+        os.utime(rollout, None)  # now its person types in that chat
+        self.ask("ping 3")
+        time.sleep(2)
+        self.assertEqual(len(self.wakes()), 2)  # that one does wait
+
+    def test_prompts_crew_makes_this_chat_the_crew_chat_until_left_or_archived(self):
+        import sqlite3
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        codex_home_with_a_chat(codex)  # chat-7: used the crew a while ago
+        fresh = os.path.join(codex, "rollout-new.jsonl")
+        with open(fresh, "w", encoding="utf-8") as f:
+            f.write("{}\n")  # chat-9: the chat its person is in right now
+        con = sqlite3.connect(os.path.join(codex, "state_5.sqlite"))
+        con.execute("insert into threads values ('chat-9', ?, 3, 'vscode', 'Codex Desktop', 0)", (fresh,))
+        con.commit()
+        con.close()
+        b = self.waker(CREW_CODEX_HOME=codex, CREW_MCP_APP_START="1")
+        until(self.online)
+        self.assertTrue(os.path.exists(os.path.join(codex, "prompts", "crew.md")))  # /prompts:crew in Codex's menu
+        self.assertIn("this is your crew chat now", b.tool("crew_join"))
+        os.utime(fresh, (time.time() - 600, time.time() - 600))
+        self.ask("one")
+        until(lambda: len(self.wakes()) == 1)
+        self.assertEqual(self.wakes()[0]["args"][2], "chat-9")  # the crew chat, not the latest one that used crew
+        self.assertIn("isn't your crew chat any more", b.tool("crew_join", leave=True))
+        self.ask("two")
+        until(lambda: len(self.wakes()) == 2, timeout=12)
+        self.assertEqual(self.wakes()[1]["args"][2], "chat-7")
+        os.utime(fresh, None)  # its person is in chat-9 again
+        self.assertIn("this is your crew chat now", b.tool("crew_join"))  # …until it's archived
+        os.utime(fresh, (time.time() - 600, time.time() - 600))
+        con = sqlite3.connect(os.path.join(codex, "state_5.sqlite"))
+        con.execute("update threads set archived = 1 where id = 'chat-9'")
+        con.commit()
+        con.close()
+        self.ask("three")
+        until(lambda: len(self.wakes()) == 3, timeout=12)
+        self.assertEqual(self.wakes()[2]["args"][2], "chat-7")
+
+    def test_by_default_it_goes_in_at_once_since_codex_holds_it_behind_a_running_turn(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        rollout = codex_home_with_a_chat(codex, quiet=False)  # its person was just in that chat
+        self.waker(CREW_CODEX_HOME=codex, FAKE_ROLLOUT=rollout)
+        until(self.online)
+        self.ask("right away, please")
+        until(lambda: len(self.wakes()) == 1, timeout=6)
+        self.assertEqual(self.wakes()[0]["args"][:3], ["queue", "--thread", "chat-7"])
+
+    def test_a_request_from_another_project_never_wakes_it(self):
+        self.waker(mode="leader, umbyz")
+        until(self.online)
+        self.r.call("POST", "/send", "umbyz", project="side", body={"to": "GPT", "kind": "request", "text": "from side"},
+                    remote=False)
+        time.sleep(1.5)
+        self.assertEqual(self.wakes(), [])  # it waits for its person, like a Claude's Auto-run
+        self.ask("from main")
+        until(lambda: len(self.wakes()) == 1)
+        self.assertIn("from main", self.wakes()[0]["prompt"])
 
     def test_if_it_cant_be_queued_it_uses_its_crew_session(self):
         codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
