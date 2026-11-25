@@ -2,6 +2,13 @@
 
 What changed in each version of crew, newest first. The [README](README.md) has what crew does and how to set it up.
 
+## 1.28.1
+**Fixes for an AI teammate waking in the wrong chat** (found in the Brace project):
+- **Each crew project gets its own crew chat.** `/prompts:crew` makes a chat the crew chat for one crew project, and a request from another project never lands in it. Before, one pinned chat took every project's wakes, so a Brace request ran in another project's chat, in that chat's folder. Without a crew chat for the project, wakes go to the latest chat that works on it (in the project's own folder, or whose crew tools last said it), else to a separate crew session, and the 🌙 line says how to pick a chat.
+- **`/prompts:crew` picks the right chat.** It went by the time on each chat's file, which Windows leaves out of date while Codex has the file open, so it could pin a different chat. Now it goes by Codex's own note of each chat, and by where you last typed.
+- **Stopping a woken turn ends the wake at once.** The bridge waited for the turn to finish, so a turn its person stopped kept the AI "working", and blocked every other wake, for up to 30 minutes. Now the 🌙 line says it was stopped, and which tasks it still holds.
+- **A woken turn is followed when Codex starts a new file for that chat** partway through.
+
 ## 1.28.0
 **Fewer surprises with AI teammates:**
 - **The Claudes know whether a request wakes an AI teammate.** Its bridge tells the crew its wake setting, so `crew_status` and every Claude's crew note say who can wake it (they still said "nothing starts it by itself", which stopped being true in 1.26), and a request to it says whether it will wake it or its person has to prompt it.

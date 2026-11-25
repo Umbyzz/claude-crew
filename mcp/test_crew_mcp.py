@@ -32,11 +32,26 @@ if args[0] == "queue":  # `codex queue`: the app runs it in that chat (acted out
         turn = [{"type": "task_started", "turn_id": "t-q"},
                 {"type": "item_completed", "turn_id": "t-q", "item": {"type": "UserMessage", "content": [{"type": "Text", "text": message}]}},
                 {"type": "item_completed", "turn_id": "t-q", "item": {"type": "McpToolCall", "server": "crew", "tool": "crew_status", "status": "completed"}},
-                {"type": "item_completed", "turn_id": "t-q", "item": {"type": "AgentMessage", "content": [{"type": "Text", "text": "On it, from your chat."}]}},
-                {"type": "task_complete", "turn_id": "t-q", "last_agent_message": "Done, I replied to umbyz."}]
+                {"type": "item_completed", "turn_id": "t-q", "item": {"type": "AgentMessage", "content": [{"type": "Text", "text": "On it, from your chat."}]}}]
+        if os.environ.get("FAKE_ABORT"):  # its person stops it partway, after it claimed T2
+            turn += [{"type": "item_completed", "turn_id": "t-q", "item": {"type": "McpToolCall", "server": "crew", "tool": "crew_task",
+                                                                          "status": "completed", "arguments": {"action": "claim", "id": "T2"}}},
+                     {"type": "turn_aborted", "turn_id": "t-q", "reason": "interrupted"}]
+        else:
+            turn.append({"type": "task_complete", "turn_id": "t-q", "last_agent_message": "Done, I replied to umbyz."})
+        moved = os.environ.get("FAKE_ROTATE")  # Codex goes on in a new file for this chat once the turn started
         with open(rollout, "a", encoding="utf-8") as f:
-            for p in turn:
+            for p in turn[:2] if moved else turn:
                 f.write(json.dumps({"type": "event_msg", "payload": p}) + "\n")
+        if moved:
+            import sqlite3
+            con = sqlite3.connect(os.environ["FAKE_DB"])
+            con.execute("update threads set rollout_path = ? where id = ?", (moved, args[args.index("--thread") + 1]))
+            con.commit()
+            con.close()
+            with open(moved, "a", encoding="utf-8") as f:
+                for p in turn[2:]:
+                    f.write(json.dumps({"type": "event_msg", "payload": p}) + "\n")
     print("Queued message q-1 for thread " + args[args.index("--thread") + 1] + ".")
     sys.exit(0)
 thread = args[args.index("resume") + 1] if "resume" in args else "thread-1"
@@ -95,6 +110,32 @@ def codex_home_with_usage(folder, *records):
     with open(os.path.join(day, "rollout-2026-11-24T09-30-00-made-up-thread.jsonl"), "w", encoding="utf-8") as f:
         f.write(json.dumps({"type": "session_meta", "payload": {"id": "made-up-thread"}}) + "\n")
         f.writelines(json.dumps(r) + "\n" for r in records)
+
+
+def codex_home_with_chats(folder, chats):
+    """A stand-in for Codex's list of chats as it is today (its own note of when each changed, each chat's folder).
+    Each chat: dict(id, folder, noted (Codex's note), file (the file's own time), said (the project its crew tools last
+    said, or None), typed (when its person last typed, or None)). Each used the crew tools."""
+    import sqlite3
+    con = sqlite3.connect(os.path.join(folder, "state_5.sqlite"))
+    con.execute("create table threads (id text, rollout_path text, updated_at integer, updated_at_ms integer, source text, "
+                "originator text, archived integer, cwd text)")
+    for c in chats:
+        path = os.path.join(folder, f"rollout-{c['id']}.jsonl")
+        said = f"crew · you're GPT in the project '{c['said']}' · connection: connected" if c.get("said") else "ok"
+        lines = [{"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "McpToolCall", "server": "crew", "tool": "crew_status", "status": "completed",
+            "result": {"content": [{"type": "text", "text": said}]}}}}] if c.get("used", True) else []
+        if c.get("typed"):
+            lines.append({"type": "event_msg", "payload": {"type": "item_completed", "completed_at_ms": int(c["typed"] * 1000),
+                                                           "item": {"type": "UserMessage", "content": [{"type": "text", "text": "/prompts:crew"}]}}})
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("".join(json.dumps(x) + "\n" for x in lines))
+        os.utime(path, (c["file"], c["file"]))
+        con.execute("insert into threads values (?, ?, ?, ?, 'vscode', 'Codex Desktop', 0, ?)",
+                    (c["id"], path, int(c["noted"]), int(c["noted"] * 1000), os.path.join(folder, c["folder"])))
+    con.commit()
+    con.close()
 
 
 def until(check, timeout=8.0):
@@ -700,6 +741,109 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("Playtesting right now", b.tool("crew_read_shared"))  # every crew tool's answer says so
         self.r.call("GET", "/poll?since=0", "umbyz", remote=False)  # Play stopped
         until(lambda: "Playtesting" not in b.tool("crew_status"))
+
+    def codex(self, chats):
+        folder = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, folder, True)
+        codex_home_with_chats(folder, chats)
+        return folder
+
+    def test_crew_join_goes_by_codexs_own_note_of_the_active_chat_not_the_files_time(self):
+        now = time.time()
+        codex = self.codex([dict(id="chat-7", folder="possible-project", noted=now - 60, file=now - 60),
+                            dict(id="chat-9", folder="Brace!", noted=now, file=now - 900)])  # Codex keeps it open: an old time
+        b = self.waker(CREW_CODEX_HOME=codex, CREW_MCP_APP_START="1")
+        until(self.online)
+        self.assertIn("this is your crew chat now, for the crew project 'main'", b.tool("crew_join"))
+        self.ask("one")
+        until(lambda: len(self.wakes()) == 1)
+        self.assertEqual(self.wakes()[0]["args"][2], "chat-9")
+
+    def test_crew_join_picks_the_chat_its_person_just_typed_in_while_a_wake_runs_in_another(self):
+        now = time.time()
+        codex = self.codex([dict(id="chat-7", folder="a", noted=now, file=now),  # a woken turn is writing there
+                            dict(id="chat-9", folder="b", noted=now - 5, file=now - 900, typed=now - 5)])
+        b = self.waker(CREW_CODEX_HOME=codex, CREW_MCP_APP_START="1")
+        until(self.online)
+        b.tool("crew_join")
+        self.ask("one")
+        until(lambda: len(self.wakes()) == 1)
+        self.assertEqual(self.wakes()[0]["args"][2], "chat-9")
+
+    def test_a_crew_chat_is_for_its_project_and_a_wake_from_another_finds_that_projects_chat(self):
+        now = time.time()
+        codex = self.codex([dict(id="chat-7", folder="possible-project", noted=now, file=now, said="main"),
+                            dict(id="chat-9", folder="Side!", noted=now - 300, file=now - 300, used=False)])  # side's own folder
+        b = self.waker(CREW_CODEX_HOME=codex, CREW_MCP_APP_START="1")
+        until(self.online)
+        b.tool("crew_join")  # chat-7: the crew chat for main
+        b.tool("crew_project", name="side")
+        self.r.call("POST", "/send", "umbyz", project="side", body={"to": "GPT", "kind": "request", "text": "from side"},
+                    remote=False)
+        until(lambda: len(self.wakes()) == 1)
+        self.assertEqual(self.wakes()[0]["args"][2], "chat-9")  # the chat in side's folder, not main's crew chat
+        b.tool("crew_project", name="main")
+        self.ask("from main")
+        until(lambda: len(self.wakes()) == 2, timeout=12)
+        self.assertEqual(self.wakes()[1]["args"][2], "chat-7")  # main's crew chat is still main's
+
+    def test_with_no_chat_for_its_project_it_wakes_in_its_crew_session_and_says_how_to_pick_one(self):
+        now = time.time()
+        codex = self.codex([dict(id="chat-7", folder="possible-project", noted=now, file=now, said="main")])
+        b = self.waker(CREW_CODEX_HOME=codex)
+        until(self.online)
+        b.tool("crew_project", name="side")
+        self.r.call("POST", "/send", "umbyz", project="side", body={"to": "GPT", "kind": "request", "text": "from side"},
+                    remote=False)
+        until(lambda: len(self.wakes()) == 1)
+        self.assertIn("exec", self.wakes()[0]["args"])  # never main's chat: its folder and talk are main's
+
+        def note():  # the 🌙 line, in side's chat
+            got = self.r.call("GET", "/poll?since=0", "umbyz", project="side", remote=False)[1]["messages"]
+            return next((m["text"] for m in got if m["from"] == "GPT" and m["text"].startswith("🌙 woke")), "")
+
+        until(note)
+        self.assertIn("no Codex chat of its person's works on 'side' yet: /prompts:crew side in one", note())
+
+    def test_a_crew_chat_from_before_chats_were_per_project_stays_the_one_for_where_it_is(self):
+        now = time.time()
+        codex = self.codex([dict(id="chat-7", folder="a", noted=now, file=now),
+                            dict(id="chat-9", folder="b", noted=now - 300, file=now - 300)])
+        home = tempfile.mkdtemp(prefix="crew-mcp-test-")
+        os.makedirs(home, exist_ok=True)
+        with open(os.path.join(home, "wake.json"), "w", encoding="utf-8") as f:
+            json.dump({f"http://127.0.0.1:{self.r.port}|GPT": {"pin": {"id": "chat-9", "path": "old"}}}, f)
+        self.waker(home=home, CREW_CODEX_HOME=codex, CREW_MCP_APP_START="1")
+        until(self.online)
+        self.ask("one")
+        until(lambda: len(self.wakes()) == 1)
+        self.assertEqual(self.wakes()[0]["args"][2], "chat-9")
+
+    def test_a_woken_turn_its_person_stops_ends_the_wake_at_once(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        rollout = codex_home_with_a_chat(codex)
+        self.waker(CREW_CODEX_HOME=codex, FAKE_ROLLOUT=rollout, FAKE_ABORT="1")
+        until(self.online)
+        self.ask("T2, please")
+        until(self.moon, timeout=8)  # at once, not after the 30 minutes a turn may take
+        self.assertIn("its person stopped it partway: T2 is still claimed by it", self.moon())
+        doc = self.r.call("GET", "/shared?name=GPT-wakes", "umbyz", remote=False)[1]["content"]
+        self.assertIn("· in its person's Codex chat · stopped by its person", doc)
+        self.ask("the next one")
+        until(lambda: len(self.wakes()) == 2)  # the wake is over: the next request wakes it again
+
+    def test_a_woken_turn_is_followed_when_codex_goes_on_in_a_new_file(self):
+        codex = tempfile.mkdtemp(prefix="crew-mcp-codex-")
+        self.addCleanup(shutil.rmtree, codex, True)
+        rollout = codex_home_with_a_chat(codex)
+        self.waker(CREW_CODEX_HOME=codex, FAKE_ROLLOUT=rollout, FAKE_ROTATE=os.path.join(codex, "rollout-chat-2.jsonl"),
+                   FAKE_DB=os.path.join(codex, "state_5.sqlite"))
+        until(self.online)
+        self.ask("the boat panel")
+        until(self.moon, timeout=8)
+        self.assertIn("used crew_status", self.moon())
+        self.assertIn("Last said: Done, I replied to umbyz.", self.moon())
 
     def test_switching_projects_moves_every_copy_of_the_bridge(self):
         home = tempfile.mkdtemp(prefix="crew-mcp-test-")

@@ -25,6 +25,7 @@ Kept in ~/.claude/crew-mcp: keys.json (a personal key the host handed over), see
 answered.json (requests it said need no reply) and live/ (the copies of the bridge running right now: an app may open
 several, and they share one presence in the crew).
 """
+import calendar
 import glob
 import hashlib
 import json
@@ -40,7 +41,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.28.0"
+VERSION = "1.28.1"
 POLL_SECONDS = float(os.environ.get("CREW_MCP_POLL") or 4)  # how often it checks in (the tests go faster)
 WORKING_SECONDS = float(os.environ.get("CREW_MCP_BUSY") or 20)  # after a crew tool call (not crew_wait): working
 GRACE_SECONDS = float(os.environ.get("CREW_MCP_GRACE") or 15)  # a copy only opened to read the tools never joins
@@ -154,29 +155,101 @@ def codex_db():
     return dbs[-1] if dbs else None
 
 
+def thread_time(cols):
+    """Codex's own note of when a chat last changed, as SQL for its list of chats (seconds)."""
+    return "coalesce(updated_at_ms / 1000.0, updated_at)" if "updated_at_ms" in cols else "updated_at"
+
+
+def last_change(at, path):
+    """When a chat last changed: Codex's own note of it, or its file's time if that's later. The file alone can't
+    tell: Codex keeps a chat's file open while it writes, and Windows then reports a time from long before."""
+    try:
+        at = float(at or 0)
+    except (TypeError, ValueError):
+        at = 0.0
+    if at > 1e11:
+        at /= 1000.0  # noted in milliseconds
+    try:
+        return max(at, os.path.getmtime(path))
+    except (OSError, TypeError, ValueError):
+        return at
+
+
+def file_size(path):
+    """A file's size through a handle of its own (what the folder says can be old for a file Codex keeps open)."""
+    try:
+        with open(path, "rb") as f:
+            return f.seek(0, 2)
+    except OSError:
+        return 0
+
+
+def read_from(path, pos):
+    try:
+        with open(path, "rb") as f:
+            f.seek(pos)
+            return f.read()
+    except OSError:
+        return b""
+
+
+# what the crew tools' answers say about the project the AI is in (its status line, or a switch)
+PROJECT_SAID = re.compile(rb"you're [^'\"\\]{1,40} in the project '([^'\\]{1,40})'|Now in the crew project '([^'\\]{1,40})'")
+
+
+def folder_is(folder, project):
+    """Whether a chat's folder is named like the crew project ("M:/Games/Brace!" for Brace). Never for main."""
+    want = re.sub(r"[\W_]+", "", str(project or "").lower())
+    if len(want) < 3 or project == "main":
+        return False
+    return any(re.sub(r"[\W_]+", "", part.lower()) == want for part in re.split(r"[\\/]+", str(folder or "")) if part)
+
+
+def last_typed(path):
+    """When its person last typed in a chat (a crew request the bridge put there doesn't count), from the end of the
+    chat's file: 0 if it can't tell."""
+    best = 0.0
+    for line in read_from(path, max(0, file_size(path) - 512 * 1024)).split(b"\n"):
+        if b"UserMessage" not in line or b"item_completed" not in line:
+            continue
+        try:
+            r = json.loads(line)
+            p, item = r["payload"], r["payload"]["item"]
+            if p.get("type") != "item_completed" or item.get("type") != "UserMessage":
+                continue
+            if text_of(item.get("content")).lstrip().startswith("📨 Crew request #"):
+                continue
+            at = float(p.get("completed_at_ms") or 0) / 1000.0
+            if not at and r.get("timestamp"):
+                at = float(calendar.timegm(time.strptime(str(r["timestamp"])[:19], "%Y-%m-%dT%H:%M:%S")))
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue
+        best = max(best, at)
+    return best
+
+
 def codex_rollouts(n=3):
     """The chats' files Codex wrote to last, newest first: [(when it changed, path)]. Any chat counts, exec ones too.
     From its list of chats (which knows an old chat that's in use again) and its latest days' folders."""
-    paths = set()
+    noted = {}  # Codex's own note of when each changed (a file it keeps open shows an old time on Windows)
     try:
         db = codex_db()
         if db:
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
             try:
-                paths.update(str(p) for (p,) in con.execute(
-                    "select rollout_path from threads where rollout_path != '' order by updated_at desc limit ?", (n,)))
+                cols = {r[1] for r in con.execute("pragma table_info(threads)")}
+                noted.update((str(p), at) for p, at in con.execute(
+                    f"select rollout_path, {thread_time(cols)} from threads where rollout_path != '' "
+                    "order by updated_at desc limit ?", (n,)))
             finally:
                 con.close()
     except (sqlite3.Error, OSError, ValueError):
         pass
+    paths = set(noted)
     for day in sorted(glob.glob(os.path.join(glob.escape(CODEX_HOME), "sessions", "*", "*", "*")), reverse=True)[:n]:
         paths.update(glob.glob(os.path.join(glob.escape(day), "rollout-*.jsonl")))  # sessions/YYYY/MM/DD
-    dated = []
-    for path in paths:
-        try:
-            dated.append((os.path.getmtime(path), path))
-        except (OSError, ValueError):
-            pass
+    dated = [(last_change(noted.get(path), path), path) for path in paths]
+    dated = [(at, path) for at, path in dated if at]
     return sorted(dated, reverse=True)[:n]
 
 
@@ -587,50 +660,66 @@ class Crew:
         return work
 
     def person_chat(self):
-        """Its person's own Codex chat with this AI, where woken turns go (so they show up in the app): the one its
-        person made its crew chat with /prompts:crew while that chat is there, else the latest one in the Codex app
-        that used the crew tools. (id, rollout file), or None. Codex's own list is only read; the guess is kept for a
-        minute."""
-        pin = (read_json("wake.json").get(self.who()) or {}).get("pin") or {}
+        """Its person's own Codex chat for this crew project, where woken turns go (so they show up in the app): the
+        one its person made the crew chat for this project with /prompts:crew, while that chat is there, else the latest
+        chat that works on this project (find_person_chat). (id, chat file), or None. A request from one project never
+        lands in another project's chat: that chat's folder and talk are that project's. Codex's own list is only
+        read; the guess is kept for a minute."""
+        state = read_json("wake.json").get(self.who()) or {}
+        if state.get("pin") and "pins" not in state:  # from before crew chats were per project: meant for this one
+            state = dict(state, pins={self.project: state["pin"]})
+            state.pop("pin", None)
+            remember("wake.json", self.who(), state)
+        pin = (state.get("pins") or {}).get(self.project) or {}
         if pin.get("id"):
             live = self.app_chats(only=pin["id"])
             if live:
-                return live[0]
+                return live[0][:2]  # its file as Codex has it now: Codex can go on in a new file for a chat
             if live is not None:
-                self.set_pin(None)  # archived or deleted: back to the latest chat that used crew
+                self.set_pin(None)  # archived or deleted: back to the latest chat that works on this project
         kept = getattr(self, "_chat", None)
-        if kept and time.time() - kept[0] < 60:
-            return kept[1]
+        if kept and kept[0] == self.project and time.time() - kept[1] < 60:
+            return kept[2]
         found = self.find_person_chat()
-        self._chat = (time.time(), found)
+        self._chat = (self.project, time.time(), found)
         return found
 
     def app_chats(self, only=None):
-        """Its person's chats in the Codex app (not archived), newest first: [(id, rollout file)], or None when
-        Codex's list can't be read."""
+        """Its person's chats in the Codex app (not archived), the latest first: [(id, chat file, when it last changed,
+        its folder)], or None when Codex's list can't be read. When: Codex's own note (see last_change)."""
         try:
             db = codex_db()
             if not db:
                 return None
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
             try:
-                sql = ("select id, rollout_path from threads where archived = 0 and source = 'vscode' "
-                       "and originator != 'codex_exec'")
+                cols = {r[1] for r in con.execute("pragma table_info(threads)")}
+                sql = (f"select id, rollout_path, {thread_time(cols)}, {'cwd' if 'cwd' in cols else chr(39) * 2} "
+                       "from threads where archived = 0 and source = 'vscode' and originator != 'codex_exec'")
                 rows = (con.execute(sql + " and id = ?", (only,)) if only
                         else con.execute(sql + " order by updated_at desc limit 15")).fetchall()
             finally:
                 con.close()
         except (sqlite3.Error, OSError, ValueError):
             return None
-        return [(str(tid), path) for tid, path in rows if path]
+        chats = [(str(tid), path, last_change(at, path), str(folder or "")) for tid, path, at, folder in rows if path]
+        return sorted(chats, key=lambda c: c[2], reverse=True)
+
+    def chat_now(self, tid):
+        """A chat's file and when it last changed, as Codex has them right now: (file, when), or None."""
+        rows = self.app_chats(only=tid)
+        return rows[0][1:3] if rows else None
 
     def set_pin(self, chat):
+        """The crew chat for the project the AI is in now (None: none)."""
         state = read_json("wake.json").get(self.who()) or {}
+        pins = dict(state.get("pins") or {})
         if chat:
-            state["pin"] = {"id": chat[0], "path": chat[1]}
+            pins[self.project] = {"id": chat[0], "path": chat[1]}
         else:
-            state.pop("pin", None)
-        remember("wake.json", self.who(), state)
+            pins.pop(self.project, None)
+        state.pop("pin", None)
+        remember("wake.json", self.who(), dict(state, pins=pins))
         self._chat = None
 
     def join(self, leave=False, project=""):
@@ -644,40 +733,53 @@ class Crew:
             moved += "\n"
         if leave:
             self.set_pin(None)
-            return ("Done: this chat isn't your crew chat any more. Requests that wake you go to your latest chat that "
-                    "uses the crew.")
-        # the chat this call comes from: the one whose file Codex is writing right now (the turn making this call)
-        newest = None
-        for tid, path in self.app_chats() or []:
-            try:
-                changed = os.path.getmtime(path)
-            except OSError:
-                continue
-            if newest is None or changed > newest[2]:
-                newest = (tid, path, changed)
-        if not newest or time.time() - newest[2] > 120:
+            return (f"Done: this chat isn't your crew chat any more (for the project '{self.project}'). Requests from it "
+                    f"that wake you go to your latest chat that works on it.")
+        # The chat this call comes from: where its person typed last (the /prompts:crew making this call), else the one
+        # Codex noted a change in last. By Codex's own notes: a chat file's time on Windows can be long out of date.
+        now = time.time()
+        recent = [c for c in self.app_chats() or [] if now - c[2] <= 120]
+        if not recent:
             return moved + "Couldn't tell which chat this is: only a chat in the Codex app can be your crew chat."
-        self.set_pin(newest[:2])
-        return moved + ("Done: this is your crew chat now. A teammate's request that wakes you lands here, until your person "
-                "runs /prompts:crew in another chat, asks you to leave the crew, or archives this chat.")
+        typed = [(at, c) for at, c in ((last_typed(c[1]), c) for c in recent[:5]) if now - at <= 120]
+        this = max(typed)[1] if typed else recent[0]
+        self.set_pin(this[:2])
+        return moved + (f"Done: this is your crew chat now, for the crew project '{self.project}'. A teammate's request "
+                        f"from that project that wakes you lands here, until your person runs /prompts:crew in another "
+                        f"chat, asks you to leave the crew, or archives this chat.")
 
     def find_person_chat(self):
+        """The latest of its person's Codex chats that works on this crew project: one in the project's own folder (named
+        like it), else one where the AI really called a crew tool and those tools last said this project, else one where
+        they never said a project. Never one that last worked on another project. (id, chat file), or None."""
         rows = self.app_chats()
         if not rows:
             return None
-        budget = 60_000_000  # read at most this much of the chats' files
-        for tid, path in rows:
+        for tid, path, _, folder in rows:
+            if folder_is(folder, self.project):
+                return str(tid), path  # its person's chat in the project's own folder (Codex may have started it a new file)
+        budget, best = 60_000_000, None  # read at most this much of the chats' files
+        for tid, path, _, folder in rows:
+            used, said = False, None
             try:
                 with open(path, "rb") as f:
                     for line in f:  # a crew tool it really called, not just the word in a message
                         budget -= len(line)
                         if budget < 0:
-                            return None
+                            break
                         if b"McpToolCall" in line and b'"crew"' in line and b"crew_" in line:
-                            return str(tid), path
+                            used = True
+                            for a, b in PROJECT_SAID.findall(line):
+                                said = (a or b).decode("utf-8", "replace")
             except (OSError, TypeError):
                 continue
-        return None
+            if used:
+                rank = 1 if said == self.project else 2 if said is None else None
+                if rank is not None and (best is None or rank < best[0]):
+                    best = (rank, (str(tid), path))
+            if budget < 0 or (best and best[0] == 1):
+                break
+        return best[1] if best else None
 
     def maybe_wake(self):
         """A request came in that nobody's working on: wake the AI for it. One at a time, once per request, only
@@ -703,13 +805,10 @@ class Crew:
             if len(times) >= WAKE_MAX:
                 return  # the loop brake: it waits for its person (it's still under "Waiting on you")
             chat = self.person_chat() if self.wake_into == "chat" else None
-            try:
-                changed = os.path.getmtime(chat[1]) if chat else 0
-                ours = changed <= float(state.get("ownUntil") or 0)  # the last change was its own woken turn
-                if chat and not ours and now - changed < CHAT_QUIET:
-                    return  # its person was in that chat just now: wait until it's been quiet a little
-            except OSError:
-                pass
+            changed = (self.chat_now(chat[0]) or (None, 0))[1] if chat else 0
+            ours = changed <= float(state.get("ownUntil") or 0)  # the last change was its own woken turn
+            if chat and not ours and now - changed < CHAT_QUIET:
+                return  # its person was in that chat just now: wait until it's been quiet a little
             if not self.lock_wake():
                 return  # another copy is waking it right now
             state = read_json("wake.json").get(self.who()) or {}  # fresh: another copy may have written it meanwhile
@@ -834,12 +933,10 @@ class Crew:
     def app_wake(self, m, chat):
         """Put the request in its person's own Codex chat and have the Codex app run it there: `codex queue`, then the
         app's codex://threads/wake/<id> link. A real turn in the chat they see, run by the app itself (so the app stays
-        that chat's one writer). It follows the turn in the chat's file. (ran, events), or None if it couldn't queue."""
+        that chat's one writer). It follows the turn through the chat's files (Codex can go on in a new file for a
+        chat) until it's done or its person stops it. (ran, events), or None if it couldn't queue."""
         tid, path = chat
-        try:
-            pos = os.path.getsize(path)
-        except OSError:
-            pos = 0
+        pos = file_size(path)
         try:
             queued = subprocess.run(codex_command() + ["queue", "--thread", tid, "--message", wake_prompt(m, self.name, True)],
                                     capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
@@ -856,15 +953,17 @@ class Crew:
         start_by, deadline = time.time() + APP_START, time.time() + WAKE_TIMEOUT
         while time.time() < deadline and (turn or time.time() < start_by):
             time.sleep(1.5)
-            try:
-                with open(path, "rb") as f:
-                    f.seek(pos)
-                    data = f.read()
-            except OSError:
-                continue
+            data = read_from(path, pos)
             pos += len(data)
             lines = (rest + data).split(b"\n")
             rest = lines.pop()  # a line still being written
+            now_file = (self.chat_now(tid) or (path,))[0]
+            if os.path.normcase(now_file) != os.path.normcase(path):  # Codex went on in a new file for this chat
+                lines.append(rest)  # the old file is done: its last line is whole
+                path, data = now_file, read_from(now_file, 0)
+                pos = len(data)
+                lines += data.split(b"\n")
+                rest = lines.pop()
             for raw in lines:
                 try:
                     r = json.loads(raw)
@@ -881,8 +980,10 @@ class Crew:
                         turn = p.get("turn_id")  # the app started on it
                     elif turn and p.get("turn_id") == turn and item["type"] != "user_message":
                         events.append({"type": "item.completed", "item": item})
-                elif p.get("type") == "task_complete" and turn and p.get("turn_id") == turn:
-                    if p.get("last_agent_message"):
+                elif p.get("type") in ("task_complete", "turn_aborted") and turn and p.get("turn_id") == turn:
+                    if p.get("type") == "turn_aborted":  # its person stopped it (or Codex did): the wake is over
+                        events.append({"type": "turn.aborted", "reason": str(p.get("reason") or "")})
+                    elif p.get("last_agent_message"):
                         events.append({"type": "item.completed",
                                        "item": {"type": "agent_message", "text": str(p["last_agent_message"])}})
                     return True, events
@@ -901,6 +1002,7 @@ class Crew:
         try:
             self.ack(m)
             chat = self.person_chat() if self.wake_into == "chat" else None
+            no_chat = self.wake_into == "chat" and not chat
             got = self.app_wake(m, chat) if chat else None
             ran, events, where = False, [], "in its crew session"
             if got is not None:  # queued in its person's chat: never run a second time elsewhere
@@ -920,7 +1022,7 @@ class Crew:
                 elif session:
                     state.pop("session", None)  # that session didn't take: a fresh one next time
                 remember("wake.json", self.who(), state)
-            self.receipt(m, events, where, ran, queued=got is not None, started=started)
+            self.receipt(m, events, where, ran, queued=got is not None, started=started, no_chat=no_chat)
             try:
                 with open(log, "a", encoding="utf-8") as f:  # one line per wake, for its person
                     f.write(f"{utc(started)} wake for #{m.get('id')} from {m.get('from')}: {where}, "
@@ -951,10 +1053,12 @@ class Crew:
         except (Unreachable, Refused):
             pass
 
-    def receipt(self, m, events, where, ran, queued=False, started=None):
+    def receipt(self, m, events, where, ran, queued=False, started=None, no_chat=False):
         """One line in the crew about the woken turn, so its person (and the leader) can pick up from there: which
-        request, what it used, what was blocked, which files it changed, and what it said last."""
-        used, blocked, files, last, commands, own = [], [], [], "", 0, 0
+        request, what it used, what was blocked, which files it changed, and what it said last. And if it was stopped
+        partway, which tasks it still holds."""
+        used, blocked, files, last, commands, own, claimed = [], [], [], "", 0, 0, []
+        stopped = next((str(e.get("reason") or "") for e in events if e.get("type") == "turn.aborted"), None)
         for e in events:
             item = e.get("item") if e.get("type") == "item.completed" else None
             if not isinstance(item, dict):
@@ -965,6 +1069,14 @@ class Crew:
                 if item.get("status") == "completed":
                     if item.get("server") in (None, "crew"):
                         used.append(tool)
+                        args = item.get("arguments")
+                        try:
+                            args = json.loads(args) if isinstance(args, str) else args
+                        except ValueError:
+                            args = None
+                        if tool in ("crew_task", "crew_task_unattended") and isinstance(args, dict) \
+                                and args.get("action") == "claim" and re.sub(r"\D", "", str(args.get("id") or "")):
+                            claimed.append("T" + re.sub(r"\D", "", str(args["id"])))
                     else:
                         own += 1  # one of the app's own tools (Codex's running summary…): counted, not named
                 else:
@@ -982,6 +1094,13 @@ class Crew:
         if not ran:
             bits.append("but Codex hasn't run it yet: it's queued in that chat" if queued
                         else "but the turn didn't start, so it waits for its person")
+        if stopped is not None:
+            held = list(dict.fromkeys(claimed))
+            bits.append(("its person stopped it partway" if stopped in ("", "interrupted") else f"it was stopped ({stopped})")
+                        + (f": {', '.join(held)} {'is' if len(held) == 1 else 'are'} still claimed by it" if held else ""))
+        if no_chat:
+            bits.append(f"no Codex chat of its person's works on '{self.project}' yet: /prompts:crew {self.project} in "
+                        f"one, and wakes go there")
         if used or own:
             bits.append("used " + ", ".join(list(dict.fromkeys(used)) + ([f"{own} of the app's own tools"] if own else [])))
         if commands:
@@ -1005,7 +1124,9 @@ class Crew:
         doc = f"{self.name}-wakes"
         start = started or time.time()
         span = (time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(start)) + "–" + time.strftime("%H:%M:%S UTC", time.gmtime()))
-        outcome = "ran" if ran else "queued in the chat, not run yet" if queued else "didn't start"
+        stopped = next((str(e.get("reason") or "") for e in events if e.get("type") == "turn.aborted"), None)
+        outcome = ("stopped by its person" if stopped in ("", "interrupted") else f"stopped ({stopped})") if stopped is not None \
+            else "ran" if ran else "queued in the chat, not run yet" if queued else "didn't start"
         lines = [f"## {span} · #{m.get('id')} from {m.get('from')} · {where} · {outcome}",
                  "> " + clip(" ".join(str(m.get("text") or "").split()), 800)]
         for e in events:
